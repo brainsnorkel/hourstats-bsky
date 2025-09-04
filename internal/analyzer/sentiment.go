@@ -84,9 +84,10 @@ func (sa *SentimentAnalyzer) categorizeSentiment(sentiment govader.Sentiment) st
 	compound := sentiment.Compound
 
 	// Use more nuanced thresholds for better emotion detection
-	if compound >= 0.2 {
+	// Adjusted thresholds to better handle neutral language like "okay"
+	if compound >= 0.3 {
 		return "positive"
-	} else if compound <= -0.2 {
+	} else if compound <= -0.3 {
 		return "negative"
 	}
 	return "neutral"
