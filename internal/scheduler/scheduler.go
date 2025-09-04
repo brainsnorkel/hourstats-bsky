@@ -88,17 +88,8 @@ func (s *Scheduler) runAnalysis() error {
 
 	log.Printf("Successfully posted trending summary with %d posts", len(clientTopPosts))
 
-	// Post a quote of the top post
-	if len(clientTopPosts) > 0 {
-		if err := s.client.PostQuotePost(clientTopPosts[0], s.config.Settings.AnalysisIntervalMinutes); err != nil {
-			log.Printf("Warning: Failed to post quote post: %v", err)
-			// Don't return error here, just log it as a warning
-		}
-	}
-
 	return nil
 }
-
 func (s *Scheduler) convertToAnalyzerPosts(clientPosts []client.Post) []analyzer.Post {
 	var analyzerPosts []analyzer.Post
 	for _, post := range clientPosts {

@@ -75,7 +75,9 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		var err error
 
 		for retries := 0; retries < 3; retries++ {
-			searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", []string{}, "", "")
+			// Use Bluesky's official moderation labeler to get labels
+			subscribedLabelers := []string{"did:plc:ar7c4by46qjd4h4ww4t5xvwa"}
+			searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", subscribedLabelers, "", "")
 			if err == nil {
 				break
 			}
@@ -190,6 +192,13 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		// Fallback to author if no text found
 		if text == "No text available" {
 			text = fmt.Sprintf("Post by @%s", postView.Author.Handle)
+		}
+
+		// Check for adult content labels
+		hasAdultLabel := c.hasAdultContentLabel(postView.Labels)
+		if hasAdultLabel {
+			log.Printf("Filtering out adult content post by @%s (labels: %v)", postView.Author.Handle, postView.Labels)
+			continue // Skip this post
 		}
 
 		post := Post{
@@ -341,55 +350,22 @@ func createLinkFacets(text string, posts []Post) []*bsky.RichtextFacet {
 	return facets
 }
 
-// PostQuotePost creates a quote post of the top-ranked post
-func (c *BlueskyClient) PostQuotePost(topPost Post, analysisIntervalMinutes int) error {
-	ctx := context.Background()
-
-	// Format time period
-	var timePeriod string
-	if analysisIntervalMinutes >= 60 {
-		timePeriod = "1 hour"
-	} else {
-		timePeriod = fmt.Sprintf("%d minutes", analysisIntervalMinutes)
+// hasAdultContentLabel checks if a post has adult content labels
+func (c *BlueskyClient) hasAdultContentLabel(labels []*atproto.LabelDefs_Label) bool {
+	if labels == nil {
+		return false
 	}
 
-	// Create the quote post text
-	quoteText := fmt.Sprintf("Top post from: %s", timePeriod)
+	// Adult content label values from Bluesky moderation
+	adultLabels := []string{"porn", "sexual", "nudity", "graphic-media"}
 
-	// Truncate the original post text if it's too long
-	originalText := topPost.Text
-	if len([]rune(originalText)) > 200 {
-		originalText = truncateText(originalText, 200) + "..."
+	for _, label := range labels {
+		for _, adultLabel := range adultLabels {
+			if label.Val == adultLabel {
+				return true
+			}
+		}
 	}
 
-	// Add the quoted content
-	quoteText += fmt.Sprintf("\n\n\"%s\"", originalText)
-
-	// Add author info
-	quoteText += fmt.Sprintf("\n\n— @%s", topPost.Author)
-
-	// Truncate to fit Bluesky's 300 grapheme limit
-	if len([]rune(quoteText)) > 300 {
-		quoteText = truncateText(quoteText, 300)
-	}
-
-	// Create the quote post
-	postRecord := &bsky.FeedPost{
-		Text:      quoteText,
-		CreatedAt: time.Now().Format(time.RFC3339),
-	}
-
-	// Post the record
-	_, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
-		Repo:       c.handle,
-		Collection: "app.bsky.feed.post",
-		Record:     &util.LexiconTypeDecoder{Val: postRecord},
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to post quote post to Bluesky: %w", err)
-	}
-
-	log.Printf("Successfully posted quote post of top post by @%s", topPost.Author)
-	return nil
+	return false
 }

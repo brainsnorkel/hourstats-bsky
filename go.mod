@@ -5,6 +5,7 @@ go 1.25.1
 require (
 	github.com/bluesky-social/indigo v0.0.0-20250903055927-b7ac82546b27
 	github.com/jonreiter/govader v0.0.0-20250429093935-f6505c8d03cc
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -66,6 +67,5 @@ require (
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	gonum.org/v1/gonum v0.8.2 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.2.1 // indirect
 )
