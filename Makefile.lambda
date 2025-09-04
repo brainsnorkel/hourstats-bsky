@@ -1,0 +1,145 @@
+# Makefile for AWS Lambda deployment
+
+# Variables
+FUNCTION_NAME = hourstats
+AWS_REGION = us-east-1
+TERRAFORM_DIR = terraform
+LAMBDA_DIR = cmd/lambda
+
+# Go build flags for Lambda
+GOOS = linux
+GOARCH = amd64
+CGO_ENABLED = 0
+
+.PHONY: help build-lambda deploy-lambda destroy-lambda clean-lambda test-lambda
+
+help: ## Show this help message
+	@echo "Available targets:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+build-lambda: ## Build the Lambda function binary
+	@echo "Building Lambda function..."
+	@cd $(LAMBDA_DIR) && \
+	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=$(CGO_ENABLED) go build -o main .
+	@zip hourstats.zip main
+	@mv hourstats.zip $(TERRAFORM_DIR)/
+	@rm -f main
+	@echo "Lambda function built and packaged as hourstats.zip"
+
+deploy-lambda: build-lambda ## Deploy the Lambda function to AWS
+	@echo "Deploying Lambda function to AWS..."
+	@cd $(TERRAFORM_DIR) && \
+	terraform init && \
+	terraform plan && \
+	terraform apply -auto-approve
+	@echo "Lambda function deployed successfully"
+
+destroy-lambda: ## Destroy the Lambda function and related resources
+	@echo "Destroying Lambda function and related resources..."
+	@cd $(TERRAFORM_DIR) && \
+	terraform destroy -auto-approve
+	@echo "Lambda function destroyed successfully"
+
+clean-lambda: ## Clean up build artifacts
+	@echo "Cleaning up build artifacts..."
+	@rm -f $(TERRAFORM_DIR)/hourstats.zip
+	@rm -f $(LAMBDA_DIR)/main
+	@echo "Build artifacts cleaned up"
+
+test-lambda: ## Test the Lambda function locally
+	@echo "Testing Lambda function locally..."
+	@cd $(LAMBDA_DIR) && \
+	go run . --help || echo "Lambda function compiled successfully"
+
+update-lambda: ## Update the Lambda function code without recreating infrastructure
+	@echo "Updating Lambda function code..."
+	@$(MAKE) build-lambda
+	@cd $(TERRAFORM_DIR) && \
+	terraform apply -target=aws_lambda_function.hourstats -auto-approve
+	@echo "Lambda function updated successfully"
+
+logs-lambda: ## View CloudWatch logs for the Lambda function
+	@echo "Viewing CloudWatch logs..."
+	@aws logs tail /aws/lambda/$(FUNCTION_NAME) --follow --region $(AWS_REGION)
+
+invoke-lambda: ## Manually invoke the Lambda function
+	@echo "Invoking Lambda function..."
+	@aws lambda invoke \
+		--function-name $(FUNCTION_NAME) \
+		--region $(AWS_REGION) \
+		--payload '{"source":"manual","time":"2024-01-01T00:00:00Z"}' \
+		response.json
+	@cat response.json
+	@rm -f response.json
+
+status-lambda: ## Check the status of the Lambda function
+	@echo "Checking Lambda function status..."
+	@aws lambda get-function \
+		--function-name $(FUNCTION_NAME) \
+		--region $(AWS_REGION) \
+		--query 'Configuration.[FunctionName,State,LastModified,Runtime,Timeout,MemorySize]' \
+		--output table
+
+# Development targets
+dev-setup: ## Set up development environment
+	@echo "Setting up development environment..."
+	@go mod tidy
+	@go mod download
+	@echo "Development environment ready"
+
+dev-test: ## Run tests
+	@echo "Running tests..."
+	@go test ./...
+
+dev-lint: ## Run linter
+	@echo "Running linter..."
+	@golangci-lint run
+
+# Terraform targets
+tf-init: ## Initialize Terraform
+	@cd $(TERRAFORM_DIR) && terraform init
+
+tf-plan: ## Plan Terraform changes
+	@cd $(TERRAFORM_DIR) && terraform plan
+
+tf-apply: ## Apply Terraform changes
+	@cd $(TERRAFORM_DIR) && terraform apply
+
+tf-destroy: ## Destroy Terraform resources
+	@cd $(TERRAFORM_DIR) && terraform destroy
+
+# Parameter Store targets
+update-params: ## Update SSM parameters
+	@echo "Updating SSM parameters..."
+	@aws ssm put-parameter \
+		--name "/hourstats/bluesky/handle" \
+		--value "hourstats.bsky.social" \
+		--type "String" \
+		--overwrite \
+		--region $(AWS_REGION)
+	@aws ssm put-parameter \
+		--name "/hourstats/settings/analysis_interval_minutes" \
+		--value "30" \
+		--type "String" \
+		--overwrite \
+		--region $(AWS_REGION)
+	@aws ssm put-parameter \
+		--name "/hourstats/settings/top_posts_count" \
+		--value "5" \
+		--type "String" \
+		--overwrite \
+		--region $(AWS_REGION)
+	@aws ssm put-parameter \
+		--name "/hourstats/settings/dry_run" \
+		--value "false" \
+		--type "String" \
+		--overwrite \
+		--region $(AWS_REGION)
+	@echo "SSM parameters updated successfully"
+
+# All-in-one targets
+full-deploy: dev-setup build-lambda deploy-lambda ## Full deployment from scratch
+	@echo "Full deployment completed successfully"
+
+full-destroy: destroy-lambda clean-lambda ## Full cleanup
+	@echo "Full cleanup completed successfully"

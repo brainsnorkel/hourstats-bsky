@@ -200,7 +200,7 @@ func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []anal
 	log.Printf("Engagement scores before sorting:")
 	for i, post := range posts {
 		if i < 10 { // Log first 10 posts
-			log.Printf("  @%s: likes=%d, reposts=%d, replies=%d, engagement_score=%.2f", 
+			log.Printf("  @%s: likes=%d, reposts=%d, replies=%d, engagement_score=%.2f",
 				post.Author, post.Likes, post.Reposts, post.Replies, post.EngagementScore)
 		}
 	}
@@ -218,7 +218,7 @@ func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []anal
 	log.Printf("Top %d posts after sorting by engagement score:", count)
 	for i, post := range posts {
 		if i < count {
-			log.Printf("  %d. @%s: likes=%d, reposts=%d, replies=%d, engagement_score=%.2f", 
+			log.Printf("  %d. @%s: likes=%d, reposts=%d, replies=%d, engagement_score=%.2f",
 				i+1, post.Author, post.Likes, post.Reposts, post.Replies, post.EngagementScore)
 		}
 	}

@@ -54,3 +54,7 @@ secrets.yaml
 .env
 .env.local
 .env.production
+terraform/.terraform/
+terraform/*.zip
+terraform/*.tfstate*
+*.json
