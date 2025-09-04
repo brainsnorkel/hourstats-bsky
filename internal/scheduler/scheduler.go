@@ -70,13 +70,16 @@ func (s *Scheduler) runAnalysis() error {
 	}
 
 	// Get top 5 posts
-	topPosts := s.getTopPosts(analyzedPosts, 5)
+	topPosts := s.GetTopPosts(analyzedPosts, 5)
+
+	// Calculate overall sentiment from top posts
+	overallSentiment := s.CalculateOverallSentiment(topPosts)
 
 	// Convert back to client posts for posting
 	clientTopPosts := s.convertToClientPosts(topPosts)
 
 	// Post the results
-	if err := s.client.PostTrendingSummary(clientTopPosts); err != nil {
+	if err := s.client.PostTrendingSummary(clientTopPosts, overallSentiment); err != nil {
 		return err
 	}
 
@@ -116,7 +119,54 @@ func (s *Scheduler) convertToClientPosts(analyzedPosts []analyzer.AnalyzedPost) 
 	return clientPosts
 }
 
-func (s *Scheduler) getTopPosts(posts []analyzer.AnalyzedPost, count int) []analyzer.AnalyzedPost {
+func (s *Scheduler) CalculateOverallSentiment(posts []analyzer.AnalyzedPost) string {
+	if len(posts) == 0 {
+		return "neutral"
+	}
+
+	// Count sentiment categories
+	positiveCount := 0
+	negativeCount := 0
+	neutralCount := 0
+
+	for _, post := range posts {
+		switch post.Sentiment {
+		case "positive":
+			positiveCount++
+		case "negative":
+			negativeCount++
+		case "neutral":
+			neutralCount++
+		}
+	}
+
+	// Determine overall sentiment
+	total := len(posts)
+	if positiveCount > total/2 {
+		return s.getEmotionFromSentiment("positive")
+	} else if negativeCount > total/2 {
+		return s.getEmotionFromSentiment("negative")
+	} else {
+		return s.getEmotionFromSentiment("neutral")
+	}
+}
+
+func (s *Scheduler) getEmotionFromSentiment(sentiment string) string {
+	emotions := map[string][]string{
+		"positive": {"happy", "excited", "optimistic", "cheerful", "enthusiastic", "upbeat", "joyful"},
+		"negative": {"sad", "angry", "frustrated", "worried", "concerned", "disappointed", "melancholy"},
+		"neutral":  {"calm", "peaceful", "balanced", "steady", "composed", "thoughtful", "reflective"},
+	}
+
+	// For now, return the first emotion in each category
+	// In a more sophisticated implementation, we could randomize or use more context
+	if emotionList, exists := emotions[sentiment]; exists && len(emotionList) > 0 {
+		return emotionList[0]
+	}
+	return "neutral"
+}
+
+func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []analyzer.AnalyzedPost {
 	// Sort by engagement score (combination of likes, reposts, and sentiment)
 	// For now, just return the first N posts
 	if len(posts) < count {

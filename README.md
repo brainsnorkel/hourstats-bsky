@@ -10,6 +10,16 @@ TrendJournal is an automated bot that:
 - Posts the top 5 most popular posts with their associated topics and sentiment every hour
 - Can be deployed to cloud services for continuous operation
 
+
+## Generated post
+
+The generated post shall contain:
+ * "Top five this hour {local date and time}" 
+   * Links to the five top posts (ranked by likes + reskeets), in the last hour
+ * From the sentiment expressed in the five top posts generate text about the sentiment:
+   * "Bluesky is {emotion}" - where emotion is something like happy, sad, angry, playful.
+
+
 ## Project Status
 
 🚧 **In Development** - Core functionality implemented, ready for testing
