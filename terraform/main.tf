@@ -117,8 +117,8 @@ resource "aws_lambda_function" "hourstats" {
   handler         = "bootstrap"
   source_code_hash = filebase64sha256("hourstats.zip")
   runtime         = "provided.al2"
-  timeout         = 900  # 15 minutes
-  memory_size     = 1024 # 1GB
+  timeout         = 900  # 15 minutes (function takes ~12 min, keeping safe margin)
+  memory_size     = 256  # 256MB (function only uses 84MB max, 3x headroom)
 
   environment {
     variables = {
