@@ -69,8 +69,8 @@ jobs:
       - name: Build Lambda function
         run: |
           cd cmd/lambda
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o main .
-          zip hourstats.zip main
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
+          zip hourstats.zip bootstrap
           mv hourstats.zip ../../terraform/
 
       - name: Upload build artifact
@@ -109,7 +109,11 @@ jobs:
       - name: Terraform Init
         run: |
           cd terraform
-          terraform init
+          terraform init \
+            -backend-config="bucket=hourstats-terraform-state" \
+            -backend-config="key=hourstats/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=hourstats-terraform-locks"
 
       - name: Terraform Plan
         run: |
