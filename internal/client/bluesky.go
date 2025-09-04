@@ -105,10 +105,10 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	// Create the summary post in the specified format
 	summaryText := fmt.Sprintf("Top five this hour %s\n\n", timeStr)
 	
-	// Add links to the top 5 posts (ranked by likes + reposts)
+	// Add links to the top 5 posts (ranked by replies + likes + reposts)
 	for i, post := range posts {
 		summaryText += fmt.Sprintf("%d. %s\n", i+1, post.URI)
-		summaryText += fmt.Sprintf("   @%s | 💙 %d likes | 🔄 %d reposts\n\n", post.Author, post.Likes, post.Reposts)
+		summaryText += fmt.Sprintf("   @%s | 💬 %d replies | 💙 %d likes | 🔄 %d reposts\n\n", post.Author, post.Replies, post.Likes, post.Reposts)
 	}
 	
 	// Add sentiment summary

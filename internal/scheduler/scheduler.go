@@ -167,8 +167,19 @@ func (s *Scheduler) getEmotionFromSentiment(sentiment string) string {
 }
 
 func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []analyzer.AnalyzedPost {
-	// Sort by engagement score (combination of likes, reposts, and sentiment)
-	// For now, just return the first N posts
+	// Sort by engagement score (replies + likes + reposts + sentiment boost)
+	// This matches the README specification for ranking posts
+	
+	// Sort posts by engagement score in descending order
+	for i := 0; i < len(posts)-1; i++ {
+		for j := i + 1; j < len(posts); j++ {
+			if posts[i].EngagementScore < posts[j].EngagementScore {
+				posts[i], posts[j] = posts[j], posts[i]
+			}
+		}
+	}
+	
+	// Return the top N posts
 	if len(posts) < count {
 		return posts
 	}
