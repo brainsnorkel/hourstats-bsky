@@ -49,7 +49,7 @@ func (s *Scheduler) Start() error {
 			log.Printf("Error in scheduled analysis: %v", err)
 		}
 	}
-	
+
 	// This return will never be reached due to the infinite loop above
 	return nil
 }
