@@ -170,7 +170,9 @@ jobs:
             --payload '{"source":"deployment-test","time":"2024-01-01T00:00:00Z"}' \
             response.json
           
+          echo "Lambda response:"
           cat response.json
+          echo ""
           rm -f response.json
 
   notify:
