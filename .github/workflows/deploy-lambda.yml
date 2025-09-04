@@ -1,0 +1,176 @@
+name: Deploy Lambda Function
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'cmd/lambda/**'
+      - 'internal/lambda/**'
+      - 'internal/client/**'
+      - 'internal/analyzer/**'
+      - 'internal/scheduler/**'
+      - 'internal/config/**'
+      - 'terraform/**'
+      - '.github/workflows/deploy-lambda.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/lambda/**'
+      - 'internal/lambda/**'
+      - 'terraform/**'
+
+env:
+  AWS_REGION: us-east-1
+  FUNCTION_NAME: hourstats
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Build Lambda function
+        run: |
+          cd cmd/lambda
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o main .
+          zip hourstats.zip main
+          mv hourstats.zip ../../terraform/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: lambda-function
+          path: terraform/hourstats.zip
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: lambda-function
+          path: terraform/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.5.0'
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+
+      - name: Terraform Plan
+        run: |
+          cd terraform
+          terraform plan
+
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve
+
+      - name: Update SSM Parameters
+        run: |
+          aws ssm put-parameter \
+            --name "/hourstats/bluesky/handle" \
+            --value "hourstats.bsky.social" \
+            --type "String" \
+            --overwrite \
+            --region ${{ env.AWS_REGION }}
+          
+          aws ssm put-parameter \
+            --name "/hourstats/settings/analysis_interval_minutes" \
+            --value "30" \
+            --type "String" \
+            --overwrite \
+            --region ${{ env.AWS_REGION }}
+          
+          aws ssm put-parameter \
+            --name "/hourstats/settings/top_posts_count" \
+            --value "5" \
+            --type "String" \
+            --overwrite \
+            --region ${{ env.AWS_REGION }}
+          
+          aws ssm put-parameter \
+            --name "/hourstats/settings/dry_run" \
+            --value "false" \
+            --type "String" \
+            --overwrite \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Test Lambda Function
+        run: |
+          aws lambda invoke \
+            --function-name ${{ env.FUNCTION_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --payload '{"source":"deployment-test","time":"2024-01-01T00:00:00Z"}' \
+            response.json
+          
+          cat response.json
+          rm -f response.json
+
+  notify:
+    needs: [test, build, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Notify deployment status
+        run: |
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "✅ Lambda function deployed successfully"
+          else
+            echo "❌ Lambda function deployment failed"
+          fi
