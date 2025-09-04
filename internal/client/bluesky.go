@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/bluesky-social/indigo/atproto/client"
@@ -96,16 +97,22 @@ func (c *BlueskyClient) GetTrendingPosts() ([]Post, error) {
 	return posts, nil
 }
 
-func (c *BlueskyClient) PostTrendingSummary(posts []Post) error {
-	// Create a summary post
-	summaryText := "🔥 Trending Topics Summary (Hourly Update)\n\n"
+func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string) error {
+	// Get current local time
+	now := time.Now()
+	timeStr := now.Format("2006-01-02 15:04")
 	
+	// Create the summary post in the specified format
+	summaryText := fmt.Sprintf("Top five this hour %s\n\n", timeStr)
+	
+	// Add links to the top 5 posts (ranked by likes + reposts)
 	for i, post := range posts {
-		summaryText += fmt.Sprintf("%d. @%s: %s\n", i+1, post.Author, truncateText(post.Text, 100))
-		summaryText += fmt.Sprintf("   💙 %d likes | 🔄 %d reposts\n\n", post.Likes, post.Reposts)
+		summaryText += fmt.Sprintf("%d. %s\n", i+1, post.URI)
+		summaryText += fmt.Sprintf("   @%s | 💙 %d likes | 🔄 %d reposts\n\n", post.Author, post.Likes, post.Reposts)
 	}
 	
-	summaryText += "#TrendingTopics #Bluesky"
+	// Add sentiment summary
+	summaryText += fmt.Sprintf("Bluesky is %s", overallSentiment)
 
 	// For now, we'll just log the post content
 	// In a real implementation, we'd use the AT Protocol to create the post
