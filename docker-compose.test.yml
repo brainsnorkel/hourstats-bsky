@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  localstack:
+    container_name: hourstats-localstack
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"            # LocalStack Gateway
+      - "4510-4559:4510-4559"  # External services port range
+    environment:
+      - SERVICES=lambda,dynamodb,ssm,stepfunctions
+      - DEBUG=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - HOST_TMP_FOLDER=/tmp/localstack
+    volumes:
+      - "/tmp/localstack:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - hourstats-test
+
+networks:
+  hourstats-test:
+    driver: bridge
