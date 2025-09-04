@@ -169,10 +169,15 @@ jobs:
             --function-name ${{ env.FUNCTION_NAME }} \
             --region ${{ env.AWS_REGION }} \
             --payload file://payload.json \
-            response.json
+            response.json \
+            --cli-read-timeout 0 \
+            --cli-connect-timeout 60
           
-          echo "Lambda response:"
+          echo "Lambda response (raw):"
           cat response.json
+          echo ""
+          echo "Lambda response (hex):"
+          hexdump -C response.json
           echo ""
           rm -f payload.json response.json
 
