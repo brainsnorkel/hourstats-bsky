@@ -1,6 +1,6 @@
 module github.com/christophergentle/hourstats-bsky
 
-go 1.25.1
+go 1.24
 
 require (
 	github.com/bluesky-social/indigo v0.0.0-20250903055927-b7ac82546b27

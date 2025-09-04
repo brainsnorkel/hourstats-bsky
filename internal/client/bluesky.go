@@ -231,7 +231,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 
 	// Add links to the top 5 posts (ranked by replies + likes + reposts)
 	// Use handle format with clickable links
-	for i, _ := range posts {
+	for i := range posts {
 		if i >= 5 { // Limit to top 5
 			break
 		}

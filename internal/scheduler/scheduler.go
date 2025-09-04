@@ -44,14 +44,14 @@ func (s *Scheduler) Start() error {
 	}
 
 	// Run every hour
-	for {
-		select {
-		case <-ticker.C:
-			if err := s.runAnalysis(); err != nil {
-				log.Printf("Error in scheduled analysis: %v", err)
-			}
+	for range ticker.C {
+		if err := s.runAnalysis(); err != nil {
+			log.Printf("Error in scheduled analysis: %v", err)
 		}
 	}
+	
+	// This return will never be reached due to the infinite loop above
+	return nil
 }
 
 func (s *Scheduler) runAnalysis() error {
