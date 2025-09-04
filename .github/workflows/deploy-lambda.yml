@@ -102,7 +102,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: '1.5.0'
 
@@ -114,6 +114,13 @@ jobs:
             -backend-config="key=hourstats/terraform.tfstate" \
             -backend-config="region=us-east-1" \
             -backend-config="dynamodb_table=hourstats-terraform-locks"
+
+      - name: Import Existing Resources
+        run: |
+          cd terraform
+          # Import existing S3 bucket and DynamoDB table if they exist
+          terraform import aws_s3_bucket.terraform_state hourstats-terraform-state || true
+          terraform import aws_dynamodb_table.terraform_locks hourstats-terraform-locks || true
 
       - name: Terraform Plan
         run: |
@@ -157,14 +164,23 @@ jobs:
 
       - name: Test Lambda Function
         run: |
+          echo "{\"source\":\"aws.events\",\"time\":\"2024-01-01T00:00:00Z\"}" > payload.json
           aws lambda invoke \
             --function-name ${{ env.FUNCTION_NAME }} \
             --region ${{ env.AWS_REGION }} \
-            --payload '{"source":"deployment-test","time":"2024-01-01T00:00:00Z"}' \
-            response.json
+            --payload file://payload.json \
+            --cli-binary-format raw-in-base64-out \
+            response.json \
+            --cli-read-timeout 0 \
+            --cli-connect-timeout 60
           
+          echo "Lambda response (raw):"
           cat response.json
-          rm -f response.json
+          echo ""
+          echo "Lambda response (hex):"
+          hexdump -C response.json
+          echo ""
+          rm -f payload.json response.json
 
   notify:
     needs: [test, build, deploy]
