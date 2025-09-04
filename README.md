@@ -5,16 +5,17 @@ A Go-based AT Protocol/Bluesky client that analyzes trending topics using top po
 ## Overview
 
 TrendJournal is an automated bot that:
-- Fetches top posts from Bluesky/AT Protocol
+- Searches all public posts from Bluesky/AT Protocol (not just followed accounts)
 - Performs sentiment analysis on trending content
-- Posts the top 5 most popular posts with their associated topics and sentiment every hour
+- Posts the top 5 most popular posts with their associated topics and sentiment at configurable intervals
+- Skips posting when no posts are found in the analysis period
 - Can be deployed to cloud services for continuous operation
 
 
 ## Generated post
 
 The generated post shall contain:
- * "Top five this hour {local date and time}" 
+ * "Top five the last {hour|15 minutes|5 minutes} {local date and time}" 
    * Links to the five top posts (ranked by replies + likes + reskeets during the hour), in the last hour
  * From the sentiment expressed in the five top posts generate text about the sentiment:
    * "Bluesky is {emotion}" - where emotion is something like happy, sad, angry, playful.
@@ -22,19 +23,22 @@ The generated post shall contain:
 
 ## Project Status
 
-🚧 **In Development** - Core functionality implemented, ready for testing
+✅ **Functional** - Core functionality implemented and tested, ready for deployment
 
 ## Features
 
 - [x] AT Protocol/Bluesky API integration using official indigo library
-- [x] Post fetching from timeline
+- [x] Public post search (searches all public posts, not just followed accounts)
+- [x] Time-filtered analysis (only considers new posts during the analysis interval)
 - [x] Sentiment analysis using GoVader
 - [x] Topic extraction and categorization
-- [x] Automated posting every hour
+- [x] Configurable analysis intervals (minutes)
+- [x] Smart posting (skips when no posts found)
+- [x] Web-friendly URL conversion for proper link rendering
+- [x] Dry-run mode for safe testing
+- [x] Secure configuration management
 - [x] Local testing environment
 - [ ] Cloud deployment configuration
-- [ ] Enhanced trending algorithm
-- [ ] Configuration management
 
 ## Tech Stack
 
@@ -100,12 +104,21 @@ The bot uses `config.yaml` for configuration. Run `make setup` to create it from
 - `bluesky.password`: Your Bluesky app password (not your regular password)
 
 **Optional settings:**
-- `settings.analysis_interval_hours`: How often to run analysis (default: 1)
+- `settings.analysis_interval_minutes`: How often to run analysis in minutes (default: 60)
 - `settings.top_posts_count`: Number of top posts to include (default: 5)
 - `settings.min_engagement_score`: Minimum engagement to consider trending (default: 10)
 - `settings.dry_run`: Test mode without posting (default: true)
 
 **Security:** The `config.yaml` file contains your credentials and is git-ignored for safety.
+
+### How It Works
+
+1. **Public Post Search**: The bot searches all public Bluesky posts (not just followed accounts) using the search API
+2. **Time Filtering**: Only analyzes posts from the last `analysis_interval_minutes` period
+3. **Engagement Ranking**: Ranks posts by total engagement (replies + likes + reposts)
+4. **Sentiment Analysis**: Analyzes the sentiment of the top posts using GoVader
+5. **Smart Posting**: Only posts summaries when posts are found; skips when no activity
+6. **Web URLs**: Converts AT Protocol URIs to web-friendly URLs for proper link rendering
 
 ### Testing
 

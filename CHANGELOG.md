@@ -8,30 +8,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- New post format: "For {time} Bluesky was {sentiment}" with numbered handle links
+- Handle-based post links: "@handle.who .wrote.postX" format with clickable handles
 - Initial project setup with Go module
 - AT Protocol/Bluesky client integration using indigo library
-- Sentiment analysis using GoVader library
+- Sentiment analysis using GoVader library (now uses actual post content)
 - Topic extraction from hashtags and keywords
-- Hourly scheduling mechanism
+- Configurable analysis intervals (minutes instead of hours)
+- Public post search with pagination (searches all public posts, not just followed accounts)
+- Time-filtered analysis (only considers posts from analysis interval)
+- Smart posting (skips when no posts found)
+- Web-friendly URL conversion for proper link rendering
+- Proper Bluesky rich text facets for clickable links (based on official documentation)
+- Dry-run mode for safe testing
+- Secure configuration management with YAML files
 - Comprehensive test suite
 - Makefile for build automation
-- Configuration management
 - Documentation and testing guides
+- Dynamic time formatting in posts ("X minutes" vs "1 hour")
+- Actual post text extraction from AT Protocol records
+- Engagement score display (total of replies + likes + reposts)
 
 ### Changed
-- N/A
+- Analysis interval changed from hours to minutes for more frequent updates
+- Post fetching changed from timeline to public search API with full pagination
+- Post ranking now uses total engagement (replies + likes + reposts)
+- Configuration system updated to use YAML files instead of environment variables
+- Post format updated to remove numbering and include clean URLs with handles
+- Post header now dynamically shows time period ("Top five posts in the last X minutes/1 hour")
+- Sentiment analysis now uses actual post content instead of placeholder text
+- Rich text facets implemented according to Bluesky documentation for proper link rendering
 
 ### Deprecated
 - N/A
 
 ### Removed
-- N/A
+- Post numbering (1., 2., etc.) for cleaner appearance
+- Engagement breakdown (now shows total engagement score)
+- Fixed timestamp from post header
 
 ### Fixed
-- N/A
+- Fixed AT Protocol URI to web URL conversion for proper link rendering
+- Fixed sentiment analysis thresholds for more accurate classification
+- Fixed topic extraction to handle punctuation and extract keyword equivalents
+- Fixed type conversion issues between client and analyzer packages
+- Fixed API search to retrieve all public posts using pagination instead of timeline
+- Fixed rich text facets for proper clickable links on Bluesky
+- Fixed post text extraction from AT Protocol records
+- Fixed datetime parameter issues with search API (removed problematic 'since' parameter)
+- Fixed client-side time filtering for accurate post selection
+- Fixed duplicate posts appearing in summaries (added deduplication by URI)
+- Fixed post truncation to ensure all 5 posts are displayed properly
+- Fixed API rate limiting issues with retry logic and reduced post limits
+- Fixed time interval display to show correct minutes instead of hours
 
 ### Security
-- N/A
+- Added secure credential management with git-ignored config files
+- Added setup script for safe configuration file creation
 
 ## [0.1.0] - 2024-01-04
 
