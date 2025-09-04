@@ -3,6 +3,13 @@ module github.com/christophergentle/hourstats-bsky
 go 1.24
 
 require (
+	github.com/aws/aws-lambda-go v1.49.0
+	github.com/aws/aws-sdk-go-v2 v1.38.3
+	github.com/aws/aws-sdk-go-v2/config v1.31.6
+	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.15.5
+	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.38.2
+	github.com/aws/aws-sdk-go-v2/service/ssm v1.64.2
+	github.com/aws/aws-sdk-go-v2/service/stepfunctions v1.30.2
 	github.com/bluesky-social/indigo v0.0.0-20250903055927-b7ac82546b27
 	github.com/jonreiter/govader v0.0.0-20250429093935-f6505c8d03cc
 	gopkg.in/yaml.v3 v3.0.1

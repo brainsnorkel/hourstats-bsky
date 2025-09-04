@@ -284,6 +284,52 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
   }
 }
 
+# DynamoDB Table for Multi-Lambda State Management
+resource "aws_dynamodb_table" "hourstats_state" {
+  name           = "${var.function_name}-state"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "runId"
+  range_key      = "step"
+
+  attribute {
+    name = "runId"
+    type = "S"
+  }
+
+  attribute {
+    name = "step"
+    type = "S"
+  }
+
+  # Global Secondary Index for querying by status
+  global_secondary_index {
+    name     = "status-index"
+    hash_key = "status"
+    range_key = "createdAt"
+  }
+
+  attribute {
+    name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "createdAt"
+    type = "S"
+  }
+
+  # TTL for automatic cleanup of old runs (7 days)
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name        = "${var.function_name}-state"
+    Environment = "production"
+  }
+}
+
 # Outputs
 output "lambda_function_name" {
   description = "Name of the Lambda function"
