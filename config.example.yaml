@@ -1,0 +1,20 @@
+# TrendJournal Configuration
+# Copy this file to config.yaml and fill in your values
+
+bluesky:
+  handle: "your-handle.bsky.social"
+  password: "your-app-password"
+  
+# Optional: Override default settings
+settings:
+  # How often to run the analysis (in hours)
+  analysis_interval_hours: 1
+  
+  # Number of top posts to include in summary
+  top_posts_count: 5
+  
+  # Minimum engagement score to consider a post "trending"
+  min_engagement_score: 10
+  
+  # Enable dry run mode (won't actually post to Bluesky)
+  dry_run: true
