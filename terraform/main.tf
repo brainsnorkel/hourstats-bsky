@@ -298,6 +298,7 @@ resource "aws_dynamodb_table" "hourstats_state" {
     name     = "status-index"
     hash_key = "status"
     range_key = "createdAt"
+    projection_type = "ALL"
   }
 
   attribute {
