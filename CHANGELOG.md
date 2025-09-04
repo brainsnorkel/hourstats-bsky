@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to TrendJournal will be documented in this file.
+All notable changes to Bluesky HourStats will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Engagement scores**: Display total engagement (likes + reposts + replies) next to each handle
+- **Project rename**: Renamed from TrendJournal to Bluesky HourStats
 - New post format: "For {time} Bluesky was {sentiment}" with numbered handle links
 - Handle-based post links: "@handle.who .wrote.postX" format with clickable handles
 - Initial project setup with Go module

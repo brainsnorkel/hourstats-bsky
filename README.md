@@ -1,24 +1,36 @@
-# TrendJournal
+# Bluesky HourStats
 
-A Go-based AT Protocol/Bluesky client that analyzes trending topics using top posts and sentiment analysis.
+A Go-based AT Protocol/Bluesky client that analyzes trending posts and sentiment to provide hourly statistics about the Bluesky community.
 
 ## Overview
 
-TrendJournal is an automated bot that:
+Bluesky HourStats is an automated bot that:
 - Searches all public posts from Bluesky/AT Protocol (not just followed accounts)
-- Performs sentiment analysis on trending content
-- Posts the top 5 most popular posts with their associated topics and sentiment at configurable intervals
-- Skips posting when no posts are found in the analysis period
+- Filters out adult content using Bluesky's official moderation labels
+- Performs emotion-based sentiment analysis on trending content
+- Posts hourly summaries with the top 5 most popular posts and overall community sentiment
+- Uses engagement scores (likes + reposts + replies) to rank posts
 - Can be deployed to cloud services for continuous operation
 
+## Generated Post Format
 
-## Generated post
+The bot posts summaries in this format:
+```
+For 30 minutes Bluesky was passionate
 
-The generated post shall contain:
- * "Top five the last {hour|15 minutes|5 minutes} {local date and time}" 
-   * Links to the five top posts (ranked by replies + likes + reskeets during the hour), in the last hour
- * From the sentiment expressed in the five top posts generate text about the sentiment:
-   * "Bluesky is {emotion}" - where emotion is something like happy, sad, angry, playful.
+1. @username.bsky.social (15)
+2. @anotheruser.bsky.social (12)
+3. @thirduser.bsky.social (8)
+4. @fourthuser.bsky.social (6)
+5. @fifthuser.bsky.social (4)
+```
+
+**Features:**
+- **Time period**: Configurable (minutes or hours)
+- **Sentiment**: Emotion-based analysis (passionate, excited, steady, etc.)
+- **Top 5 posts**: Ranked by total engagement score
+- **Engagement scores**: Displayed in parentheses (likes + reposts + replies)
+- **Adult content filtering**: Uses Bluesky's official moderation labels
 
 
 ## Project Status
@@ -29,15 +41,18 @@ The generated post shall contain:
 
 - [x] AT Protocol/Bluesky API integration using official indigo library
 - [x] Public post search (searches all public posts, not just followed accounts)
+- [x] Adult content filtering using Bluesky's official moderation labels
+- [x] Emotion-based sentiment analysis with 30+ emotions across positive/negative/neutral categories
+- [x] Keyword-based sentiment fallback for improved accuracy
+- [x] Engagement score calculation (likes + reposts + replies)
 - [x] Time-filtered analysis (only considers new posts during the analysis interval)
-- [x] Sentiment analysis using GoVader
-- [x] Topic extraction and categorization
 - [x] Configurable analysis intervals (minutes)
 - [x] Smart posting (skips when no posts found)
-- [x] Web-friendly URL conversion for proper link rendering
+- [x] Clickable handle links with proper Bluesky rich text facets
 - [x] Dry-run mode for safe testing
 - [x] Secure configuration management
 - [x] Local testing environment
+- [x] Comprehensive logging and debugging
 - [ ] Cloud deployment configuration
 
 ## Tech Stack
@@ -60,8 +75,8 @@ The generated post shall contain:
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/christophergentle/trendjournal.git
-cd trendjournal
+git clone https://github.com/christophergentle/hourstats-bsky.git
+cd hourstats-bsky
 ```
 
 2. Install dependencies:
@@ -135,15 +150,16 @@ make dry-run
 ## Project Structure
 
 ```
-trendjournal/
+hourstats-bsky/
 ├── cmd/trendjournal/          # Main application entry point
 ├── internal/
-│   ├── client/               # Bluesky API client
-│   ├── analyzer/             # Sentiment analysis and topic extraction
-│   └── scheduler/            # Hourly scheduling logic
-├── pkg/                      # Shared packages
+│   ├── client/               # Bluesky API client with adult content filtering
+│   ├── analyzer/             # Emotion-based sentiment analysis
+│   ├── scheduler/            # Analysis scheduling logic
+│   └── config/               # Configuration management
 ├── config.example.yaml       # Configuration template
 ├── Makefile                  # Build and run commands
+├── CHANGELOG.md              # Project changelog
 └── README.md
 ```
 

@@ -237,8 +237,9 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 		if i >= 5 { // Limit to top 5
 			break
 		}
-		// Format as @handle with clickable link to the post
-		summaryText += fmt.Sprintf("%d. @%s\n", i+1, posts[i].Author)
+		// Format as @handle with engagement score on the right
+		engagementScore := posts[i].Likes + posts[i].Reposts + posts[i].Replies
+		summaryText += fmt.Sprintf("%d. @%s (%d)\n", i+1, posts[i].Author, engagementScore)
 	}
 
 	// Check if we need to truncate, but try to keep all 5 posts
