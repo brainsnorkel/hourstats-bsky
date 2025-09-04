@@ -5,7 +5,7 @@ import (
 	"log"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/christophergentle/hourstats-bsky/internal/lambda"
+	lambdapkg "github.com/christophergentle/hourstats-bsky/internal/lambda"
 )
 
 // Event represents the EventBridge event structure
@@ -25,7 +25,7 @@ func HandleRequest(ctx context.Context, event Event) (Response, error) {
 	log.Printf("Received event: %+v", event)
 
 	// Load configuration from SSM Parameter Store
-	configLoader, err := lambda.NewSSMConfigLoader(ctx)
+	configLoader, err := lambdapkg.NewSSMConfigLoader(ctx)
 	if err != nil {
 		log.Printf("Failed to create SSM config loader: %v", err)
 		return Response{
@@ -44,7 +44,7 @@ func HandleRequest(ctx context.Context, event Event) (Response, error) {
 	}
 
 	// Initialize and run analysis
-	analyzer := lambda.NewHourStatsAnalyzer(cfg)
+	analyzer := lambdapkg.NewHourStatsAnalyzer(cfg)
 	result, err := analyzer.RunAnalysis(ctx)
 	if err != nil {
 		log.Printf("Analysis failed: %v", err)
