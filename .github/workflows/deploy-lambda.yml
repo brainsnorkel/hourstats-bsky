@@ -115,6 +115,13 @@ jobs:
             -backend-config="region=us-east-1" \
             -backend-config="dynamodb_table=hourstats-terraform-locks"
 
+      - name: Import Existing Resources
+        run: |
+          cd terraform
+          # Import existing S3 bucket and DynamoDB table if they exist
+          terraform import aws_s3_bucket.terraform_state hourstats-terraform-state || true
+          terraform import aws_dynamodb_table.terraform_locks hourstats-terraform-locks || true
+
       - name: Terraform Plan
         run: |
           cd terraform
