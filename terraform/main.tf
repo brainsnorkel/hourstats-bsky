@@ -179,17 +179,9 @@ resource "aws_ssm_parameter" "bluesky_handle" {
   }
 }
 
-resource "aws_ssm_parameter" "bluesky_password" {
-  name  = "/hourstats/bluesky/password"
-  type  = "SecureString"
-  value = "SET-MANUALLY"  # This should be set manually via AWS CLI or console
-  overwrite = false       # Don't overwrite manually set values
-
-  tags = {
-    Name        = "hourstats-bluesky-password"
-    Environment = "production"
-  }
-}
+# Note: /hourstats/bluesky/password is managed manually via AWS CLI or console
+# This parameter should be created manually with:
+# aws ssm put-parameter --name "/hourstats/bluesky/password" --value "your-password" --type "SecureString" --region us-east-1
 
 resource "aws_ssm_parameter" "analysis_interval" {
   name  = "/hourstats/settings/analysis_interval_minutes"
