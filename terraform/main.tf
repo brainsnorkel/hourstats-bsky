@@ -114,7 +114,7 @@ resource "aws_lambda_function" "hourstats" {
   filename         = "hourstats.zip"
   function_name    = var.function_name
   role            = aws_iam_role.lambda_role.arn
-  handler         = "main"
+  handler         = "bootstrap"
   source_code_hash = filebase64sha256("hourstats.zip")
   runtime         = "provided.al2"
   timeout         = 900  # 15 minutes
@@ -171,6 +171,7 @@ resource "aws_ssm_parameter" "bluesky_handle" {
   name  = "/hourstats/bluesky/handle"
   type  = "String"
   value = "hourstats.bsky.social"
+  overwrite = true
 
   tags = {
     Name        = "hourstats-bluesky-handle"
@@ -182,6 +183,7 @@ resource "aws_ssm_parameter" "bluesky_password" {
   name  = "/hourstats/bluesky/password"
   type  = "SecureString"
   value = "your-app-password-here"
+  overwrite = true
 
   tags = {
     Name        = "hourstats-bluesky-password"
@@ -193,6 +195,7 @@ resource "aws_ssm_parameter" "analysis_interval" {
   name  = "/hourstats/settings/analysis_interval_minutes"
   type  = "String"
   value = "30"
+  overwrite = true
 
   tags = {
     Name        = "hourstats-analysis-interval"
@@ -204,6 +207,7 @@ resource "aws_ssm_parameter" "top_posts_count" {
   name  = "/hourstats/settings/top_posts_count"
   type  = "String"
   value = "5"
+  overwrite = true
 
   tags = {
     Name        = "hourstats-top-posts-count"
@@ -215,6 +219,7 @@ resource "aws_ssm_parameter" "min_engagement_score" {
   name  = "/hourstats/settings/min_engagement_score"
   type  = "String"
   value = "10"
+  overwrite = true
 
   tags = {
     Name        = "hourstats-min-engagement-score"
@@ -226,6 +231,7 @@ resource "aws_ssm_parameter" "dry_run" {
   name  = "/hourstats/settings/dry_run"
   type  = "String"
   value = "false"
+  overwrite = true
 
   tags = {
     Name        = "hourstats-dry-run"

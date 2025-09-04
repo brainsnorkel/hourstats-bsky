@@ -7,7 +7,6 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/config"
-	"github.com/christophergentle/hourstats-bsky/internal/scheduler"
 )
 
 // AnalysisResult represents the result of a trend analysis

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strconv"
 
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/christophergentle/hourstats-bsky/internal/config"
 )
@@ -16,7 +16,7 @@ type SSMConfigLoader struct {
 
 // NewSSMConfigLoader creates a new SSM configuration loader
 func NewSSMConfigLoader(ctx context.Context) (*SSMConfigLoader, error) {
-	cfg, err := config.LoadDefaultConfig(ctx)
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -39,9 +39,10 @@ func (s *SSMConfigLoader) LoadConfig(ctx context.Context) (*config.Config, error
 	}
 
 	// Get parameters from SSM
+	withDecryption := true
 	result, err := s.client.GetParameters(ctx, &ssm.GetParametersInput{
 		Names:          parameterNames,
-		WithDecryption: true,
+		WithDecryption: &withDecryption,
 	})
 	if err != nil {
 		return nil, err
@@ -92,9 +93,9 @@ func (s *SSMConfigLoader) LoadConfig(ctx context.Context) (*config.Config, error
 		},
 		Settings: config.SettingsConfig{
 			AnalysisIntervalMinutes: analysisIntervalMinutes,
-			TopPostsCount:          topPostsCount,
-			MinEngagementScore:     minEngagementScore,
-			DryRun:                 dryRun,
+			TopPostsCount:           topPostsCount,
+			MinEngagementScore:      minEngagementScore,
+			DryRun:                  dryRun,
 		},
 	}, nil
 }
@@ -104,12 +105,12 @@ func parseIntWithDefault(value string, defaultValue int) int {
 	if value == "" {
 		return defaultValue
 	}
-	
+
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return defaultValue
 	}
-	
+
 	return parsed
 }
 
@@ -118,12 +119,12 @@ func parseBoolWithDefault(value string, defaultValue bool) bool {
 	if value == "" {
 		return defaultValue
 	}
-	
+
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		return defaultValue
 	}
-	
+
 	return parsed
 }
 
