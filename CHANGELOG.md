@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enhanced emotions list**: 10+ emotions per category (positive, negative, neutral) with intensity-based selection
 - **Keyword-based sentiment fallback**: Additional sentiment analysis using keyword matching for better accuracy
 - **Sentiment distribution logging**: Debug logging shows count and percentage of each sentiment type
+- **Adult content filtering**: Uses Bluesky's official moderation labels to filter out inappropriate content
+- **Bluesky moderation integration**: Subscribes to official Bluesky moderation labeler for content filtering
 
 ### Changed
 - Analysis interval changed from hours to minutes for more frequent updates
@@ -56,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quote posting functionality (PostQuotePost function)
 - Quote post integration from scheduler
 - Dual posting format (reverted to single summary post only)
+- Custom adult content filtering (replaced with Bluesky official labels)
 
 ### Fixed
 - Fixed AT Protocol URI to web URL conversion for proper link rendering
@@ -67,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed post text extraction from AT Protocol records
 - Fixed datetime parameter issues with search API (removed problematic 'since' parameter)
 - Fixed client-side time filtering for accurate post selection
+- Fixed quote posting removal syntax errors
+- Fixed adult content filtering to use official Bluesky moderation labels
 - Fixed duplicate posts appearing in summaries (added deduplication by URI)
 - Fixed post truncation to ensure all 5 posts are displayed properly
 - Fixed API rate limiting issues with retry logic and reduced post limits
