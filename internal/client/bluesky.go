@@ -234,23 +234,8 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 
 	// Check if we need to truncate, but try to keep all 5 posts
 	if len([]rune(summaryText)) > 300 {
-		// If truncation is needed, try a more aggressive approach
-		// Remove the sentiment summary first to save space
-		summaryText = fmt.Sprintf("Top five posts in the last %s\n\n", timePeriod)
-
-		// Add posts with even more concise format
-		for i, _ := range posts {
-			if i >= 5 {
-				break
-			}
-			// Format as @handle with clickable link to the post
-			summaryText += fmt.Sprintf("%d. @%s\n", i+1, posts[i].Author)
-		}
-
 		// If still too long, truncate but preserve the structure
-		if len([]rune(summaryText)) > 300 {
-			summaryText = truncateText(summaryText, 300)
-		}
+		summaryText = truncateText(summaryText, 300)
 	}
 
 	// Post to Bluesky
@@ -320,21 +305,22 @@ func createLinkFacets(text string, posts []Post) []*bsky.RichtextFacet {
 	var facets []*bsky.RichtextFacet
 
 	// Find @handle patterns and make them clickable links to the posts
-	handleRegex := regexp.MustCompile(`@([a-zA-Z0-9._-]+\.bsky\.social)`)
+	// Match any handle format (bsky.social, custom domains, etc.)
+	handleRegex := regexp.MustCompile(`@([a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)`)
 	matches := handleRegex.FindAllStringSubmatchIndex(text, -1)
 
 	for i, match := range matches {
 		if i >= len(posts) || i >= 5 { // Safety check
 			break
 		}
-		
+
 		start, end := match[0], match[1]
-		
+
 		// Get the corresponding post URL
 		postIndex := i
 		if postIndex < len(posts) {
 			webURL := convertATURItoWebURL(posts[postIndex].URI)
-			
+
 			facet := &bsky.RichtextFacet{
 				Index: &bsky.RichtextFacet_ByteSlice{
 					ByteStart: int64(start),
@@ -353,4 +339,57 @@ func createLinkFacets(text string, posts []Post) []*bsky.RichtextFacet {
 	}
 
 	return facets
+}
+
+// PostQuotePost creates a quote post of the top-ranked post
+func (c *BlueskyClient) PostQuotePost(topPost Post, analysisIntervalMinutes int) error {
+	ctx := context.Background()
+
+	// Format time period
+	var timePeriod string
+	if analysisIntervalMinutes >= 60 {
+		timePeriod = "1 hour"
+	} else {
+		timePeriod = fmt.Sprintf("%d minutes", analysisIntervalMinutes)
+	}
+
+	// Create the quote post text
+	quoteText := fmt.Sprintf("Top post from: %s", timePeriod)
+
+	// Truncate the original post text if it's too long
+	originalText := topPost.Text
+	if len([]rune(originalText)) > 200 {
+		originalText = truncateText(originalText, 200) + "..."
+	}
+
+	// Add the quoted content
+	quoteText += fmt.Sprintf("\n\n\"%s\"", originalText)
+
+	// Add author info
+	quoteText += fmt.Sprintf("\n\n— @%s", topPost.Author)
+
+	// Truncate to fit Bluesky's 300 grapheme limit
+	if len([]rune(quoteText)) > 300 {
+		quoteText = truncateText(quoteText, 300)
+	}
+
+	// Create the quote post
+	postRecord := &bsky.FeedPost{
+		Text:      quoteText,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	// Post the record
+	_, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+		Repo:       c.handle,
+		Collection: "app.bsky.feed.post",
+		Record:     &util.LexiconTypeDecoder{Val: postRecord},
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to post quote post to Bluesky: %w", err)
+	}
+
+	log.Printf("Successfully posted quote post of top post by @%s", topPost.Author)
+	return nil
 }

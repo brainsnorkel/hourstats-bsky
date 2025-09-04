@@ -87,6 +87,15 @@ func (s *Scheduler) runAnalysis() error {
 	}
 
 	log.Printf("Successfully posted trending summary with %d posts", len(clientTopPosts))
+
+	// Post a quote of the top post
+	if len(clientTopPosts) > 0 {
+		if err := s.client.PostQuotePost(clientTopPosts[0], s.config.Settings.AnalysisIntervalMinutes); err != nil {
+			log.Printf("Warning: Failed to post quote post: %v", err)
+			// Don't return error here, just log it as a warning
+		}
+	}
+
 	return nil
 }
 
@@ -143,30 +152,51 @@ func (s *Scheduler) CalculateOverallSentiment(posts []analyzer.AnalyzedPost) str
 		}
 	}
 
-	// Determine overall sentiment
+	// Log the sentiment distribution for debugging
+	log.Printf("Sentiment distribution: %d positive, %d negative, %d neutral", positiveCount, negativeCount, neutralCount)
+
+	// Determine overall sentiment based on which category has the most posts
 	total := len(posts)
-	if positiveCount > total/2 {
-		return s.getEmotionFromSentiment("positive")
-	} else if negativeCount > total/2 {
-		return s.getEmotionFromSentiment("negative")
+	if positiveCount > negativeCount && positiveCount > neutralCount {
+		return s.getEmotionFromSentiment("positive", positiveCount, total)
+	} else if negativeCount > positiveCount && negativeCount > neutralCount {
+		return s.getEmotionFromSentiment("negative", negativeCount, total)
 	} else {
-		return s.getEmotionFromSentiment("neutral")
+		return s.getEmotionFromSentiment("neutral", neutralCount, total)
 	}
 }
 
-func (s *Scheduler) getEmotionFromSentiment(sentiment string) string {
+func (s *Scheduler) getEmotionFromSentiment(sentiment string, count int, total int) string {
 	emotions := map[string][]string{
-		"positive": {"passionate", "enthusiastic", "optimistic", "confident", "inspired"},
-		"negative": {"anxious", "pessimistic", "uncertain", "confused", "overwhelmed"},
-		"neutral":  {"contemplative", "analytical", "curious", "observant", "reflective"},
+		"positive": {"passionate", "enthusiastic", "optimistic", "confident", "inspired", "excited", "hopeful", "energetic", "upbeat", "cheerful"},
+		"negative": {"anxious", "pessimistic", "uncertain", "confused", "overwhelmed", "worried", "frustrated", "disappointed", "concerned", "troubled"},
+		"neutral":  {"contemplative", "analytical", "curious", "observant", "reflective", "thoughtful", "measured", "balanced", "calm", "steady"},
 	}
 
-	// For now, return the first emotion in each category
-	// In a more sophisticated implementation, we could randomize or use more context
-	if emotionList, exists := emotions[sentiment]; exists && len(emotionList) > 0 {
-		return emotionList[0]
+	// Calculate the percentage of posts with this sentiment
+	percentage := float64(count) / float64(total) * 100
+
+	// Select emotion based on intensity (percentage of posts)
+	emotionList, exists := emotions[sentiment]
+	if !exists || len(emotionList) == 0 {
+		return "neutral"
 	}
-	return "neutral"
+
+	// Choose emotion based on how dominant the sentiment is
+	var selectedEmotion string
+	if percentage >= 80 {
+		// Very dominant sentiment - use strong emotions
+		selectedEmotion = emotionList[0]
+	} else if percentage >= 60 {
+		// Moderately dominant - use middle emotions
+		selectedEmotion = emotionList[len(emotionList)/2]
+	} else {
+		// Less dominant - use milder emotions
+		selectedEmotion = emotionList[len(emotionList)-1]
+	}
+
+	log.Printf("Selected emotion '%s' for %s sentiment (%d/%d posts, %.1f%%)", selectedEmotion, sentiment, count, total, percentage)
+	return selectedEmotion
 }
 
 func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []analyzer.AnalyzedPost {
