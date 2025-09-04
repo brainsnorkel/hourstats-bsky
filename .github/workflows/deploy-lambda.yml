@@ -164,16 +164,17 @@ jobs:
 
       - name: Test Lambda Function
         run: |
+          echo '{"source":"deployment-test","time":"2024-01-01T00:00:00Z"}' > payload.json
           aws lambda invoke \
             --function-name ${{ env.FUNCTION_NAME }} \
             --region ${{ env.AWS_REGION }} \
-            --payload '{"source":"deployment-test","time":"2024-01-01T00:00:00Z"}' \
+            --payload file://payload.json \
             response.json
           
           echo "Lambda response:"
           cat response.json
           echo ""
-          rm -f response.json
+          rm -f payload.json response.json
 
   notify:
     needs: [test, build, deploy]
