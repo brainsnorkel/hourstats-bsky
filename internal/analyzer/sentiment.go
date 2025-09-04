@@ -9,20 +9,20 @@ import (
 
 type AnalyzedPost struct {
 	Post
-	Sentiment    string
-	SentimentScore float64
-	Topics       []string
+	Sentiment       string
+	SentimentScore  float64
+	Topics          []string
 	EngagementScore float64
 }
 
 // Post represents a social media post for analysis
 type Post struct {
-	URI      string
-	Text     string
-	Author   string
-	Likes    int
-	Reposts  int
-	Replies  int
+	URI       string
+	Text      string
+	Author    string
+	Likes     int
+	Reposts   int
+	Replies   int
 	CreatedAt string
 }
 
@@ -53,28 +53,28 @@ func (sa *SentimentAnalyzer) AnalyzePosts(posts []Post) ([]AnalyzedPost, error) 
 func (sa *SentimentAnalyzer) analyzePost(post Post) (AnalyzedPost, error) {
 	// Analyze sentiment
 	sentiment := sa.analyzer.PolarityScores(post.Text)
-	
+
 	// Determine sentiment category
 	sentimentCategory := sa.categorizeSentiment(sentiment)
-	
+
 	// Extract topics (simple keyword extraction for now)
 	topics := sa.extractTopics(post.Text)
-	
+
 	// Calculate engagement score
 	engagementScore := sa.calculateEngagementScore(post, sentiment.Compound)
-	
+
 	return AnalyzedPost{
-		Post:           post,
-		Sentiment:      sentimentCategory,
-		SentimentScore: sentiment.Compound,
-		Topics:         topics,
+		Post:            post,
+		Sentiment:       sentimentCategory,
+		SentimentScore:  sentiment.Compound,
+		Topics:          topics,
 		EngagementScore: engagementScore,
 	}, nil
 }
 
 func (sa *SentimentAnalyzer) categorizeSentiment(sentiment govader.Sentiment) string {
 	compound := sentiment.Compound
-	
+
 	if compound >= 0.3 {
 		return "positive"
 	} else if compound <= -0.3 {
@@ -87,26 +87,26 @@ func (sa *SentimentAnalyzer) extractTopics(text string) []string {
 	// Simple topic extraction based on hashtags and common keywords
 	// In a more sophisticated implementation, we'd use NLP libraries
 	// or machine learning models for better topic extraction
-	
+
 	// Clean the text and split into words
 	cleaned := strings.ToLower(text)
 	words := strings.Fields(cleaned)
 	var topics []string
-	
+
 	// Extract common topic keywords (simplified)
 	topicKeywords := map[string]string{
-		"tech": "technology",
-		"ai": "artificial intelligence",
-		"crypto": "cryptocurrency",
-		"climate": "climate change",
+		"tech":     "technology",
+		"ai":       "artificial intelligence",
+		"crypto":   "cryptocurrency",
+		"climate":  "climate change",
 		"politics": "politics",
-		"news": "news",
-		"music": "music",
-		"art": "art",
-		"science": "science",
-		"health": "health",
+		"news":     "news",
+		"music":    "music",
+		"art":      "art",
+		"science":  "science",
+		"health":   "health",
 	}
-	
+
 	// Extract hashtags and their keyword equivalents
 	for _, word := range words {
 		if strings.HasPrefix(word, "#") {
@@ -119,7 +119,7 @@ func (sa *SentimentAnalyzer) extractTopics(text string) []string {
 			}
 		}
 	}
-	
+
 	for _, word := range words {
 		// Remove punctuation from the end of words
 		cleanWord := strings.TrimRight(word, ".,!?;:")
@@ -127,7 +127,7 @@ func (sa *SentimentAnalyzer) extractTopics(text string) []string {
 			topics = append(topics, topic)
 		}
 	}
-	
+
 	// Remove duplicates
 	seen := make(map[string]bool)
 	var uniqueTopics []string
@@ -138,20 +138,20 @@ func (sa *SentimentAnalyzer) extractTopics(text string) []string {
 		}
 	}
 	topics = uniqueTopics
-	
+
 	return topics
 }
 
 func (sa *SentimentAnalyzer) calculateEngagementScore(post Post, sentimentScore float64) float64 {
 	// Engagement score calculation based on replies + likes + reposts
 	// This matches the README specification for ranking posts
-	
+
 	baseScore := float64(post.Replies + post.Likes + post.Reposts)
-	
+
 	// Boost positive sentiment posts slightly
 	if sentimentScore > 0 {
 		baseScore *= 1.1
 	}
-	
+
 	return baseScore
 }
