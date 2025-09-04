@@ -182,8 +182,8 @@ resource "aws_ssm_parameter" "bluesky_handle" {
 resource "aws_ssm_parameter" "bluesky_password" {
   name  = "/hourstats/bluesky/password"
   type  = "SecureString"
-  value = "your-app-password-here"
-  overwrite = true
+  value = "SET-MANUALLY"  # This should be set manually via AWS CLI or console
+  overwrite = false       # Don't overwrite manually set values
 
   tags = {
     Name        = "hourstats-bluesky-password"
