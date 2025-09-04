@@ -49,3 +49,8 @@ Thumbs.db
 config.yaml
 config.json
 secrets.yaml
+
+# Environment files
+.env
+.env.local
+.env.production

@@ -65,32 +65,47 @@ cd trendjournal
 make deps
 ```
 
-3. Set up environment variables:
+3. Set up configuration (first time only):
+```bash
+make setup
+```
+
+4. Edit `config.yaml` with your Bluesky credentials:
+```yaml
+bluesky:
+  handle: "your-handle.bsky.social"
+  password: "your-app-password"
+```
+
+5. Run the application:
+```bash
+make run
+```
+
+### Alternative: Environment Variables
+
+You can also use environment variables instead of the config file:
 ```bash
 export BLUESKY_HANDLE="your-handle.bsky.social"
 export BLUESKY_PASSWORD="your-app-password"
-```
-
-4. Run the application:
-```bash
 make run
 ```
 
 ### Configuration
 
-Copy `config.example.yaml` to `config.yaml` and customize the settings:
+The bot uses `config.yaml` for configuration. Run `make setup` to create it from the template.
 
-```yaml
-bluesky:
-  handle: "your-handle.bsky.social"
-  password: "your-app-password"
-  
-settings:
-  analysis_interval_hours: 1
-  top_posts_count: 5
-  min_engagement_score: 10
-  dry_run: true
-```
+**Required settings:**
+- `bluesky.handle`: Your Bluesky handle (e.g., "yourname.bsky.social")
+- `bluesky.password`: Your Bluesky app password (not your regular password)
+
+**Optional settings:**
+- `settings.analysis_interval_hours`: How often to run analysis (default: 1)
+- `settings.top_posts_count`: Number of top posts to include (default: 5)
+- `settings.min_engagement_score`: Minimum engagement to consider trending (default: 10)
+- `settings.dry_run`: Test mode without posting (default: true)
+
+**Security:** The `config.yaml` file contains your credentials and is git-ignored for safety.
 
 ### Testing
 
