@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Post numbering (1., 2., etc.) for cleaner appearance
 - Engagement breakdown (now shows total engagement score)
 - Fixed timestamp from post header
+- Quote posting functionality (PostQuotePost function)
+- Quote post integration from scheduler
+- Dual posting format (reverted to single summary post only)
 
 ### Fixed
 - Fixed AT Protocol URI to web URL conversion for proper link rendering
