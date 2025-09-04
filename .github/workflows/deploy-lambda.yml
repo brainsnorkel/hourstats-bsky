@@ -169,6 +169,7 @@ jobs:
             --function-name ${{ env.FUNCTION_NAME }} \
             --region ${{ env.AWS_REGION }} \
             --payload file://payload.json \
+            --cli-binary-format raw-in-base64-out \
             response.json \
             --cli-read-timeout 0 \
             --cli-connect-timeout 60
