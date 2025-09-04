@@ -4,9 +4,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/christophergentle/trendjournal/internal/analyzer"
-	"github.com/christophergentle/trendjournal/internal/client"
-	"github.com/christophergentle/trendjournal/internal/config"
+	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
+	"github.com/christophergentle/hourstats-bsky/internal/client"
+	"github.com/christophergentle/hourstats-bsky/internal/config"
 )
 
 type Scheduler struct {
@@ -90,6 +90,7 @@ func (s *Scheduler) runAnalysis() error {
 
 	return nil
 }
+
 func (s *Scheduler) convertToAnalyzerPosts(clientPosts []client.Post) []analyzer.Post {
 	var analyzerPosts []analyzer.Post
 	for _, post := range clientPosts {
@@ -117,6 +118,7 @@ func (s *Scheduler) convertToClientPosts(analyzedPosts []analyzer.AnalyzedPost) 
 			Reposts:   post.Reposts,
 			Replies:   post.Replies,
 			CreatedAt: post.CreatedAt,
+			Sentiment: post.Sentiment,
 		})
 	}
 	return clientPosts
@@ -194,12 +196,30 @@ func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []anal
 	// Sort by engagement score (replies + likes + reposts + sentiment boost)
 	// This matches the README specification for ranking posts
 
+	// Log engagement scores for debugging
+	log.Printf("Engagement scores before sorting:")
+	for i, post := range posts {
+		if i < 10 { // Log first 10 posts
+			log.Printf("  @%s: likes=%d, reposts=%d, replies=%d, engagement_score=%.2f", 
+				post.Author, post.Likes, post.Reposts, post.Replies, post.EngagementScore)
+		}
+	}
+
 	// Sort posts by engagement score in descending order
 	for i := 0; i < len(posts)-1; i++ {
 		for j := i + 1; j < len(posts); j++ {
 			if posts[i].EngagementScore < posts[j].EngagementScore {
 				posts[i], posts[j] = posts[j], posts[i]
 			}
+		}
+	}
+
+	// Log top posts after sorting
+	log.Printf("Top %d posts after sorting by engagement score:", count)
+	for i, post := range posts {
+		if i < count {
+			log.Printf("  %d. @%s: likes=%d, reposts=%d, replies=%d, engagement_score=%.2f", 
+				i+1, post.Author, post.Likes, post.Reposts, post.Replies, post.EngagementScore)
 		}
 	}
 

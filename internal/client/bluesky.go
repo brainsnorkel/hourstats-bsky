@@ -22,6 +22,7 @@ type Post struct {
 	Reposts   int
 	Replies   int
 	CreatedAt string
+	Sentiment string // "positive", "negative", or "neutral"
 }
 
 type BlueskyClient struct {
@@ -138,11 +139,8 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		}
 		cursor = *searchResult.Cursor
 
-		// Safety limit to prevent infinite loops and API rate limiting
-		if totalRetrieved > 2000 {
-			log.Printf("Reached safety limit of 2,000 posts, stopping pagination to avoid rate limits")
-			break
-		}
+		// Continue pagination until we've collected all posts from the time period
+		// The time-based cutoff and cursor pagination will naturally limit collection
 	}
 
 	log.Printf("Retrieved %d total public posts from Bluesky search", len(allPosts))
@@ -237,9 +235,23 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 		if i >= 5 { // Limit to top 5
 			break
 		}
-		// Format as @handle with engagement score on the right
+		// Format as @handle with engagement score and sentiment indicator
 		engagementScore := posts[i].Likes + posts[i].Reposts + posts[i].Replies
-		summaryText += fmt.Sprintf("%d. @%s (%d)\n", i+1, posts[i].Author, engagementScore)
+
+		// Determine sentiment indicator
+		var sentimentIndicator string
+		switch posts[i].Sentiment {
+		case "positive":
+			sentimentIndicator = "+"
+		case "negative":
+			sentimentIndicator = "-"
+		case "neutral":
+			sentimentIndicator = "x"
+		default:
+			sentimentIndicator = "x" // Default to neutral if unknown
+		}
+
+		summaryText += fmt.Sprintf("%d. @%s (%d) %s\n", i+1, posts[i].Author, engagementScore, sentimentIndicator)
 	}
 
 	// Check if we need to truncate, but try to keep all 5 posts

@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 
-	"github.com/christophergentle/trendjournal/internal/config"
-	"github.com/christophergentle/trendjournal/internal/scheduler"
+	"github.com/christophergentle/hourstats-bsky/internal/config"
+	"github.com/christophergentle/hourstats-bsky/internal/scheduler"
 )
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
 	// Initialize and start the scheduler
 	scheduler := scheduler.New(cfg.Bluesky.Handle, cfg.Bluesky.Password, cfg)
 
-	log.Printf("Starting TrendJournal bot...")
+	log.Printf("Starting Bluesky HourStats bot...")
 	log.Printf("Handle: %s", cfg.Bluesky.Handle)
 	log.Printf("Dry run mode: %v", cfg.Settings.DryRun)
 
