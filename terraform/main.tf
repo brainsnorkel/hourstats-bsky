@@ -58,10 +58,10 @@ resource "aws_iam_role" "lambda_role" {
   }
 }
 
-# IAM Policy for SSM Parameter Store
+# IAM Policy for SSM Parameter Store and DynamoDB
 resource "aws_iam_policy" "lambda_ssm_policy" {
   name        = "${var.function_name}-lambda-ssm-policy"
-  description = "Policy for Lambda to access SSM Parameter Store"
+  description = "Policy for Lambda to access SSM Parameter Store and DynamoDB"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -75,6 +75,21 @@ resource "aws_iam_policy" "lambda_ssm_policy" {
         ]
         Resource = [
           "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/hourstats/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+        Resource = [
+          aws_dynamodb_table.hourstats_state.arn,
+          "${aws_dynamodb_table.hourstats_state.arn}/index/*"
         ]
       }
     ]
@@ -134,6 +149,147 @@ resource "aws_lambda_function" "hourstats" {
 
   tags = {
     Name        = var.function_name
+    Environment = "production"
+  }
+}
+
+# Individual Lambda Functions for Multi-Lambda Architecture
+resource "aws_lambda_function" "orchestrator" {
+  filename         = "lambda-orchestrator.zip"
+  function_name    = "${var.function_name}-orchestrator"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "bootstrap"
+  source_code_hash = filebase64sha256("lambda-orchestrator.zip")
+  runtime         = "provided.al2"
+  timeout         = 60   # 1 minute
+  memory_size     = 128  # 128MB
+
+  environment {
+    variables = {
+      LOG_LEVEL = "INFO"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_ssm,
+  ]
+
+  tags = {
+    Name        = "${var.function_name}-orchestrator"
+    Environment = "production"
+  }
+}
+
+resource "aws_lambda_function" "fetcher" {
+  filename         = "lambda-fetcher.zip"
+  function_name    = "${var.function_name}-fetcher"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "bootstrap"
+  source_code_hash = filebase64sha256("lambda-fetcher.zip")
+  runtime         = "provided.al2"
+  timeout         = 300  # 5 minutes
+  memory_size     = 256  # 256MB
+
+  environment {
+    variables = {
+      LOG_LEVEL = "INFO"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_ssm,
+  ]
+
+  tags = {
+    Name        = "${var.function_name}-fetcher"
+    Environment = "production"
+  }
+}
+
+resource "aws_lambda_function" "analyzer" {
+  filename         = "lambda-analyzer.zip"
+  function_name    = "${var.function_name}-analyzer"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "bootstrap"
+  source_code_hash = filebase64sha256("lambda-analyzer.zip")
+  runtime         = "provided.al2"
+  timeout         = 180  # 3 minutes
+  memory_size     = 256  # 256MB
+
+  environment {
+    variables = {
+      LOG_LEVEL = "INFO"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_ssm,
+  ]
+
+  tags = {
+    Name        = "${var.function_name}-analyzer"
+    Environment = "production"
+  }
+}
+
+resource "aws_lambda_function" "aggregator" {
+  filename         = "lambda-aggregator.zip"
+  function_name    = "${var.function_name}-aggregator"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "bootstrap"
+  source_code_hash = filebase64sha256("lambda-aggregator.zip")
+  runtime         = "provided.al2"
+  timeout         = 60   # 1 minute
+  memory_size     = 128  # 128MB
+
+  environment {
+    variables = {
+      LOG_LEVEL = "INFO"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_ssm,
+  ]
+
+  tags = {
+    Name        = "${var.function_name}-aggregator"
+    Environment = "production"
+  }
+}
+
+resource "aws_lambda_function" "poster" {
+  filename         = "lambda-poster.zip"
+  function_name    = "${var.function_name}-poster"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "bootstrap"
+  source_code_hash = filebase64sha256("lambda-poster.zip")
+  runtime         = "provided.al2"
+  timeout         = 60   # 1 minute
+  memory_size     = 128  # 128MB
+
+  environment {
+    variables = {
+      LOG_LEVEL = "INFO"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_ssm,
+  ]
+
+  tags = {
+    Name        = "${var.function_name}-poster"
     Environment = "production"
   }
 }

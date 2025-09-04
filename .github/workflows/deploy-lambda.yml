@@ -66,12 +66,26 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Build Lambda function
+      - name: Build Lambda functions
         run: |
+          # Build main Lambda function
           cd cmd/lambda
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
           zip hourstats.zip bootstrap
           mv hourstats.zip ../../terraform/
+          
+          # Build individual Lambda functions
+          for dir in cmd/lambda-*; do
+            if [ -d "$dir" ]; then
+              func_name=$(basename "$dir")
+              echo "Building $func_name..."
+              cd "$dir"
+              GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
+              zip "${func_name}.zip" bootstrap
+              mv "${func_name}.zip" ../../terraform/
+              cd ../..
+            fi
+          done
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
