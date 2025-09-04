@@ -1,6 +1,10 @@
 # TrendJournal Makefile
 
-.PHONY: build run test clean deps install
+.PHONY: build run test clean deps install setup
+
+# Setup the application (create config.yaml)
+setup:
+	@./setup.sh
 
 # Build the application
 build:
@@ -42,6 +46,7 @@ lint:
 # Help
 help:
 	@echo "Available targets:"
+	@echo "  setup     - Set up configuration file (first time setup)"
 	@echo "  build     - Build the application"
 	@echo "  run       - Run the application locally"
 	@echo "  test      - Run tests"
