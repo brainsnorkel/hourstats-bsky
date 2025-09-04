@@ -164,7 +164,16 @@ jobs:
 
       - name: Test Lambda Function
         run: |
-          # Use a test payload that might complete faster (dry run mode)
+          # Set dry run mode to make Lambda complete faster
+          echo "Setting Lambda to dry run mode for faster testing..."
+          aws ssm put-parameter \
+            --name "/hourstats/settings/dry_run" \
+            --value "true" \
+            --type "String" \
+            --overwrite \
+            --region ${{ env.AWS_REGION }}
+          
+          # Use a test payload
           echo "{\"source\":\"aws.events\",\"time\":\"2024-01-01T00:00:00Z\"}" > payload.json
           
           # Start Lambda invocation in background
@@ -212,6 +221,15 @@ jobs:
           
           # Clean up
           rm -f payload.json response.json
+          
+          # Restore dry run setting to false for production
+          echo "Restoring dry run setting to false for production..."
+          aws ssm put-parameter \
+            --name "/hourstats/settings/dry_run" \
+            --value "false" \
+            --type "String" \
+            --overwrite \
+            --region ${{ env.AWS_REGION }}
 
   notify:
     needs: [test, build, deploy]
