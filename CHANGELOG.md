@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dynamic time formatting in posts ("X minutes" vs "1 hour")
 - Actual post text extraction from AT Protocol records
 - Engagement score display (total of replies + likes + reposts)
+- **Emotion-based sentiment analysis**: Counts positive/negative/neutral posts to determine overall sentiment
+- **Enhanced emotions list**: 10+ emotions per category (positive, negative, neutral) with intensity-based selection
+- **Keyword-based sentiment fallback**: Additional sentiment analysis using keyword matching for better accuracy
+- **Sentiment distribution logging**: Debug logging shows count and percentage of each sentiment type
 
 ### Changed
 - Analysis interval changed from hours to minutes for more frequent updates
@@ -38,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Post header now dynamically shows time period ("Top five posts in the last X minutes/1 hour")
 - Sentiment analysis now uses actual post content instead of placeholder text
 - Rich text facets implemented according to Bluesky documentation for proper link rendering
+- **Sentiment analysis approach**: Now counts positive/negative/neutral posts instead of averaging scores
+- **Emotion selection**: Intensity-based emotion selection based on sentiment dominance percentage
+- **Sentiment thresholds**: Adjusted VADER thresholds (0.2/-0.2) for better emotion detection
 
 ### Deprecated
 - N/A
@@ -61,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed post truncation to ensure all 5 posts are displayed properly
 - Fixed API rate limiting issues with retry logic and reduced post limits
 - Fixed time interval display to show correct minutes instead of hours
+- **Fixed legacy code issues**: Removed old post format fallback code that was causing "Top five posts" format
+- **Fixed sentiment analysis accuracy**: Combined VADER and keyword-based analysis for better emotion detection
+- **Fixed emotion selection logic**: Now properly selects emotions based on sentiment dominance rather than simple majority
 
 ### Security
 - Added secure credential management with git-ignored config files

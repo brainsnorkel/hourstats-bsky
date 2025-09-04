@@ -51,11 +51,19 @@ func (sa *SentimentAnalyzer) AnalyzePosts(posts []Post) ([]AnalyzedPost, error) 
 }
 
 func (sa *SentimentAnalyzer) analyzePost(post Post) (AnalyzedPost, error) {
-	// Analyze sentiment
+	// Analyze sentiment using VADER
 	sentiment := sa.analyzer.PolarityScores(post.Text)
 
-	// Determine sentiment category
+	// Also do keyword-based sentiment analysis as a fallback
+	keywordSentiment := sa.analyzeKeywordSentiment(post.Text)
+
+	// Determine sentiment category (combine both approaches)
 	sentimentCategory := sa.categorizeSentiment(sentiment)
+
+	// If VADER is neutral but keywords suggest otherwise, use keyword sentiment
+	if sentimentCategory == "neutral" && keywordSentiment != "neutral" {
+		sentimentCategory = keywordSentiment
+	}
 
 	// Extract topics (simple keyword extraction for now)
 	topics := sa.extractTopics(post.Text)
@@ -75,9 +83,10 @@ func (sa *SentimentAnalyzer) analyzePost(post Post) (AnalyzedPost, error) {
 func (sa *SentimentAnalyzer) categorizeSentiment(sentiment govader.Sentiment) string {
 	compound := sentiment.Compound
 
-	if compound >= 0.3 {
+	// Use more nuanced thresholds for better emotion detection
+	if compound >= 0.2 {
 		return "positive"
-	} else if compound <= -0.3 {
+	} else if compound <= -0.2 {
 		return "negative"
 	}
 	return "neutral"
@@ -154,4 +163,39 @@ func (sa *SentimentAnalyzer) calculateEngagementScore(post Post, sentimentScore 
 	}
 
 	return baseScore
+}
+
+// analyzeKeywordSentiment performs simple keyword-based sentiment analysis
+func (sa *SentimentAnalyzer) analyzeKeywordSentiment(text string) string {
+	text = strings.ToLower(text)
+
+	positiveWords := []string{
+		"great", "awesome", "amazing", "wonderful", "fantastic", "excellent", "love", "loved", "best", "good", "nice", "happy", "excited", "thrilled", "brilliant", "perfect", "incredible", "outstanding", "superb", "marvelous", "delighted", "pleased", "satisfied", "impressed", "grateful", "blessed", "fortunate", "lucky", "successful", "victory", "win", "achievement", "progress", "improvement", "breakthrough", "innovation", "creative", "inspiring", "motivating", "encouraging", "hopeful", "optimistic", "confident", "proud", "celebrate", "cheer", "smile", "laugh", "joy", "fun", "enjoy", "wonderful", "beautiful", "gorgeous", "stunning", "magnificent", "spectacular", "breathtaking", "inspiring", "uplifting", "positive", "upbeat", "cheerful", "bright", "sunny", "warm", "cozy", "comfortable", "peaceful", "calm", "serene", "tranquil", "relaxed", "refreshed", "renewed", "rejuvenated", "energized", "vibrant", "alive", "thriving", "flourishing", "prosperous", "successful", "accomplished", "fulfilled", "content", "satisfied", "grateful", "thankful", "appreciative", "blessed", "fortunate", "lucky", "privileged", "honored", "proud", "accomplished", "achieved", "succeeded", "won", "victory", "triumph", "conquest", "breakthrough", "milestone", "landmark", "record", "best", "top", "peak", "summit", "climax", "pinnacle", "zenith", "acme", "apex", "crown", "jewel", "gem", "treasure", "prize", "reward", "gift", "blessing", "miracle", "wonder", "marvel", "phenomenon", "extraordinary", "exceptional", "remarkable", "notable", "significant", "important", "valuable", "precious", "cherished", "beloved", "adored", "treasured", "esteemed", "respected", "admired", "revered", "worshiped", "idolized", "hero", "champion", "winner", "leader", "pioneer", "trailblazer", "innovator", "creator", "artist", "genius", "master", "expert", "professional", "skilled", "talented", "gifted", "brilliant", "intelligent", "wise", "smart", "clever", "sharp", "quick", "fast", "efficient", "effective", "productive", "successful", "profitable", "beneficial", "helpful", "useful", "valuable", "worthwhile", "meaningful", "purposeful", "significant", "important", "essential", "crucial", "vital", "critical", "key", "main", "primary", "principal", "chief", "leading", "top", "first", "best", "greatest", "highest", "maximum", "optimal", "perfect", "ideal", "excellent", "outstanding", "superior", "premium", "quality", "high-quality", "top-notch", "first-class", "world-class",
+	}
+
+	negativeWords := []string{
+		"bad", "terrible", "awful", "horrible", "disgusting", "hate", "hated", "worst", "evil", "nasty", "sad", "angry", "mad", "furious", "rage", "frustrated", "annoyed", "irritated", "upset", "disappointed", "devastated", "crushed", "broken", "hurt", "pain", "suffering", "agony", "torment", "torture", "nightmare", "disaster", "catastrophe", "tragedy", "crisis", "emergency", "danger", "threat", "risk", "fear", "afraid", "scared", "terrified", "panic", "anxiety", "worry", "concern", "stress", "pressure", "tension", "strain", "burden", "load", "weight", "heavy", "difficult", "hard", "tough", "challenging", "struggle", "battle", "fight", "war", "conflict", "dispute", "argument", "quarrel", "fight", "brawl", "violence", "aggression", "hostility", "anger", "rage", "fury", "wrath", "indignation", "resentment", "bitterness", "hatred", "loathing", "disgust", "revulsion", "repulsion", "abhorrence", "detestation", "aversion", "antipathy", "hostility", "animosity", "enmity", "malice", "spite", "venom", "poison", "toxic", "harmful", "damaging", "destructive", "ruinous", "devastating", "catastrophic", "tragic", "sad", "sorrowful", "mournful", "melancholy", "depressed", "dejected", "despondent", "gloomy", "bleak", "dark", "dismal", "dreary", "miserable", "wretched", "pitiful", "pathetic", "lamentable", "regrettable", "unfortunate", "unlucky", "cursed", "doomed", "fated", "destined", "inevitable", "unavoidable", "inescapable", "hopeless", "helpless", "powerless", "weak", "feeble", "frail", "fragile", "vulnerable", "exposed", "defenseless", "unprotected", "unsafe", "dangerous", "risky", "hazardous", "perilous", "precarious", "unstable", "shaky", "uncertain", "doubtful", "suspicious", "skeptical", "cynical", "pessimistic", "negative", "downbeat",
+	}
+
+	positiveCount := 0
+	negativeCount := 0
+
+	for _, word := range positiveWords {
+		if strings.Contains(text, word) {
+			positiveCount++
+		}
+	}
+
+	for _, word := range negativeWords {
+		if strings.Contains(text, word) {
+			negativeCount++
+		}
+	}
+
+	if positiveCount > negativeCount {
+		return "positive"
+	} else if negativeCount > positiveCount {
+		return "negative"
+	}
+	return "neutral"
 }
