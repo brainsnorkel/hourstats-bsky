@@ -1,4 +1,4 @@
-module github.com/christophergentle/trendjournal
+module github.com/christophergentle/hourstats-bsky
 
 go 1.25.1
 
