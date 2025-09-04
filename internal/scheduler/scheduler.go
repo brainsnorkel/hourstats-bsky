@@ -6,20 +6,23 @@ import (
 
 	"github.com/christophergentle/trendjournal/internal/analyzer"
 	"github.com/christophergentle/trendjournal/internal/client"
+	"github.com/christophergentle/trendjournal/internal/config"
 )
 
 type Scheduler struct {
 	client   *client.BlueskyClient
 	analyzer *analyzer.SentimentAnalyzer
+	config   *config.Config
 }
 
-func New(handle, password string) *Scheduler {
+func New(handle, password string, cfg *config.Config) *Scheduler {
 	blueskyClient := client.New(handle, password)
 	sentimentAnalyzer := analyzer.New()
 
 	return &Scheduler{
 		client:   blueskyClient,
 		analyzer: sentimentAnalyzer,
+		config:   cfg,
 	}
 }
 
@@ -55,7 +58,7 @@ func (s *Scheduler) runAnalysis() error {
 	log.Println("Starting trend analysis...")
 
 	// Fetch trending posts
-	clientPosts, err := s.client.GetTrendingPosts()
+	clientPosts, err := s.client.GetTrendingPosts(s.config.Settings.AnalysisIntervalMinutes)
 	if err != nil {
 		return err
 	}
@@ -79,7 +82,7 @@ func (s *Scheduler) runAnalysis() error {
 	clientTopPosts := s.convertToClientPosts(topPosts)
 
 	// Post the results
-	if err := s.client.PostTrendingSummary(clientTopPosts, overallSentiment); err != nil {
+	if err := s.client.PostTrendingSummary(clientTopPosts, overallSentiment, s.config.Settings.AnalysisIntervalMinutes); err != nil {
 		return err
 	}
 

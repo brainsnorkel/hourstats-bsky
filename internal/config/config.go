@@ -19,10 +19,10 @@ type BlueskyConfig struct {
 }
 
 type SettingsConfig struct {
-	AnalysisIntervalHours int  `yaml:"analysis_interval_hours"`
-	TopPostsCount         int  `yaml:"top_posts_count"`
-	MinEngagementScore    int  `yaml:"min_engagement_score"`
-	DryRun                bool `yaml:"dry_run"`
+	AnalysisIntervalMinutes int  `yaml:"analysis_interval_minutes"`
+	TopPostsCount           int  `yaml:"top_posts_count"`
+	MinEngagementScore      int  `yaml:"min_engagement_score"`
+	DryRun                  bool `yaml:"dry_run"`
 }
 
 // LoadConfig loads configuration from config.yaml file
@@ -57,8 +57,8 @@ func LoadConfig() (*Config, error) {
 	}
 	
 	// Set defaults for optional fields
-	if config.Settings.AnalysisIntervalHours == 0 {
-		config.Settings.AnalysisIntervalHours = 1
+	if config.Settings.AnalysisIntervalMinutes == 0 {
+		config.Settings.AnalysisIntervalMinutes = 60 // Default to 1 hour in minutes
 	}
 	if config.Settings.TopPostsCount == 0 {
 		config.Settings.TopPostsCount = 5
@@ -78,10 +78,10 @@ func LoadConfigFromEnv() *Config {
 			Password: os.Getenv("BLUESKY_PASSWORD"),
 		},
 		Settings: SettingsConfig{
-			AnalysisIntervalHours: 1,
-			TopPostsCount:         5,
-			MinEngagementScore:    10,
-			DryRun:                os.Getenv("DRY_RUN") == "true",
+			AnalysisIntervalMinutes: 60, // Default to 1 hour in minutes
+			TopPostsCount:           5,
+			MinEngagementScore:      10,
+			DryRun:                  os.Getenv("DRY_RUN") == "true",
 		},
 	}
 }

@@ -4,25 +4,29 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
+	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/bluesky-social/indigo/atproto/client"
+	"github.com/bluesky-social/indigo/lex/util"
 )
 
 type Post struct {
-	URI      string
-	Text     string
-	Author   string
-	Likes    int
-	Reposts  int
-	Replies  int
+	URI       string
+	Text      string
+	Author    string
+	Likes     int
+	Reposts   int
+	Replies   int
 	CreatedAt string
 }
 
 type BlueskyClient struct {
-	client *client.APIClient
-	handle string
+	client   *client.APIClient
+	handle   string
 	password string
 }
 
@@ -36,7 +40,7 @@ func New(handle, password string) *BlueskyClient {
 
 func (c *BlueskyClient) Authenticate() error {
 	ctx := context.Background()
-	
+
 	// Create an authenticated client
 	authClient, err := client.LoginWithPasswordHost(ctx, "https://bsky.social", c.handle, c.password, "", nil)
 	if err != nil {
@@ -45,80 +49,264 @@ func (c *BlueskyClient) Authenticate() error {
 
 	// Replace the client with the authenticated one
 	c.client = authClient
-	
+
 	return nil
 }
 
-func (c *BlueskyClient) GetTrendingPosts() ([]Post, error) {
+func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, error) {
 	ctx := context.Background()
-	
-	// For now, we'll fetch recent posts from the timeline
-	// In a real implementation, we'd need to implement trending logic
-	// based on engagement metrics over time
-	
-	// Get the timeline
-	timeline, err := bsky.FeedGetTimeline(ctx, c.client, "reverse-chronological", "", 100)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get timeline: %w", err)
-	}
 
-	var posts []Post
-	for _, feedItem := range timeline.Feed {
-		if feedItem.Post != nil {
-			// Handle pointer fields safely
-			var likes, reposts, replies int
-			if feedItem.Post.LikeCount != nil {
-				likes = int(*feedItem.Post.LikeCount)
+	// Calculate the cutoff time for posts to consider
+	cutoffTime := time.Now().Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
+	sinceTime := cutoffTime.UTC().Format(time.RFC3339)
+	log.Printf("Searching all public posts from the last %d minutes (since %s, UTC: %s)", analysisIntervalMinutes, cutoffTime.Format("2006-01-02 15:04:05"), sinceTime)
+
+	// Search for all public posts - we'll do client-side time filtering
+	// Using search API to get all public posts, not just followed accounts
+	// Use pagination to get more posts
+	var allPosts []*bsky.FeedDefs_PostView
+	var cursor string
+	totalRetrieved := 0
+
+	// Paginate through results, stopping when we hit posts older than our analysis window
+	for {
+		// Make the API request with retry logic
+		var searchResult *bsky.FeedSearchPosts_Output
+		var err error
+
+		for retries := 0; retries < 3; retries++ {
+			searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", []string{}, "", "")
+			if err == nil {
+				break
 			}
-			if feedItem.Post.RepostCount != nil {
-				reposts = int(*feedItem.Post.RepostCount)
+
+			// If it's a rate limit error, wait and retry
+			if strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "rate") {
+				log.Printf("API rate limit hit, waiting 5 seconds before retry %d/3", retries+1)
+				time.Sleep(5 * time.Second)
+				continue
 			}
-			if feedItem.Post.ReplyCount != nil {
-				replies = int(*feedItem.Post.ReplyCount)
+
+			// For other errors, fail immediately
+			return nil, fmt.Errorf("failed to search public posts: %w", err)
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to search public posts after 3 retries: %w", err)
+		}
+
+		// Check if the oldest post in this batch is still within our time window
+		// Since posts are sorted by most recent first, we check the last post in the batch
+		hasRecentPosts := false
+		if len(searchResult.Posts) > 0 {
+			// Check the last (oldest) post in this batch
+			lastPost := searchResult.Posts[len(searchResult.Posts)-1]
+			postTime, err := time.Parse(time.RFC3339, lastPost.IndexedAt)
+			if err == nil {
+				// Convert both times to UTC for comparison
+				postTimeUTC := postTime.UTC()
+				cutoffTimeUTC := cutoffTime.UTC()
+				// Log the timestamp of the oldest post in this batch
+				log.Printf("Oldest post in batch: %s UTC (cutoff: %s UTC)", postTimeUTC.Format("2006-01-02 15:04:05"), cutoffTimeUTC.Format("2006-01-02 15:04:05"))
+				if !postTimeUTC.Before(cutoffTimeUTC) {
+					hasRecentPosts = true
+				}
 			}
-			
-			// For now, use a placeholder for text since we need to decode the record
-			// In a real implementation, we'd decode the record to get the actual text
-			text := "Post content (text extraction not yet implemented)"
-			
-			post := Post{
-				URI:       feedItem.Post.Uri,
-				Text:      text,
-				Author:    feedItem.Post.Author.Handle,
-				Likes:     likes,
-				Reposts:   reposts,
-				Replies:   replies,
-				CreatedAt: feedItem.Post.IndexedAt,
-			}
-			posts = append(posts, post)
+		}
+
+		allPosts = append(allPosts, searchResult.Posts...)
+		totalRetrieved += len(searchResult.Posts)
+
+		// Log progress
+		if searchResult.HitsTotal != nil {
+			log.Printf("Retrieved %d/%d posts from Bluesky search", totalRetrieved, *searchResult.HitsTotal)
+		} else {
+			log.Printf("Retrieved %d posts from Bluesky search", totalRetrieved)
+		}
+
+		// Stop if no recent posts in this batch (posts are getting too old)
+		if !hasRecentPosts {
+			log.Printf("No recent posts found in this batch, stopping pagination")
+			break
+		}
+
+		// Check if we have more pages
+		if searchResult.Cursor == nil || *searchResult.Cursor == "" {
+			break
+		}
+		cursor = *searchResult.Cursor
+
+		// Safety limit to prevent infinite loops and API rate limiting
+		if totalRetrieved > 2000 {
+			log.Printf("Reached safety limit of 2,000 posts, stopping pagination to avoid rate limits")
+			break
 		}
 	}
 
+	log.Printf("Retrieved %d total public posts from Bluesky search", len(allPosts))
+
+	// Deduplicate posts by URI to prevent same posts appearing multiple times
+	seenURIs := make(map[string]bool)
+	var posts []Post
+	for _, postView := range allPosts {
+		// Skip if we've already seen this post
+		if seenURIs[postView.Uri] {
+			continue
+		}
+		seenURIs[postView.Uri] = true
+
+		// Filter posts by creation time (client-side filtering)
+		postTime, err := time.Parse(time.RFC3339, postView.IndexedAt)
+		if err != nil {
+			continue // Skip posts with invalid timestamps
+		}
+
+		// Only include posts from the analysis interval
+		if postTime.Before(cutoffTime) {
+			continue
+		}
+
+		// Handle pointer fields safely
+		var likes, reposts, replies int
+		if postView.LikeCount != nil {
+			likes = int(*postView.LikeCount)
+		}
+		if postView.RepostCount != nil {
+			reposts = int(*postView.RepostCount)
+		}
+		if postView.ReplyCount != nil {
+			replies = int(*postView.ReplyCount)
+		}
+
+		// Extract the actual post text from the record
+		text := "No text available"
+		if postView.Record != nil {
+			// Try to cast the record to FeedPost type
+			if feedPost, ok := postView.Record.Val.(*bsky.FeedPost); ok {
+				text = feedPost.Text
+			}
+		}
+
+		// Fallback to author if no text found
+		if text == "No text available" {
+			text = fmt.Sprintf("Post by @%s", postView.Author.Handle)
+		}
+
+		post := Post{
+			URI:       postView.Uri,
+			Text:      text,
+			Author:    postView.Author.Handle,
+			Likes:     likes,
+			Reposts:   reposts,
+			Replies:   replies,
+			CreatedAt: postView.IndexedAt,
+		}
+		posts = append(posts, post)
+	}
+
+	log.Printf("Found %d public posts from the last %d minutes", len(posts), analysisIntervalMinutes)
 	return posts, nil
 }
 
-func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string) error {
-	// Get current local time
-	now := time.Now()
-	timeStr := now.Format("2006-01-02 15:04")
-	
-	// Create the summary post in the specified format
-	summaryText := fmt.Sprintf("Top five this hour %s\n\n", timeStr)
-	
-	// Add links to the top 5 posts (ranked by replies + likes + reposts)
-	for i, post := range posts {
-		summaryText += fmt.Sprintf("%d. %s\n", i+1, post.URI)
-		summaryText += fmt.Sprintf("   @%s | 💬 %d replies | 💙 %d likes | 🔄 %d reposts\n\n", post.Author, post.Replies, post.Likes, post.Reposts)
-	}
-	
-	// Add sentiment summary
-	summaryText += fmt.Sprintf("Bluesky is %s", overallSentiment)
+func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int) error {
+	ctx := context.Background()
 
-	// For now, we'll just log the post content
-	// In a real implementation, we'd use the AT Protocol to create the post
-	log.Printf("Would post: %s", summaryText)
-	
+	// Format time period
+	var timePeriod string
+	if analysisIntervalMinutes >= 60 {
+		timePeriod = "1 hour"
+	} else {
+		timePeriod = fmt.Sprintf("%d minutes", analysisIntervalMinutes)
+	}
+
+	// Create the summary post in the specified format
+	summaryText := fmt.Sprintf("For %s Bluesky was %s\n\n", timePeriod, overallSentiment)
+
+	// Add links to the top 5 posts (ranked by replies + likes + reposts)
+	// Use handle format with clickable links
+	for i, _ := range posts {
+		if i >= 5 { // Limit to top 5
+			break
+		}
+		// Format as @handle.who .wrote.postX
+		summaryText += fmt.Sprintf("%d. @%s .wrote.post%d\n", i+1, posts[i].Author, i+1)
+	}
+
+	// Check if we need to truncate, but try to keep all 5 posts
+	if len([]rune(summaryText)) > 300 {
+		// If truncation is needed, try a more aggressive approach
+		// Remove the sentiment summary first to save space
+		summaryText = fmt.Sprintf("Top five posts in the last %s\n\n", timePeriod)
+
+		// Add posts with even more concise format
+		for i, _ := range posts {
+			if i >= 5 {
+				break
+			}
+			// Convert AT Protocol URI to web URL
+			webURL := convertATURItoWebURL(posts[i].URI)
+			// Use full URL in text for better visibility
+			summaryText += fmt.Sprintf("%s\n", webURL)
+		}
+
+		// If still too long, truncate but preserve the structure
+		if len([]rune(summaryText)) > 300 {
+			summaryText = truncateText(summaryText, 300)
+		}
+	}
+
+	// Post to Bluesky
+	log.Printf("Posting to Bluesky: %s", summaryText)
+
+	// Create facets for clickable links
+	facets := createLinkFacets(summaryText)
+
+	// Create the post using the AT Protocol
+	postRecord := &bsky.FeedPost{
+		Text:      summaryText,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Facets:    facets,
+	}
+
+	// Post the record
+	_, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+		Repo:       c.handle, // Use the handle from the client
+		Collection: "app.bsky.feed.post",
+		Record:     &util.LexiconTypeDecoder{Val: postRecord},
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to post to Bluesky: %w", err)
+	}
+
+	log.Printf("Successfully posted to Bluesky!")
 	return nil
+}
+
+// convertATURItoWebURL converts an AT Protocol URI to a web-friendly URL
+// Example: at://did:plc:abc123/app.bsky.feed.post/xyz789 -> https://bsky.app/profile/did:plc:abc123/post/xyz789
+func convertATURItoWebURL(uri string) string {
+	// Handle AT Protocol URIs
+	if strings.HasPrefix(uri, "at://") {
+		// Remove the at:// prefix
+		uri = strings.TrimPrefix(uri, "at://")
+
+		// Split by / to get parts: [did, app.bsky.feed.post, recordId]
+		parts := strings.Split(uri, "/")
+		if len(parts) >= 3 {
+			did := parts[0]
+			recordType := parts[1]
+			recordId := parts[2]
+
+			// Convert to web URL format
+			if recordType == "app.bsky.feed.post" {
+				return fmt.Sprintf("https://bsky.app/profile/%s/post/%s", did, recordId)
+			}
+		}
+	}
+
+	// If it's already a web URL or we can't parse it, return as-is
+	return uri
 }
 
 func truncateText(text string, maxLength int) string {
@@ -126,4 +314,36 @@ func truncateText(text string, maxLength int) string {
 		return text
 	}
 	return text[:maxLength-3] + "..."
+}
+
+// createLinkFacets creates rich text facets for URLs in the text
+// Based on Bluesky rich text documentation: https://docs.bsky.app/docs/advanced-guides/post-richtext
+func createLinkFacets(text string) []*bsky.RichtextFacet {
+	var facets []*bsky.RichtextFacet
+
+	// Find all URLs in the text using regex
+	urlRegex := regexp.MustCompile(`https://bsky\.app/[^\s]+`)
+	matches := urlRegex.FindAllStringIndex(text, -1)
+
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		url := text[start:end]
+
+		facet := &bsky.RichtextFacet{
+			Index: &bsky.RichtextFacet_ByteSlice{
+				ByteStart: int64(start),
+				ByteEnd:   int64(end),
+			},
+			Features: []*bsky.RichtextFacet_Features_Elem{
+				{
+					RichtextFacet_Link: &bsky.RichtextFacet_Link{
+						Uri: url,
+					},
+				},
+			},
+		}
+		facets = append(facets, facet)
+	}
+
+	return facets
 }
