@@ -228,8 +228,8 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 		if i >= 5 { // Limit to top 5
 			break
 		}
-		// Format as @handle.who .wrote.postX
-		summaryText += fmt.Sprintf("%d. @%s .wrote.post%d\n", i+1, posts[i].Author, i+1)
+		// Format as @handle with clickable link to the post
+		summaryText += fmt.Sprintf("%d. @%s\n", i+1, posts[i].Author)
 	}
 
 	// Check if we need to truncate, but try to keep all 5 posts
@@ -243,10 +243,8 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 			if i >= 5 {
 				break
 			}
-			// Convert AT Protocol URI to web URL
-			webURL := convertATURItoWebURL(posts[i].URI)
-			// Use full URL in text for better visibility
-			summaryText += fmt.Sprintf("%s\n", webURL)
+			// Format as @handle with clickable link to the post
+			summaryText += fmt.Sprintf("%d. @%s\n", i+1, posts[i].Author)
 		}
 
 		// If still too long, truncate but preserve the structure
@@ -259,7 +257,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	log.Printf("Posting to Bluesky: %s", summaryText)
 
 	// Create facets for clickable links
-	facets := createLinkFacets(summaryText)
+	facets := createLinkFacets(summaryText, posts)
 
 	// Create the post using the AT Protocol
 	postRecord := &bsky.FeedPost{
@@ -318,31 +316,40 @@ func truncateText(text string, maxLength int) string {
 
 // createLinkFacets creates rich text facets for URLs in the text
 // Based on Bluesky rich text documentation: https://docs.bsky.app/docs/advanced-guides/post-richtext
-func createLinkFacets(text string) []*bsky.RichtextFacet {
+func createLinkFacets(text string, posts []Post) []*bsky.RichtextFacet {
 	var facets []*bsky.RichtextFacet
 
-	// Find all URLs in the text using regex
-	urlRegex := regexp.MustCompile(`https://bsky\.app/[^\s]+`)
-	matches := urlRegex.FindAllStringIndex(text, -1)
+	// Find @handle patterns and make them clickable links to the posts
+	handleRegex := regexp.MustCompile(`@([a-zA-Z0-9._-]+\.bsky\.social)`)
+	matches := handleRegex.FindAllStringSubmatchIndex(text, -1)
 
-	for _, match := range matches {
+	for i, match := range matches {
+		if i >= len(posts) || i >= 5 { // Safety check
+			break
+		}
+		
 		start, end := match[0], match[1]
-		url := text[start:end]
-
-		facet := &bsky.RichtextFacet{
-			Index: &bsky.RichtextFacet_ByteSlice{
-				ByteStart: int64(start),
-				ByteEnd:   int64(end),
-			},
-			Features: []*bsky.RichtextFacet_Features_Elem{
-				{
-					RichtextFacet_Link: &bsky.RichtextFacet_Link{
-						Uri: url,
+		
+		// Get the corresponding post URL
+		postIndex := i
+		if postIndex < len(posts) {
+			webURL := convertATURItoWebURL(posts[postIndex].URI)
+			
+			facet := &bsky.RichtextFacet{
+				Index: &bsky.RichtextFacet_ByteSlice{
+					ByteStart: int64(start),
+					ByteEnd:   int64(end),
+				},
+				Features: []*bsky.RichtextFacet_Features_Elem{
+					{
+						RichtextFacet_Link: &bsky.RichtextFacet_Link{
+							Uri: webURL,
+						},
 					},
 				},
-			},
+			}
+			facets = append(facets, facet)
 		}
-		facets = append(facets, facet)
 	}
 
 	return facets
