@@ -39,7 +39,7 @@ func NewAnalyzerHandler(ctx context.Context) (*AnalyzerHandler, error) {
 	}
 
 	// Initialize sentiment analyzer
-	sentimentAnalyzer := analyzer.NewSentimentAnalyzer()
+	sentimentAnalyzer := analyzer.New()
 
 	return &AnalyzerHandler{
 		stateManager:    stateManager,
@@ -110,14 +110,9 @@ func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string
 	}
 
 	// Analyze posts
-	analyzedPosts := make([]analyzer.AnalyzedPost, len(analyzerPosts))
-	for i, post := range analyzerPosts {
-		analyzed, err := h.sentimentAnalyzer.AnalyzePost(post)
-		if err != nil {
-			log.Printf("Failed to analyze post %d: %v", i, err)
-			continue
-		}
-		analyzedPosts[i] = analyzed
+	analyzedPosts, err := h.sentimentAnalyzer.AnalyzePosts(analyzerPosts)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to analyze posts: %w", err)
 	}
 
 	// Calculate overall sentiment
