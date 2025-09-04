@@ -16,7 +16,7 @@ type Scheduler struct {
 func New(handle, password string) *Scheduler {
 	blueskyClient := client.New(handle, password)
 	sentimentAnalyzer := analyzer.New()
-	
+
 	return &Scheduler{
 		client:   blueskyClient,
 		analyzer: sentimentAnalyzer,
@@ -153,9 +153,9 @@ func (s *Scheduler) CalculateOverallSentiment(posts []analyzer.AnalyzedPost) str
 
 func (s *Scheduler) getEmotionFromSentiment(sentiment string) string {
 	emotions := map[string][]string{
-		"positive": {"happy", "excited", "optimistic", "cheerful", "enthusiastic", "upbeat", "joyful"},
-		"negative": {"sad", "angry", "frustrated", "worried", "concerned", "disappointed", "melancholy"},
-		"neutral":  {"calm", "peaceful", "balanced", "steady", "composed", "thoughtful", "reflective"},
+		"positive": {"passionate", "enthusiastic", "optimistic", "confident", "inspired"},
+		"negative": {"anxious", "pessimistic", "uncertain", "confused", "overwhelmed"},
+		"neutral":  {"contemplative", "analytical", "curious", "observant", "reflective"},
 	}
 
 	// For now, return the first emotion in each category
@@ -169,7 +169,7 @@ func (s *Scheduler) getEmotionFromSentiment(sentiment string) string {
 func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []analyzer.AnalyzedPost {
 	// Sort by engagement score (replies + likes + reposts + sentiment boost)
 	// This matches the README specification for ranking posts
-	
+
 	// Sort posts by engagement score in descending order
 	for i := 0; i < len(posts)-1; i++ {
 		for j := i + 1; j < len(posts); j++ {
@@ -178,7 +178,7 @@ func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []anal
 			}
 		}
 	}
-	
+
 	// Return the top N posts
 	if len(posts) < count {
 		return posts
