@@ -157,16 +157,18 @@ resource "aws_dynamodb_table" "hourstats_state" {
 
   # Global Secondary Index for querying by status
   global_secondary_index {
-    name     = "status-index"
-    hash_key = "status"
-    range_key = "createdAt"
+    name            = "status-index"
+    hash_key        = "status"
+    range_key       = "createdAt"
+    projection_type = "ALL"
   }
 
   # Global Secondary Index for querying posts
   global_secondary_index {
-    name     = "posts-index"
-    hash_key = "runId"
-    range_key = "postId"
+    name            = "posts-index"
+    hash_key        = "runId"
+    range_key       = "postId"
+    projection_type = "ALL"
   }
 
   ttl {
