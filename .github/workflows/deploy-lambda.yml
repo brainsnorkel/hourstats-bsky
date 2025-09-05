@@ -68,9 +68,6 @@ jobs:
 
       - name: Build Lambda functions
         run: |
-<<<<<<< HEAD
-          # Build main Lambda function
-=======
           # Build individual Lambda functions
           for dir in cmd/lambda-*; do
             echo "Building $dir..."
@@ -83,38 +80,15 @@ jobs:
           
           # Also build the original single Lambda for backward compatibility
           echo "Building original single Lambda..."
->>>>>>> develop
           cd cmd/lambda
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
           zip hourstats.zip bootstrap
           mv hourstats.zip ../../terraform/
           cd ../..
           
-<<<<<<< HEAD
-          # Build individual Lambda functions
-          echo "Looking for lambda-* directories in cmd/:"
-          ls -la cmd/
-          for dir in cmd/lambda-*; do
-            if [ -d "$dir" ]; then
-              func_name=$(basename "$dir")
-              echo "Building $func_name..."
-              cd "$dir"
-              GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
-              zip "${func_name}.zip" bootstrap
-              mv "${func_name}.zip" ../../terraform/
-              cd ../..
-            else
-              echo "Directory $dir not found or not a directory"
-            fi
-          done
-          
-          echo "Final terraform directory contents:"
-          ls -la terraform/
-=======
           # List all built files
           echo "Built Lambda functions:"
           ls -la terraform/*.zip
->>>>>>> develop
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
