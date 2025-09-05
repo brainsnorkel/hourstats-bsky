@@ -23,11 +23,10 @@ type Event struct {
 
 // Response represents the Lambda response
 type Response struct {
-	StatusCode    int      `json:"statusCode"`
-	Body          string   `json:"body"`
-	RunID         string   `json:"runId,omitempty"`
-	IsComplete    bool     `json:"isComplete,omitempty"`
-	FetchBatches  []string `json:"fetchBatches,omitempty"`
+	StatusCode int    `json:"statusCode"`
+	Body       string `json:"body"`
+	RunID      string `json:"runId,omitempty"`
+	IsComplete bool   `json:"isComplete,omitempty"`
 }
 
 // OrchestratorHandler handles the orchestrator Lambda function
@@ -86,21 +85,12 @@ func (h *OrchestratorHandler) handleStartWorkflow(ctx context.Context, event Eve
 		}, err
 	}
 
-	// Calculate the number of batches needed (estimate based on 100 posts per batch)
-	// We'll start with a conservative estimate and let the fetcher determine when to stop
-	estimatedBatches := 50 // This will be refined based on actual data collection
-	fetchBatches := make([]string, estimatedBatches)
-	for i := 0; i < estimatedBatches; i++ {
-		fetchBatches[i] = fmt.Sprintf("batch-%d", i)
-	}
-
-	log.Printf("Created %d fetch batches for run %s", len(fetchBatches), runID)
+	log.Printf("Created run state for continuous fetching: %s", runID)
 
 	return Response{
-		StatusCode:   200,
-		Body:         "Run state created successfully",
-		RunID:        runID,
-		FetchBatches: fetchBatches,
+		StatusCode: 200,
+		Body:       "Run state created successfully",
+		RunID:      runID,
 	}, nil
 }
 
