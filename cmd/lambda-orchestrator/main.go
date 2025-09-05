@@ -14,11 +14,12 @@ import (
 
 // Event represents the EventBridge event structure or Step Functions event
 type Event struct {
-	Source     string `json:"source"`
-	Time       string `json:"time"`
-	Action     string `json:"action,omitempty"`
-	RunID      string `json:"runId,omitempty"`
-	IsComplete bool   `json:"isComplete,omitempty"`
+	Source                   string `json:"source"`
+	Time                     string `json:"time"`
+	Action                   string `json:"action,omitempty"`
+	RunID                    string `json:"runId,omitempty"`
+	IsComplete               bool   `json:"isComplete,omitempty"`
+	AnalysisIntervalMinutes  int    `json:"analysisIntervalMinutes,omitempty"`
 }
 
 // Response represents the Lambda response
