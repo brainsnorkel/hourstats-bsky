@@ -90,7 +90,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 	var posts []Post
 	var filteredCount int
 	log.Printf("🔍 FETCHER DEBUG: Processing %d posts from API, cutoff time: %s", len(searchResult.Posts), cutoffTime.Format("2006-01-02 15:04:05 UTC"))
-	
+
 	for _, postView := range searchResult.Posts {
 		// Filter posts by creation time
 		postTime, err := time.Parse(time.RFC3339, postView.IndexedAt)
