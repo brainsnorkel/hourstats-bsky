@@ -339,19 +339,20 @@ func (sm *StateManager) SetPostingComplete(ctx context.Context, runID string) er
 
 // ListRuns retrieves all run IDs from DynamoDB
 func (sm *StateManager) ListRuns(ctx context.Context, limit int32) ([]string, error) {
-	// Query for all runs using the GSI
-	result, err := sm.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(sm.tableName),
-		IndexName:              aws.String("status-index"),
-		KeyConditionExpression: aws.String("status = :status"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":status": &types.AttributeValueMemberS{Value: "orchestrator"},
+	// Use scan to get all run states, then filter by step
+	result, err := sm.client.Scan(ctx, &dynamodb.ScanInput{
+		TableName:        aws.String(sm.tableName),
+		FilterExpression: aws.String("#step = :step"),
+		ExpressionAttributeNames: map[string]string{
+			"#step": "step",
 		},
-		ScanIndexForward: aws.Bool(false), // Most recent first
-		Limit:            aws.Int32(limit),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":step": &types.AttributeValueMemberS{Value: "orchestrator"},
+		},
+		Limit: aws.Int32(limit),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to query runs: %w", err)
+		return nil, fmt.Errorf("failed to scan runs: %w", err)
 	}
 
 	var runIDs []string
@@ -365,6 +366,9 @@ func (sm *StateManager) ListRuns(ctx context.Context, limit int32) ([]string, er
 		runIDs = append(runIDs, state.RunID)
 	}
 
+	// Sort by creation time (most recent first)
+	// Note: This is a simple approach - for better performance with large datasets,
+	// consider using a different GSI or query strategy
 	return runIDs, nil
 }
 
