@@ -5,10 +5,10 @@
     "Start": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
-      "Parameters": {
-        "action": "startWorkflow",
-        "analysisIntervalMinutes": 15
-      },
+              "Parameters": {
+          "action": "startWorkflow",
+          "analysisIntervalMinutes": 60
+        },
       "ResultPath": "$.OrchestratorOutput",
       "Next": "FetchBatch1"
     },
