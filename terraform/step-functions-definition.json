@@ -1,5 +1,5 @@
 {
-  "Comment": "HourStats Bluesky Bot Workflow - Continuous Fetching",
+  "Comment": "HourStats Bluesky Bot Workflow - Sequential Dynamic Fetching",
   "StartAt": "Start",
   "States": {
     "Start": {
@@ -9,53 +9,216 @@
         "action": "startWorkflow"
       },
       "ResultPath": "$.OrchestratorOutput",
-      "Next": "FetchLoop"
+      "Next": "FetchBatch1"
     },
-    "FetchLoop": {
+    "FetchBatch1": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
         "analysisIntervalMinutes": 30,
-        "batchId": "continuous"
+        "batchId": "batch-0"
       },
-      "ResultPath": "$.FetcherOutput",
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "FetchError",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "CheckHasMore"
+      "ResultPath": "$.FetcherOutput1",
+      "Next": "CheckContinue1"
     },
-    "CheckHasMore": {
+    "CheckContinue1": {
       "Type": "Choice",
       "Choices": [
         {
-          "Variable": "$.FetcherOutput.hasMorePosts",
+          "Variable": "$.FetcherOutput1.hasMorePosts",
           "BooleanEquals": true,
-          "Next": "WaitAndContinue"
+          "Next": "FetchBatch2"
         }
       ],
       "Default": "AnalyzePosts"
     },
-    "WaitAndContinue": {
-      "Type": "Wait",
-      "Seconds": 5,
-      "Next": "FetchLoop"
+    "FetchBatch2": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-1"
+      },
+      "ResultPath": "$.FetcherOutput2",
+      "Next": "CheckContinue2"
     },
-    "FetchError": {
-      "Type": "Fail",
-      "Cause": "Failed to fetch posts"
+    "CheckContinue2": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput2.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "FetchBatch3"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "FetchBatch3": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-2"
+      },
+      "ResultPath": "$.FetcherOutput3",
+      "Next": "CheckContinue3"
+    },
+    "CheckContinue3": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput3.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "FetchBatch4"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "FetchBatch4": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-3"
+      },
+      "ResultPath": "$.FetcherOutput4",
+      "Next": "CheckContinue4"
+    },
+    "CheckContinue4": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput4.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "FetchBatch5"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "FetchBatch5": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-4"
+      },
+      "ResultPath": "$.FetcherOutput5",
+      "Next": "CheckContinue5"
+    },
+    "CheckContinue5": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput5.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "FetchBatch6"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "FetchBatch6": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-5"
+      },
+      "ResultPath": "$.FetcherOutput6",
+      "Next": "CheckContinue6"
+    },
+    "CheckContinue6": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput6.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "FetchBatch7"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "FetchBatch7": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-6"
+      },
+      "ResultPath": "$.FetcherOutput7",
+      "Next": "CheckContinue7"
+    },
+    "CheckContinue7": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput7.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "FetchBatch8"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "FetchBatch8": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-7"
+      },
+      "ResultPath": "$.FetcherOutput8",
+      "Next": "CheckContinue8"
+    },
+    "CheckContinue8": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput8.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "FetchBatch9"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "FetchBatch9": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-8"
+      },
+      "ResultPath": "$.FetcherOutput9",
+      "Next": "CheckContinue9"
+    },
+    "CheckContinue9": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput9.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "FetchBatch10"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "FetchBatch10": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-9"
+      },
+      "ResultPath": "$.FetcherOutput10",
+      "Next": "AnalyzePosts"
     },
     "AnalyzePosts": {
       "Type": "Task",
