@@ -195,8 +195,8 @@ resource "aws_lambda_function" "hourstats_orchestrator" {
   handler         = "bootstrap"
   source_code_hash = filebase64sha256("lambda-orchestrator.zip")
   runtime         = "provided.al2023"
-  timeout         = 60
-  memory_size     = 128
+  timeout         = 900  # 15 minutes
+  memory_size     = 256
 
   environment {
     variables = {
