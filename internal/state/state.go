@@ -46,6 +46,7 @@ type Post struct {
 // PostItem represents a post stored separately in DynamoDB
 type PostItem struct {
 	RunID     string    `json:"runId" dynamodbav:"runId"`
+	Step      string    `json:"step" dynamodbav:"step"` // Required for DynamoDB composite key
 	PostID    string    `json:"postId" dynamodbav:"postId"` // runId#postIndex
 	Post      Post      `json:"post" dynamodbav:"post"`
 	CreatedAt time.Time `json:"createdAt" dynamodbav:"createdAt"`
@@ -201,6 +202,7 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 	for i, post := range posts {
 		postItem := PostItem{
 			RunID:     runID,
+			Step:      "fetcher", // All posts are stored under the fetcher step
 			PostID:    fmt.Sprintf("%s#%d", runID, state.TotalPostsRetrieved+i),
 			Post:      post,
 			CreatedAt: time.Now(),
