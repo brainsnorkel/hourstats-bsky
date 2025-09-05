@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -66,7 +67,7 @@ func NewStateManager(ctx context.Context, tableName string) (*StateManager, erro
 func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisIntervalMinutes int) (*RunState, error) {
 	now := time.Now()
 	ttl := now.Add(7 * 24 * time.Hour).Unix() // 7 days TTL
-	
+
 	// Calculate cutoff time once for consistency across all processes
 	cutoffTime := now.Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
 
@@ -186,13 +187,24 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 		}
 	}
 
+	log.Printf("🔍 STATE DEBUG: Before adding posts - existing posts: %d, new posts: %d", len(state.Posts), len(posts))
+
 	// Add new posts
 	state.Posts = append(state.Posts, posts...)
 	state.TotalPostsRetrieved = len(state.Posts)
 	state.Step = "fetcher"
 	state.Status = "fetching"
 
-	return sm.UpdateRun(ctx, state)
+	log.Printf("🔍 STATE DEBUG: After adding posts - total posts: %d, posts array length: %d", state.TotalPostsRetrieved, len(state.Posts))
+
+	err = sm.UpdateRun(ctx, state)
+	if err != nil {
+		log.Printf("🔍 STATE DEBUG: Failed to update run state: %v", err)
+		return err
+	}
+
+	log.Printf("🔍 STATE DEBUG: Successfully updated run state with %d posts", len(state.Posts))
+	return nil
 }
 
 // UpdateCursor updates the cursor for the next fetch
