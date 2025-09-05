@@ -6,7 +6,7 @@ import (
 
 func TestSentimentAnalyzer(t *testing.T) {
 	analyzer := New()
-	
+
 	tests := []struct {
 		name     string
 		text     string
@@ -28,24 +28,24 @@ func TestSentimentAnalyzer(t *testing.T) {
 			expected: "neutral",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			post := Post{
-				URI:      "test://post/1",
-				Text:     tt.text,
-				Author:   "testuser",
-				Likes:    10,
-				Reposts:  5,
-				Replies:  2,
+				URI:       "test://post/1",
+				Text:      tt.text,
+				Author:    "testuser",
+				Likes:     10,
+				Reposts:   5,
+				Replies:   2,
 				CreatedAt: "2024-01-01T00:00:00Z",
 			}
-			
+
 			analyzed, err := analyzer.analyzePost(post)
 			if err != nil {
 				t.Fatalf("analyzePost() error = %v", err)
 			}
-			
+
 			if analyzed.Sentiment != tt.expected {
 				t.Errorf("analyzePost() sentiment = %v (score: %f), want %v", analyzed.Sentiment, analyzed.SentimentScore, tt.expected)
 			}
@@ -55,7 +55,7 @@ func TestSentimentAnalyzer(t *testing.T) {
 
 func TestExtractTopics(t *testing.T) {
 	analyzer := New()
-	
+
 	tests := []struct {
 		name     string
 		text     string
@@ -77,15 +77,15 @@ func TestExtractTopics(t *testing.T) {
 			expected: []string{},
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			topics := analyzer.extractTopics(tt.text)
-			
+
 			if len(topics) != len(tt.expected) {
 				t.Errorf("extractTopics() length = %v, want %v. Got: %v", len(topics), len(tt.expected), topics)
 			}
-			
+
 			// Check if all expected topics are present
 			for _, expectedTopic := range tt.expected {
 				found := false
