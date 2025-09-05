@@ -297,9 +297,10 @@ resource "aws_ssm_parameter" "bluesky_handle" {
 }
 
 resource "aws_ssm_parameter" "bluesky_password" {
-  name  = "/hourstats/bluesky/password"
-  type  = "SecureString"
-  value = "your-app-password"
+  name      = "/hourstats/bluesky/password"
+  type      = "SecureString"
+  value     = "your-app-password"
+  overwrite = true
 
   tags = {
     Name        = "${var.function_name}-bluesky-password"
