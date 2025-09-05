@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2025-01-27] - Critical Bug Fix and Architecture Improvements
+
+### Fixed
+- **CRITICAL**: Fixed fetcher cursor bug where subsequent fetchers would restart from beginning instead of continuing
+- Added cursor parameter to FetcherEvent to support proper pagination continuation
+- Fetcher now correctly passes cursor to next fetcher in the chain
+
+### Added
+- Query utility (`cmd/query-runs/main.go`) for testing and debugging previous runs
+- Shared formatter package (`internal/formatter/post_formatter.go`) for consistent post generation
+- Sentiment indicators (+/-/x) after each top 5 post in generated content
+- `scripts/query-runs.sh` wrapper script for easy utility access
+- Run statistics methods in state manager (`ListRuns`, `GetRunStats`)
+
+### Changed
+- Unified post formatting across all components (query utility, processor, Bluesky client)
+- Removed Step Functions dependency, now uses direct Lambda invocation
+- Updated README with new architecture and query utility instructions
+- All post content now generated using the same shared formatter code
+
+### Removed
+- Step Functions state machine and related IAM roles/policies
+- EventBridge Step Functions integration (now directly invokes orchestrator)
+
+## [Previous Releases]
+
 ### Added
 - **Engagement scores**: Display total engagement (likes + reposts + replies) next to each handle
 - **Project rename**: Renamed from TrendJournal to Bluesky HourStats
