@@ -63,8 +63,8 @@ func NewFetcherHandler(ctx context.Context) (*FetcherHandler, error) {
 func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsEvent) (Response, error) {
 	log.Printf("Fetcher received event: %+v", event)
 
-	// Get current run state
-	runState, err := h.stateManager.GetLatestRun(ctx, event.RunID)
+	// Get current run state for the fetcher step
+	runState, err := h.stateManager.GetRun(ctx, event.RunID, "fetcher")
 	if err != nil {
 		log.Printf("Failed to get run state: %v", err)
 		return Response{
