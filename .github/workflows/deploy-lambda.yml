@@ -73,8 +73,11 @@ jobs:
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
           zip hourstats.zip bootstrap
           mv hourstats.zip ../../terraform/
+          cd ../..
           
           # Build individual Lambda functions
+          echo "Looking for lambda-* directories in cmd/:"
+          ls -la cmd/
           for dir in cmd/lambda-*; do
             if [ -d "$dir" ]; then
               func_name=$(basename "$dir")
@@ -84,8 +87,13 @@ jobs:
               zip "${func_name}.zip" bootstrap
               mv "${func_name}.zip" ../../terraform/
               cd ../..
+            else
+              echo "Directory $dir not found or not a directory"
             fi
           done
+          
+          echo "Final terraform directory contents:"
+          ls -la terraform/
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
