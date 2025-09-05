@@ -58,11 +58,11 @@ func (h *AggregatorHandler) HandleRequest(ctx context.Context, event StepFunctio
 	}
 
 	// Log the time range being used for aggregation
-	log.Printf("📅 AGGREGATOR: Aggregating posts from time range - From: %s, To: %s (current time: %s)", 
-		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"), 
+	log.Printf("📅 AGGREGATOR: Aggregating posts from time range - From: %s, To: %s (current time: %s)",
+		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"))
-	
+
 	// Filter posts by cutoff time and aggregate
 	log.Printf("🔍 AGGREGATOR DEBUG: Retrieved %d posts from DynamoDB for run %s", len(runState.Posts), event.RunID)
 	log.Printf("🔍 AGGREGATOR DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
@@ -76,13 +76,15 @@ func (h *AggregatorHandler) HandleRequest(ctx context.Context, event StepFunctio
 	runState.Step = "aggregator"
 	runState.Status = "aggregated"
 
+	log.Printf("🔍 AGGREGATOR DEBUG: About to update run state with %d top posts, step: %s", len(topPosts), runState.Step)
 	if err := h.stateManager.UpdateRun(ctx, runState); err != nil {
-		log.Printf("Failed to update run state: %v", err)
+		log.Printf("🔍 AGGREGATOR DEBUG: Failed to update run state: %v", err)
 		return Response{
 			StatusCode: 500,
 			Body:       "Failed to update state: " + err.Error(),
 		}, err
 	}
+	log.Printf("🔍 AGGREGATOR DEBUG: Successfully updated run state with step: %s", runState.Step)
 
 	log.Printf("Successfully aggregated top %d posts for run: %s", len(topPosts), event.RunID)
 	return Response{
