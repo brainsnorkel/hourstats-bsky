@@ -64,7 +64,10 @@ func (h *AggregatorHandler) HandleRequest(ctx context.Context, event StepFunctio
 		time.Now().Format("2006-01-02 15:04:05 UTC"))
 	
 	// Filter posts by cutoff time and aggregate
+	log.Printf("🔍 AGGREGATOR DEBUG: Retrieved %d posts from DynamoDB for run %s", len(runState.Posts), event.RunID)
+	log.Printf("🔍 AGGREGATOR DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 	filteredPosts := h.filterPostsByCutoffTime(runState.Posts, runState.CutoffTime)
+	log.Printf("🔍 AGGREGATOR DEBUG: After time filtering: %d posts (from %d original)", len(filteredPosts), len(runState.Posts))
 	log.Printf("Aggregating %d posts after cutoff filtering", len(filteredPosts))
 	topPosts := h.getTopPosts(filteredPosts, 5)
 

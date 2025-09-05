@@ -69,7 +69,10 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 		time.Now().Format("2006-01-02 15:04:05 UTC"))
 	
 	// Filter posts by cutoff time and analyze
+	log.Printf("🔍 ANALYZER DEBUG: Retrieved %d posts from DynamoDB for run %s", len(runState.Posts), event.RunID)
+	log.Printf("🔍 ANALYZER DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 	filteredPosts := h.filterPostsByCutoffTime(runState.Posts, runState.CutoffTime)
+	log.Printf("🔍 ANALYZER DEBUG: After time filtering: %d posts (from %d original)", len(filteredPosts), len(runState.Posts))
 	analyzedPosts, overallSentiment, err := h.analyzePosts(filteredPosts)
 	if err != nil {
 		log.Printf("Failed to analyze posts: %v", err)

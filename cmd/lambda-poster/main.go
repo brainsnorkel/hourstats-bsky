@@ -81,10 +81,14 @@ func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEv
 	}
 
 	// Log the time range being used for posting
-	log.Printf("📅 POSTER: Posting summary for time range - From: %s, To: %s (current time: %s)", 
-		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"), 
+	log.Printf("📅 POSTER: Posting summary for time range - From: %s, To: %s (current time: %s)",
+		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"))
+	
+	log.Printf("🔍 POSTER DEBUG: Retrieved %d total posts, %d top posts from DynamoDB for run %s", 
+		runState.TotalPostsRetrieved, len(runState.TopPosts), event.RunID)
+	log.Printf("🔍 POSTER DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
 	if len(runState.TopPosts) == 0 {
 		log.Printf("No top posts found for run: %s, skipping post", event.RunID)

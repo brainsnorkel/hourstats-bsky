@@ -115,8 +115,10 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 
 	// Convert to state posts
 	statePosts := h.convertToStatePosts(posts)
+	log.Printf("🔍 FETCHER DEBUG: Converting %d posts to state format", len(posts))
 
 	// Add posts to state
+	log.Printf("🔍 FETCHER DEBUG: Storing %d posts in DynamoDB for run %s", len(statePosts), event.RunID)
 	if err := h.stateManager.AddPosts(ctx, event.RunID, statePosts); err != nil {
 		log.Printf("Failed to add posts to state: %v", err)
 		return Response{
@@ -124,6 +126,7 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 			Body:       "Failed to add posts: " + err.Error(),
 		}, err
 	}
+	log.Printf("✅ FETCHER DEBUG: Successfully stored %d posts in DynamoDB", len(statePosts))
 
 	// Get updated state to show cumulative count
 	updatedState, err := h.stateManager.GetRun(ctx, event.RunID, "fetcher")
@@ -133,6 +136,11 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 		if err != nil {
 			log.Printf("Warning: Could not get updated state for cumulative count: %v", err)
 		}
+	}
+	
+	if updatedState != nil {
+		log.Printf("🔍 FETCHER DEBUG: Total posts now in DynamoDB: %d (run: %s)", updatedState.TotalPostsRetrieved, event.RunID)
+		log.Printf("🔍 FETCHER DEBUG: DynamoDB cutoff time: %s", updatedState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 	}
 
 	// Update cursor and create fetcher step
