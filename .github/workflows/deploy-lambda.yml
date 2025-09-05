@@ -25,7 +25,7 @@ env:
 
 jobs:
   test:
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, macos, linux, x64]
     # Fallback to GitHub-hosted runners if self-hosted not available
     # runs-on: ubuntu-latest
     # Alternative: Use matrix strategy for runner selection
@@ -40,8 +40,17 @@ jobs:
       - name: Verify self-hosted runner
         run: |
           echo "Running on self-hosted runner: $(uname -a)"
-          echo "Available disk space: $(df -h)"
-          echo "Available memory: $(free -h)"
+          echo "Platform: $(uname -s) $(uname -m)"
+          echo "Go version: $(go version)"
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            echo "macOS detected - cross-compiling for Linux"
+            echo "Available disk space: $(df -h)"
+            echo "Available memory: $(sysctl -n hw.memsize | awk '{print $0/1024/1024/1024 " GB"}')"
+          else
+            echo "Linux detected - native build"
+            echo "Available disk space: $(df -h)"
+            echo "Available memory: $(free -h)"
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@v4
@@ -69,7 +78,7 @@ jobs:
 
   build:
     needs: test
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, macos, linux, x64]
     # Fallback to GitHub-hosted runners if self-hosted not available
     # runs-on: ubuntu-latest
     steps:
@@ -113,7 +122,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, macos, linux, x64]
     # Fallback to GitHub-hosted runners if self-hosted not available
     # runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -270,7 +279,7 @@ jobs:
 
   notify:
     needs: [test, build, deploy]
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, macos, linux, x64]
     # Fallback to GitHub-hosted runners if self-hosted not available
     # runs-on: ubuntu-latest
     if: always()
