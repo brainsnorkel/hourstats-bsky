@@ -149,6 +149,22 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		hasMorePosts = true
 	}
 
+	// Check if we've reached the time period boundary
+	// If we have posts and the oldest post is before the cutoff time, we should stop
+	if len(posts) > 0 {
+		// Find the oldest post in this batch (posts are sorted by most recent first)
+		oldestPost := posts[len(posts)-1]
+		oldestPostTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
+		if err == nil {
+			// If the oldest post is before our cutoff time, we've gone past the time period
+			if oldestPostTime.Before(cutoffTime) {
+				log.Printf("Reached time period boundary - oldest post (%s) is before cutoff (%s), stopping pagination", 
+					oldestPostTime.Format("2006-01-02 15:04:05"), cutoffTime.Format("2006-01-02 15:04:05"))
+				hasMorePosts = false
+			}
+		}
+	}
+
 	log.Printf("Retrieved %d posts from batch (cursor: %s, nextCursor: %s, hasMore: %v)", len(posts), cursor, nextCursor, hasMorePosts)
 	return posts, nextCursor, hasMorePosts, nil
 }
