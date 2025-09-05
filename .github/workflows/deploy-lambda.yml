@@ -99,7 +99,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lambda-functions
-          path: terraform/hourstats.zip
+          path: terraform/
 
   deploy:
     needs: build
