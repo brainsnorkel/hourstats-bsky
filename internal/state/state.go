@@ -31,15 +31,15 @@ type RunState struct {
 
 // Post represents a single post in the state
 type Post struct {
-	URI            string  `json:"uri" dynamodbav:"uri"`
-	Text           string  `json:"text" dynamodbav:"text"`
-	Author         string  `json:"author" dynamodbav:"author"`
-	Likes          int     `json:"likes" dynamodbav:"likes"`
-	Reposts        int     `json:"reposts" dynamodbav:"reposts"`
-	Replies        int     `json:"replies" dynamodbav:"replies"`
-	Sentiment      string  `json:"sentiment" dynamodbav:"sentiment"`
+	URI             string  `json:"uri" dynamodbav:"uri"`
+	Text            string  `json:"text" dynamodbav:"text"`
+	Author          string  `json:"author" dynamodbav:"author"`
+	Likes           int     `json:"likes" dynamodbav:"likes"`
+	Reposts         int     `json:"reposts" dynamodbav:"reposts"`
+	Replies         int     `json:"replies" dynamodbav:"replies"`
+	Sentiment       string  `json:"sentiment" dynamodbav:"sentiment"`
 	EngagementScore float64 `json:"engagementScore" dynamodbav:"engagementScore"`
-	CreatedAt      string  `json:"createdAt" dynamodbav:"createdAt"`
+	CreatedAt       string  `json:"createdAt" dynamodbav:"createdAt"`
 }
 
 // StateManager handles DynamoDB state operations
@@ -171,10 +171,14 @@ func (sm *StateManager) GetLatestRun(ctx context.Context, runID string) (*RunSta
 
 // AddPosts adds posts to the run state
 func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post) error {
-	// Get current state
-	state, err := sm.GetLatestRun(ctx, runID)
+	// Try to get fetcher step first, fall back to orchestrator step
+	state, err := sm.GetRun(ctx, runID, "fetcher")
 	if err != nil {
-		return fmt.Errorf("failed to get current state: %w", err)
+		// If fetcher step doesn't exist, get orchestrator step
+		state, err = sm.GetRun(ctx, runID, "orchestrator")
+		if err != nil {
+			return fmt.Errorf("failed to get current state: %w", err)
+		}
 	}
 
 	// Add new posts
@@ -188,15 +192,28 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 
 // UpdateCursor updates the cursor for the next fetch
 func (sm *StateManager) UpdateCursor(ctx context.Context, runID, cursor string, hasMorePosts bool) error {
-	state, err := sm.GetLatestRun(ctx, runID)
+	// Try to get fetcher step first, fall back to orchestrator step
+	state, err := sm.GetRun(ctx, runID, "fetcher")
 	if err != nil {
-		return fmt.Errorf("failed to get current state: %w", err)
+		// If fetcher step doesn't exist, get orchestrator step
+		state, err = sm.GetRun(ctx, runID, "orchestrator")
+		if err != nil {
+			return fmt.Errorf("failed to get current state: %w", err)
+		}
 	}
+
+	// Preserve existing posts and total count
+	existingPosts := state.Posts
+	existingTotal := state.TotalPostsRetrieved
 
 	state.CurrentCursor = cursor
 	state.HasMorePosts = hasMorePosts
 	state.Step = "fetcher"
 	state.Status = "fetching"
+	
+	// Restore the posts and total count
+	state.Posts = existingPosts
+	state.TotalPostsRetrieved = existingTotal
 
 	return sm.UpdateRun(ctx, state)
 }
