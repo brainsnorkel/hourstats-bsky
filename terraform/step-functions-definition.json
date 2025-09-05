@@ -1,5 +1,5 @@
 {
-  "Comment": "HourStats Bluesky Bot Workflow",
+  "Comment": "HourStats Bluesky Bot Workflow - Continuous Fetching",
   "StartAt": "Start",
   "States": {
     "Start": {
@@ -9,72 +9,53 @@
         "action": "startWorkflow"
       },
       "ResultPath": "$.OrchestratorOutput",
-      "Next": "FetchBatch1"
+      "Next": "FetchLoop"
     },
-    "FetchBatch1": {
+    "FetchLoop": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
         "analysisIntervalMinutes": 30,
-        "batchId": "batch-0"
+        "batchId": "continuous"
       },
-      "ResultPath": "$.FetcherOutput1",
-      "Next": "FetchBatch2"
+      "ResultPath": "$.FetcherOutput",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "FetchError",
+          "ResultPath": "$.Error"
+        }
+      ],
+      "Next": "CheckHasMore"
     },
-    "FetchBatch2": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
-      "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
-        "batchId": "batch-1"
-      },
-      "ResultPath": "$.FetcherOutput2",
-      "Next": "FetchBatch3"
+    "CheckHasMore": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.FetcherOutput.hasMorePosts",
+          "BooleanEquals": true,
+          "Next": "WaitAndContinue"
+        }
+      ],
+      "Default": "AnalyzePosts"
     },
-    "FetchBatch3": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
-      "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
-        "batchId": "batch-2"
-      },
-      "ResultPath": "$.FetcherOutput3",
-      "Next": "FetchBatch4"
+    "WaitAndContinue": {
+      "Type": "Wait",
+      "Seconds": 5,
+      "Next": "FetchLoop"
     },
-    "FetchBatch4": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
-      "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
-        "batchId": "batch-3"
-      },
-      "ResultPath": "$.FetcherOutput4",
-      "Next": "FetchBatch5"
-    },
-    "FetchBatch5": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
-      "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
-        "batchId": "batch-4"
-      },
-      "ResultPath": "$.FetcherOutput5",
-      "Next": "CheckCompletion"
-    },
-    "CheckCompletion": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
-      "Parameters": {
-        "action": "checkCompletion",
-        "runId.$": "$.OrchestratorOutput.runId"
-      },
-      "ResultPath": "$.CompletionOutput",
-      "Next": "AnalyzePosts"
+    "FetchError": {
+      "Type": "Fail",
+      "Cause": "Failed to fetch posts"
     },
     "AnalyzePosts": {
       "Type": "Task",
