@@ -60,15 +60,29 @@ func NewPosterHandler(ctx context.Context) (*PosterHandler, error) {
 func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEvent) (Response, error) {
 	log.Printf("Poster received event: %+v", event)
 
-	// Get current run state - specifically look for aggregator step which has the top posts
-	runState, err := h.stateManager.GetRun(ctx, event.RunID, "aggregator")
+	// Get aggregator step for top posts
+	aggregatorState, err := h.stateManager.GetRun(ctx, event.RunID, "aggregator")
 	if err != nil {
 		log.Printf("Failed to get aggregator run state: %v", err)
 		return Response{
 			StatusCode: 500,
-			Body:       "Failed to get run state: " + err.Error(),
+			Body:       "Failed to get aggregator state: " + err.Error(),
 		}, err
 	}
+
+	// Get analyzer step for sentiment
+	analyzerState, err := h.stateManager.GetRun(ctx, event.RunID, "analyzer")
+	if err != nil {
+		log.Printf("Failed to get analyzer run state: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to get analyzer state: " + err.Error(),
+		}, err
+	}
+
+	// Use aggregator state as the main state but get sentiment from analyzer
+	runState := aggregatorState
+	runState.OverallSentiment = analyzerState.OverallSentiment
 
 	// Check if there's data to post
 	if runState.TotalPostsRetrieved == 0 {
