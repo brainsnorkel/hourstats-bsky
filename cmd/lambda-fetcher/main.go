@@ -108,13 +108,23 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event FetcherEvent) 
 	if event.Cursor != "" {
 		currentCursor = event.Cursor
 		log.Printf("🔄 FETCHER: Using cursor from event: %s", currentCursor)
+	} else {
+		log.Printf("🔄 FETCHER: Using cursor from state: %s", currentCursor)
 	}
 
-	// Log the time range being used for fetching
-	log.Printf("📅 FETCHER: Fetching posts from time range - From: %s, To: %s (current time: %s)",
+	// Calculate time period details
+	now := time.Now()
+	timeWindow := now.Sub(runState.CutoffTime)
+	
+	// Log detailed time range and cursor information
+	log.Printf("📅 FETCHER: Querying Bluesky for posts in time window:")
+	log.Printf("   📍 Cursor: %s", currentCursor)
+	log.Printf("   ⏰ Start Time: %s (%s ago)", 
 		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"),
-		time.Now().Format("2006-01-02 15:04:05 UTC"),
-		time.Now().Format("2006-01-02 15:04:05 UTC"))
+		now.Sub(runState.CutoffTime).Round(time.Second))
+	log.Printf("   ⏰ End Time: %s (now)", now.Format("2006-01-02 15:04:05 UTC"))
+	log.Printf("   ⏱️  Time Window: %s", timeWindow.Round(time.Second))
+	log.Printf("   📊 Analysis Interval: %d minutes", runState.AnalysisIntervalMinutes)
 
 	// Fetch one batch of posts
 	log.Printf("🔄 FETCHER: Fetching batch with cursor: %s", currentCursor)
@@ -127,6 +137,13 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event FetcherEvent) 
 			Body:       "Failed to fetch posts: " + err.Error(),
 		}, err
 	}
+
+	// Log fetch results
+	log.Printf("✅ FETCHER: Fetch completed successfully:")
+	log.Printf("   📊 Posts Retrieved: %d", len(posts))
+	log.Printf("   🔄 Next Cursor: %s", nextCursor)
+	log.Printf("   ➡️  Has More Posts: %t", hasMorePosts)
+	log.Printf("   📍 Cursor Progression: %s → %s", currentCursor, nextCursor)
 
 	// Convert to state posts
 	statePosts := h.convertToStatePosts(posts)
@@ -165,8 +182,16 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event FetcherEvent) 
 		}, err
 	}
 
+	// Log decision logic
+	log.Printf("🤔 FETCHER: Decision analysis:")
+	log.Printf("   📊 Posts in this batch: %d", len(posts))
+	log.Printf("   ⏰ Cutoff time: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
+	log.Printf("   ➡️  Has more posts from API: %t", hasMorePosts)
+	log.Printf("   🔄 Should continue fetching: %t", shouldContinue)
+	
 	// Dispatch next action
 	if shouldContinue && hasMorePosts {
+		log.Printf("🚀 FETCHER: Dispatching next fetcher with cursor: %s", nextCursor)
 		// Dispatch next fetcher
 		err = h.dispatchNextFetcher(ctx, event.RunID, event.AnalysisIntervalMinutes, nextCursor)
 		if err != nil {
@@ -178,6 +203,11 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event FetcherEvent) 
 		}
 		log.Printf("✅ FETCHER: Dispatched next fetcher for run: %s", event.RunID)
 	} else {
+		log.Printf("🏁 FETCHER: Fetching complete, dispatching processor")
+		log.Printf("   📊 Total posts collected: %d", runState.TotalPostsRetrieved+len(posts))
+		log.Printf("   ⏰ Time window covered: %s to %s", 
+			runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"),
+			time.Now().Format("2006-01-02 15:04:05 UTC"))
 		// Dispatch processor
 		err = h.dispatchProcessor(ctx, event.RunID, event.AnalysisIntervalMinutes)
 		if err != nil {

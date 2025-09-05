@@ -147,7 +147,7 @@ func analyzeRun(ctx context.Context, stateManager *state.StateManager, runID str
 
 	// Analyze posts (same logic as processor)
 	fmt.Println("🧠 Analyzing posts...")
-	analyzedPosts, overallSentiment, err := analyzePosts(filteredPosts)
+	analyzedPosts, overallSentiment, positivePercent, negativePercent, err := analyzePosts(filteredPosts)
 	if err != nil {
 		log.Fatalf("Failed to analyze posts: %v", err)
 	}
@@ -177,7 +177,7 @@ func analyzeRun(ctx context.Context, stateManager *state.StateManager, runID str
 		}
 	}
 
-	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, stats.AnalysisIntervalMinutes)
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, stats.AnalysisIntervalMinutes, len(filteredPosts), positivePercent, negativePercent)
 	fmt.Println(postContent)
 	fmt.Println(strings.Repeat("=", 60))
 
@@ -217,7 +217,7 @@ func filterPostsByCutoffTime(posts []state.Post, cutoffTime time.Time) []state.P
 	return filteredPosts
 }
 
-func analyzePosts(posts []state.Post) ([]state.Post, string, error) {
+func analyzePosts(posts []state.Post) ([]state.Post, string, float64, float64, error) {
 	// Convert state posts to analyzer posts
 	analyzerPosts := make([]analyzer.Post, len(posts))
 	for i, post := range posts {
@@ -236,11 +236,11 @@ func analyzePosts(posts []state.Post) ([]state.Post, string, error) {
 	sentimentAnalyzer := analyzer.New()
 	analyzedPosts, err := sentimentAnalyzer.AnalyzePosts(analyzerPosts)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to analyze posts: %w", err)
+		return nil, "", 0, 0, fmt.Errorf("failed to analyze posts: %w", err)
 	}
 
-	// Calculate overall sentiment
-	overallSentiment := calculateOverallSentiment(analyzedPosts)
+	// Calculate overall sentiment and percentages
+	overallSentiment, positivePercent, negativePercent := calculateOverallSentimentWithPercentages(analyzedPosts)
 
 	// Convert back to state posts with analysis results
 	statePosts := make([]state.Post, len(analyzedPosts))
@@ -258,7 +258,7 @@ func analyzePosts(posts []state.Post) ([]state.Post, string, error) {
 		}
 	}
 
-	return statePosts, overallSentiment, nil
+	return statePosts, overallSentiment, positivePercent, negativePercent, nil
 }
 
 func calculateOverallSentiment(posts []analyzer.AnalyzedPost) string {
@@ -293,6 +293,40 @@ func calculateOverallSentiment(posts []analyzer.AnalyzedPost) string {
 		return "negative"
 	}
 	return "neutral"
+}
+
+func calculateOverallSentimentWithPercentages(posts []analyzer.AnalyzedPost) (string, float64, float64) {
+	positiveCount := 0
+	negativeCount := 0
+	neutralCount := 0
+
+	for _, post := range posts {
+		switch post.Sentiment {
+		case "positive":
+			positiveCount++
+		case "negative":
+			negativeCount++
+		case "neutral":
+			neutralCount++
+		}
+	}
+
+	total := len(posts)
+	if total == 0 {
+		return "neutral", 0, 0
+	}
+
+	positivePercent := float64(positiveCount) / float64(total) * 100
+	negativePercent := float64(negativeCount) / float64(total) * 100
+	neutralPercent := float64(neutralCount) / float64(total) * 100
+
+	// Determine dominant sentiment
+	if positivePercent > negativePercent && positivePercent > neutralPercent {
+		return "positive", positivePercent, negativePercent
+	} else if negativePercent > positivePercent && negativePercent > neutralPercent {
+		return "negative", positivePercent, negativePercent
+	}
+	return "neutral", positivePercent, negativePercent
 }
 
 func getTopPosts(posts []state.Post, n int) []state.Post {

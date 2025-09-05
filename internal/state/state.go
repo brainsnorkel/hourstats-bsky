@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -25,6 +26,7 @@ func getMapKeys(m map[string]types.AttributeValue) []string {
 // RunState represents the state of a single analysis run
 type RunState struct {
 	RunID                   string    `json:"runId" dynamodbav:"runId"`
+	PostID                  string    `json:"postId" dynamodbav:"postId"` // For RunState, PostID = Step
 	Step                    string    `json:"step" dynamodbav:"step"`
 	Status                  string    `json:"status" dynamodbav:"status"`
 	AnalysisIntervalMinutes int       `json:"analysisIntervalMinutes" dynamodbav:"analysisIntervalMinutes"`
@@ -102,6 +104,7 @@ func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisInt
 
 	state := &RunState{
 		RunID:                   runID,
+		PostID:                  "orchestrator", // For RunState, PostID = Step
 		Step:                    "orchestrator",
 		Status:                  "initializing",
 		AnalysisIntervalMinutes: analysisIntervalMinutes,
@@ -154,8 +157,8 @@ func (sm *StateManager) GetRun(ctx context.Context, runID, step string) (*RunSta
 	result, err := sm.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(sm.tableName),
 		Key: map[string]types.AttributeValue{
-			"runId": &types.AttributeValueMemberS{Value: runID},
-			"step":  &types.AttributeValueMemberS{Value: step},
+			"runId":  &types.AttributeValueMemberS{Value: runID},
+			"postId": &types.AttributeValueMemberS{Value: step}, // For RunState, postId = step
 		},
 	})
 	if err != nil {
@@ -177,31 +180,8 @@ func (sm *StateManager) GetRun(ctx context.Context, runID, step string) (*RunSta
 
 // GetLatestRun retrieves the latest run state for a given runID
 func (sm *StateManager) GetLatestRun(ctx context.Context, runID string) (*RunState, error) {
-	// Query for all steps of this run, ordered by step
-	result, err := sm.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(sm.tableName),
-		KeyConditionExpression: aws.String("runId = :runId"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":runId": &types.AttributeValueMemberS{Value: runID},
-		},
-		ScanIndexForward: aws.Bool(false), // Descending order
-		Limit:            aws.Int32(1),    // Get only the latest
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to query run state: %w", err)
-	}
-
-	if len(result.Items) == 0 {
-		return nil, fmt.Errorf("run state not found: %s", runID)
-	}
-
-	var state RunState
-	err = attributevalue.UnmarshalMap(result.Items[0], &state)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal state: %w", err)
-	}
-
-	return &state, nil
+	// Get the run state (orchestrator step)
+	return sm.GetRun(ctx, runID, "orchestrator")
 }
 
 // AddPosts adds posts to the run state by storing them separately
@@ -270,7 +250,7 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, error) {
 	log.Printf("🔍 STATE DEBUG: Retrieving all posts for run %s", runID)
 
-	// Query all posts for this run using the GSI
+	// Query all posts for this run using the posts-index GSI
 	result, err := sm.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(sm.tableName),
 		IndexName:              aws.String("posts-index"),
@@ -292,7 +272,10 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 			log.Printf("Warning: failed to unmarshal post item: %v", err)
 			continue
 		}
-		posts = append(posts, postItem.Post)
+		// Only include posts that have a postId with # (filter out run state items)
+		if strings.Contains(postItem.PostID, "#") {
+			posts = append(posts, postItem.Post)
+		}
 	}
 
 	log.Printf("🔍 STATE DEBUG: Retrieved %d posts for run %s", len(posts), runID)
@@ -350,15 +333,15 @@ func (sm *StateManager) SetPostingComplete(ctx context.Context, runID string) er
 
 // ListRuns retrieves all run IDs from DynamoDB
 func (sm *StateManager) ListRuns(ctx context.Context, limit int32) ([]string, error) {
-	// Use scan to get all run states, then filter by step
+	// Use scan to get all run states (RunState items have postId = "orchestrator")
 	result, err := sm.client.Scan(ctx, &dynamodb.ScanInput{
 		TableName:        aws.String(sm.tableName),
-		FilterExpression: aws.String("#step = :step"),
+		FilterExpression: aws.String("#postId = :postId"),
 		ExpressionAttributeNames: map[string]string{
-			"#step": "step",
+			"#postId": "postId",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":step": &types.AttributeValueMemberS{Value: "orchestrator"},
+			":postId": &types.AttributeValueMemberS{Value: "orchestrator"},
 		},
 		Limit: aws.Int32(limit),
 	})
