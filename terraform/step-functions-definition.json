@@ -4,7 +4,7 @@
   "States": {
     "Start": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-orchestrator",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
       "Parameters": {
         "action": "startWorkflow"
       },
@@ -21,7 +21,7 @@
         "States": {
           "FetchPosts": {
             "Type": "Task",
-            "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-fetcher",
+            "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
             "Parameters": {
               "runId.$": "$.RunID",
               "analysisIntervalMinutes": 30,
@@ -36,7 +36,7 @@
     },
     "CheckCompletion": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-orchestrator",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
       "Parameters": {
         "action": "checkCompletion",
         "runId.$": "$.OrchestratorOutput.RunID"
@@ -62,7 +62,7 @@
     },
     "AnalyzePosts": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-analyzer",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-analyzer",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.RunID"
       },
@@ -71,7 +71,7 @@
     },
     "AggregateResults": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-aggregator",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-aggregator",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.RunID"
       },
@@ -80,7 +80,7 @@
     },
     "PostSummary": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-poster",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-poster",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.RunID"
       },
