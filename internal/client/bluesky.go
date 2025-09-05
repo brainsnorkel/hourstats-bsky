@@ -118,7 +118,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			}
 		}
 
-		// Count engagement metrics
+		// Count engagement metrics - using correct lowercase field names
 		likes := 0
 		if postView.LikeCount != nil {
 			likes = int(*postView.LikeCount)
@@ -149,6 +149,14 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			if postView.ReplyCount != nil {
 				log.Printf("🔍 BLUESKY DEBUG: ReplyCount value: %d", *postView.ReplyCount)
 			}
+			
+			// Debug: Check if there are other engagement fields available
+			log.Printf("🔍 BLUESKY DEBUG: PostView fields - IndexedAt: %s, Uri: %s", postView.IndexedAt, postView.Uri)
+			if postView.Author != nil {
+				log.Printf("🔍 BLUESKY DEBUG: Author: %s", postView.Author.Handle)
+			}
+			// Check if there are other count fields we're missing
+			log.Printf("🔍 BLUESKY DEBUG: PostView struct type: %T", postView)
 		}
 
 		post := Post{
