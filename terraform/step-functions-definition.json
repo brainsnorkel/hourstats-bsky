@@ -14,7 +14,7 @@
     "MapFetchBatches": {
       "Type": "Map",
       "InputPath": "$.OrchestratorOutput",
-      "ItemsPath": "$.FetchBatches",
+      "ItemsPath": "$.fetchBatches",
       "MaxConcurrency": 10,
       "Iterator": {
         "StartAt": "FetchPosts",
