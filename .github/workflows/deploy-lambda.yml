@@ -25,7 +25,7 @@ env:
 
 jobs:
   test:
-    runs-on: [self-hosted, macos, linux, x64]
+    runs-on: [self-hosted, macOS, X64, ARM64]
     # Fallback to GitHub-hosted runners if self-hosted not available
     # runs-on: ubuntu-latest
     # Alternative: Use matrix strategy for runner selection
@@ -78,7 +78,7 @@ jobs:
 
   build:
     needs: test
-    runs-on: [self-hosted, macos, linux, x64]
+    runs-on: [self-hosted, macOS, X64, ARM64]
     # Fallback to GitHub-hosted runners if self-hosted not available
     # runs-on: ubuntu-latest
     steps:
@@ -122,7 +122,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: [self-hosted, macos, linux, x64]
+    runs-on: [self-hosted, macOS, X64, ARM64]
     # Fallback to GitHub-hosted runners if self-hosted not available
     # runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -279,7 +279,7 @@ jobs:
 
   notify:
     needs: [test, build, deploy]
-    runs-on: [self-hosted, macos, linux, x64]
+    runs-on: [self-hosted, macOS, X64, ARM64]
     # Fallback to GitHub-hosted runners if self-hosted not available
     # runs-on: ubuntu-latest
     if: always()
