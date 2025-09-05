@@ -71,6 +71,13 @@ func (h *AggregatorHandler) HandleRequest(ctx context.Context, event StepFunctio
 	log.Printf("Aggregating %d posts after cutoff filtering", len(filteredPosts))
 	topPosts := h.getTopPosts(filteredPosts, 5)
 
+	// Debug logging for top posts to see their sentiment and engagement scores
+	log.Printf("🔍 AGGREGATOR DEBUG: Top 5 posts selected:")
+	for i, post := range topPosts {
+		log.Printf("🔍 AGGREGATOR DEBUG: Top %d - Author: %s, Sentiment: %s, EngagementScore: %.2f, Likes: %d, Reposts: %d, Replies: %d", 
+			i+1, post.Author, post.Sentiment, post.EngagementScore, post.Likes, post.Reposts, post.Replies)
+	}
+
 	// Update state with top posts
 	runState.TopPosts = topPosts
 	runState.Step = "aggregator"
