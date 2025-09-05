@@ -67,9 +67,18 @@ func listAllRuns(ctx context.Context, stateManager *state.StateManager, limit in
 			if err != nil {
 				fmt.Printf(" (error getting stats: %v)", err)
 			} else {
-				fmt.Printf(" - %s/%s, %d posts, %s",
-					stats.Status, stats.Step, stats.ActualPostsCount,
-					stats.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
+				// Calculate duration and format times
+				duration := stats.UpdatedAt.Sub(stats.CutoffTime)
+				minutes := int(duration.Minutes())
+
+				// Convert to local time
+				startTime := stats.CutoffTime.Local()
+				endTime := stats.UpdatedAt.Local()
+
+				fmt.Printf(" - %s/%s, %d posts, %d min (%s to %s)",
+					stats.Status, stats.Step, stats.ActualPostsCount, minutes,
+					startTime.Format("2006-01-02 15:04:05"),
+					endTime.Format("2006-01-02 15:04:05"))
 			}
 		}
 		fmt.Println()
@@ -85,15 +94,29 @@ func analyzeRun(ctx context.Context, stateManager *state.StateManager, runID str
 		log.Fatalf("Failed to get run stats: %v", err)
 	}
 
+	// Calculate duration and format times
+	duration := stats.UpdatedAt.Sub(stats.CutoffTime)
+	minutes := int(duration.Minutes())
+
+	// Convert to local time
+	startTime := stats.CutoffTime.Local()
+	endTime := stats.UpdatedAt.Local()
+	createdTime := stats.CreatedAt.Local()
+	updatedTime := stats.UpdatedAt.Local()
+
 	fmt.Printf("📊 Run Statistics:\n")
 	fmt.Printf("  Status: %s\n", stats.Status)
 	fmt.Printf("  Step: %s\n", stats.Step)
 	fmt.Printf("  Analysis Interval: %d minutes\n", stats.AnalysisIntervalMinutes)
-	fmt.Printf("  Cutoff Time: %s\n", stats.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
+	fmt.Printf("  Time Range: %s to %s (%d minutes)\n",
+		startTime.Format("2006-01-02 15:04:05"),
+		endTime.Format("2006-01-02 15:04:05"),
+		minutes)
+	fmt.Printf("  Cutoff Time (UTC): %s\n", stats.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 	fmt.Printf("  Total Posts Retrieved: %d\n", stats.TotalPostsRetrieved)
 	fmt.Printf("  Actual Posts in DB: %d\n", stats.ActualPostsCount)
-	fmt.Printf("  Created: %s\n", stats.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
-	fmt.Printf("  Updated: %s\n", stats.UpdatedAt.Format("2006-01-02 15:04:05 UTC"))
+	fmt.Printf("  Created: %s\n", createdTime.Format("2006-01-02 15:04:05"))
+	fmt.Printf("  Updated: %s\n", updatedTime.Format("2006-01-02 15:04:05"))
 	if stats.OverallSentiment != "" {
 		fmt.Printf("  Overall Sentiment: %s\n", stats.OverallSentiment)
 	}
