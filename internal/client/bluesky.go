@@ -54,6 +54,105 @@ func (c *BlueskyClient) Authenticate() error {
 	return nil
 }
 
+// GetTrendingPostsBatch fetches a single batch of posts using cursor-based pagination
+func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string, cutoffTime time.Time) ([]Post, string, bool, error) {
+	log.Printf("Fetching posts batch with cursor: %s", cursor)
+
+	// Make the API request with retry logic
+	var searchResult *bsky.FeedSearchPosts_Output
+	var err error
+
+	for retries := 0; retries < 3; retries++ {
+		// Use Bluesky's official moderation labeler to get labels
+		subscribedLabelers := []string{"did:plc:ar7c4by46qjd4h4ww4t5xvwa"}
+		searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", subscribedLabelers, "", "")
+		if err == nil {
+			break
+		}
+
+		// If it's a rate limit error, wait and retry
+		if strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "rate") {
+			log.Printf("API rate limit hit, waiting 5 seconds before retry %d/3", retries+1)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		// For other errors, fail immediately
+		return nil, "", false, fmt.Errorf("failed to search public posts: %w", err)
+	}
+
+	if err != nil {
+		return nil, "", false, fmt.Errorf("failed to search public posts after 3 retries: %w", err)
+	}
+
+	// Convert to our Post format and filter by time
+	var posts []Post
+	for _, postView := range searchResult.Posts {
+		// Filter posts by creation time
+		postTime, err := time.Parse(time.RFC3339, postView.IndexedAt)
+		if err != nil {
+			continue // Skip posts with invalid timestamps
+		}
+
+		// Only include posts from the analysis interval
+		if postTime.Before(cutoffTime) {
+			continue
+		}
+
+		// Handle pointer fields safely
+		var author string
+		if postView.Author != nil {
+			author = postView.Author.Handle
+		}
+
+		var text string
+		if postView.Record != nil {
+			if feedPost, ok := postView.Record.Val.(*bsky.FeedPost); ok {
+				text = feedPost.Text
+			}
+		}
+
+		// Count engagement metrics
+		likes := 0
+		if postView.LikeCount != nil {
+			likes = int(*postView.LikeCount)
+		}
+
+		reposts := 0
+		if postView.RepostCount != nil {
+			reposts = int(*postView.RepostCount)
+		}
+
+		replies := 0
+		if postView.ReplyCount != nil {
+			replies = int(*postView.ReplyCount)
+		}
+
+		post := Post{
+			URI:     postView.Uri,
+			Text:    text,
+			Author:  author,
+			Likes:   likes,
+			Reposts: reposts,
+			Replies: replies,
+			CreatedAt: postTime.Format(time.RFC3339),
+		}
+
+		posts = append(posts, post)
+	}
+
+	// Extract next cursor and determine if there are more posts
+	nextCursor := ""
+	hasMorePosts := false
+	if searchResult.Cursor != nil && *searchResult.Cursor != "" {
+		nextCursor = *searchResult.Cursor
+		hasMorePosts = true
+	}
+
+	log.Printf("Retrieved %d posts from batch (cursor: %s, nextCursor: %s, hasMore: %v)", len(posts), cursor, nextCursor, hasMorePosts)
+	return posts, nextCursor, hasMorePosts, nil
+}
+
 func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, error) {
 	ctx := context.Background()
 
