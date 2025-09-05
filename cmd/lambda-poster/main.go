@@ -213,14 +213,15 @@ func (h *PosterHandler) convertToClientPosts(posts []state.Post) []client.Post {
 	clientPosts := make([]client.Post, len(posts))
 	for i, post := range posts {
 		clientPosts[i] = client.Post{
-			URI:       post.URI,
-			Text:      post.Text,
-			Author:    post.Author,
-			Likes:     post.Likes,
-			Reposts:   post.Reposts,
-			Replies:   post.Replies,
-			CreatedAt: post.CreatedAt,
-			Sentiment: post.Sentiment,
+			URI:             post.URI,
+			Text:            post.Text,
+			Author:          post.Author,
+			Likes:           post.Likes,
+			Reposts:         post.Reposts,
+			Replies:         post.Replies,
+			CreatedAt:       post.CreatedAt,
+			Sentiment:       post.Sentiment,
+			EngagementScore: post.EngagementScore,
 		}
 	}
 	return clientPosts
