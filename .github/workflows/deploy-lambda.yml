@@ -87,10 +87,10 @@ jobs:
             fi
           done
 
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: lambda-function
+          name: lambda-functions
           path: terraform/hourstats.zip
 
   deploy:
@@ -102,10 +102,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download build artifact
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: lambda-function
+          name: lambda-functions
           path: terraform/
 
       - name: Configure AWS credentials
