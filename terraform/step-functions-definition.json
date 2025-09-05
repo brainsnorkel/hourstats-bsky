@@ -9,29 +9,61 @@
         "action": "startWorkflow"
       },
       "ResultPath": "$.OrchestratorOutput",
-      "Next": "MapFetchBatches"
+      "Next": "FetchBatch1"
     },
-    "MapFetchBatches": {
-      "Type": "Map",
-      "InputPath": "$.OrchestratorOutput",
-      "ItemsPath": "$.fetchBatches",
-      "MaxConcurrency": 10,
-      "Iterator": {
-        "StartAt": "FetchPosts",
-        "States": {
-          "FetchPosts": {
-            "Type": "Task",
-            "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
-            "Parameters": {
-              "runId.$": "$.runId",
-              "analysisIntervalMinutes": 30,
-              "batchId.$": "$$.Map.Item.Value"
-            },
-            "ResultPath": "$.FetcherOutput",
-            "End": true
-          }
-        }
+    "FetchBatch1": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-0"
       },
+      "ResultPath": "$.FetcherOutput1",
+      "Next": "FetchBatch2"
+    },
+    "FetchBatch2": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-1"
+      },
+      "ResultPath": "$.FetcherOutput2",
+      "Next": "FetchBatch3"
+    },
+    "FetchBatch3": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-2"
+      },
+      "ResultPath": "$.FetcherOutput3",
+      "Next": "FetchBatch4"
+    },
+    "FetchBatch4": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-3"
+      },
+      "ResultPath": "$.FetcherOutput4",
+      "Next": "FetchBatch5"
+    },
+    "FetchBatch5": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+      "Parameters": {
+        "runId.$": "$.runId",
+        "analysisIntervalMinutes": 30,
+        "batchId": "batch-4"
+      },
+      "ResultPath": "$.FetcherOutput5",
       "Next": "CheckCompletion"
     },
     "CheckCompletion": {
@@ -42,23 +74,7 @@
         "runId.$": "$.OrchestratorOutput.runId"
       },
       "ResultPath": "$.CompletionOutput",
-      "Next": "IsComplete"
-    },
-    "IsComplete": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.CompletionOutput.IsComplete",
-          "BooleanEquals": false,
-          "Next": "WaitAndRefetch"
-        }
-      ],
-      "Default": "AnalyzePosts"
-    },
-    "WaitAndRefetch": {
-      "Type": "Wait",
-      "Seconds": 60,
-      "Next": "MapFetchBatches"
+      "Next": "AnalyzePosts"
     },
     "AnalyzePosts": {
       "Type": "Task",
