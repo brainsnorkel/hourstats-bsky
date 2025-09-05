@@ -74,8 +74,12 @@ func (h *OrchestratorHandler) handleStartWorkflow(ctx context.Context, event Eve
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	log.Printf("Starting new analysis run: %s", runID)
 
-	// Create new run state
-	_, err := h.stateManager.CreateRun(ctx, runID, 30) // TODO: Get from SSM
+	// Create new run state with the analysis interval from the event
+	analysisIntervalMinutes := 15 // Default to 15 minutes
+	if event.AnalysisIntervalMinutes > 0 {
+		analysisIntervalMinutes = event.AnalysisIntervalMinutes
+	}
+	_, err := h.stateManager.CreateRun(ctx, runID, analysisIntervalMinutes)
 	if err != nil {
 		log.Printf("Failed to create run state: %v", err)
 		return Response{
