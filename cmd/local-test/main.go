@@ -197,8 +197,7 @@ func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, an
 		cursor = nextCursor
 	}
 
-	// Update run state to fetcher step
-	runState.Step = "fetcher"
+	// Update run state to completed
 	runState.Status = "completed"
 	runState.UpdatedAt = time.Now()
 	err = m.stateManager.UpdateRun(ctx, runState)
@@ -267,8 +266,8 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		topPosts = allPosts[:5]
 	}
 
-	// Calculate overall sentiment
-	overallSentiment := m.calculateOverallSentiment(allPosts)
+	// Calculate overall sentiment and percentages
+	overallSentiment, positivePercent, negativePercent := m.calculateOverallSentimentWithPercentages(allPosts)
 
 	// Convert to formatter posts
 	formatterPosts := make([]formatter.Post, len(topPosts))
@@ -284,7 +283,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 	}
 
 	// Generate post content
-	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes)
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, len(allPosts), positivePercent, negativePercent)
 
 	// Calculate character count
 	charCount := len(postContent)
@@ -302,15 +301,20 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		fmt.Printf("  ⚠️ WARNING: Only %d characters remaining\n", remaining)
 	}
 
-	// Update run state
-	runState, err := m.stateManager.GetRun(ctx, runID, "fetcher")
+	// Update run state with top posts
+	err = m.stateManager.SetAnalysisComplete(ctx, runID, overallSentiment, topPosts)
+	if err != nil {
+		return fmt.Errorf("failed to set top posts: %w", err)
+	}
+
+	// Update run state to processor step
+	runState, err := m.stateManager.GetRun(ctx, runID, "orchestrator")
 	if err != nil {
 		return fmt.Errorf("failed to get run state: %w", err)
 	}
 
 	runState.Step = "processor"
 	runState.Status = "completed"
-	runState.OverallSentiment = overallSentiment
 	runState.UpdatedAt = time.Now()
 	err = m.stateManager.UpdateRun(ctx, runState)
 	if err != nil {
@@ -410,4 +414,36 @@ func (m *MockLambdaClient) calculateOverallSentiment(posts []state.Post) string 
 		return "negative"
 	}
 	return "neutral"
+}
+
+func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []state.Post) (string, float64, float64) {
+	if len(posts) == 0 {
+		return "neutral", 0, 0
+	}
+
+	positiveCount := 0
+	negativeCount := 0
+	neutralCount := 0
+
+	for _, post := range posts {
+		switch post.Sentiment {
+		case "positive":
+			positiveCount++
+		case "negative":
+			negativeCount++
+		default:
+			neutralCount++
+		}
+	}
+
+	total := len(posts)
+	positivePercent := float64(positiveCount) / float64(total) * 100
+	negativePercent := float64(negativeCount) / float64(total) * 100
+
+	if positiveCount > total/2 {
+		return "positive", positivePercent, negativePercent
+	} else if negativeCount > total/2 {
+		return "negative", positivePercent, negativePercent
+	}
+	return "neutral", positivePercent, negativePercent
 }

@@ -379,8 +379,23 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 		}
 	}
 
+	// Calculate sentiment percentages
+	positiveCount := 0
+	negativeCount := 0
+	for _, post := range posts {
+		switch post.Sentiment {
+		case "positive":
+			positiveCount++
+		case "negative":
+			negativeCount++
+		}
+	}
+	totalPosts := len(posts)
+	positivePercent := float64(positiveCount) / float64(totalPosts) * 100
+	negativePercent := float64(negativeCount) / float64(totalPosts) * 100
+
 	// Use shared formatter to generate the post content
-	summaryText := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes)
+	summaryText := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, totalPosts, positivePercent, negativePercent)
 
 	// Check if we need to truncate, but try to keep all 5 posts
 	if len([]rune(summaryText)) > 300 {

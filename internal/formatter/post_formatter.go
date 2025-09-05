@@ -15,15 +15,15 @@ type Post struct {
 }
 
 // FormatPostContent generates the post content that will be posted to Bluesky
-func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int) string {
-	// Convert sentiment to more descriptive text
-	sentimentText := mapSentimentToText(overallSentiment)
-
+func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, positivePercent, negativePercent float64) string {
 	// Format time period
 	timePeriod := formatTimePeriod(analysisIntervalMinutes)
 
-	// Generate the post content
-	content := fmt.Sprintf("For %s Bluesky was %s\n\n", timePeriod, sentimentText)
+	// Generate the post content with new format
+	content := fmt.Sprintf("For the last %s I found %d posts with sentiment +%.0f%% -%.0f%%\n\n", 
+		timePeriod, totalPosts, positivePercent, negativePercent)
+	
+	content += "Top engagement:\n"
 
 	for i, post := range topPosts {
 		engagementScore := int(post.Likes + post.Reposts + post.Replies)
