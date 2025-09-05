@@ -180,32 +180,6 @@ func (h *OrchestratorHandler) dispatchFetcher(ctx context.Context, runID string,
 	return nil
 }
 
-// dispatchProcessor invokes the processor lambda
-func (h *OrchestratorHandler) dispatchProcessor(ctx context.Context, runID string, analysisIntervalMinutes int) error {
-	processorPayload := map[string]interface{}{
-		"runId":                   runID,
-		"analysisIntervalMinutes": analysisIntervalMinutes,
-		"status":                  "processing",
-	}
-
-	payloadBytes, err := json.Marshal(processorPayload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal processor payload: %w", err)
-	}
-
-	_, err = h.lambdaClient.Invoke(ctx, &awslambda.InvokeInput{
-		FunctionName: aws.String("hourstats-processor"),
-		Payload:      payloadBytes,
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to invoke processor lambda: %w", err)
-	}
-
-	log.Printf("Successfully dispatched processor for run: %s", runID)
-	return nil
-}
-
 func main() {
 	ctx := context.Background()
 	handler, err := NewOrchestratorHandler(ctx)
