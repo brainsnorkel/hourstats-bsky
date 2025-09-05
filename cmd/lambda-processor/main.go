@@ -52,7 +52,7 @@ func NewProcessorHandler(ctx context.Context) (*ProcessorHandler, error) {
 	}
 
 	// Initialize state manager
-	stateManager, err := state.NewStateManager(ctx, "hourstats-runs")
+	stateManager, err := state.NewStateManager(ctx, "hourstats-state")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state manager: %w", err)
 	}
