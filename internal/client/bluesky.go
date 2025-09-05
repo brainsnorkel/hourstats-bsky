@@ -12,6 +12,7 @@ import (
 	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/bluesky-social/indigo/atproto/client"
 	"github.com/bluesky-social/indigo/lex/util"
+	"github.com/christophergentle/hourstats-bsky/internal/formatter"
 )
 
 type Post struct {
@@ -365,41 +366,21 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int) error {
 	ctx := context.Background()
 
-	// Format time period
-	var timePeriod string
-	if analysisIntervalMinutes >= 60 {
-		timePeriod = "1 hour"
-	} else {
-		timePeriod = fmt.Sprintf("%d minutes", analysisIntervalMinutes)
+	// Convert client posts to formatter posts
+	formatterPosts := make([]formatter.Post, len(posts))
+	for i, post := range posts {
+		formatterPosts[i] = formatter.Post{
+			Author:          post.Author,
+			Likes:           post.Likes,
+			Reposts:         post.Reposts,
+			Replies:         post.Replies,
+			Sentiment:       post.Sentiment,
+			EngagementScore: post.EngagementScore,
+		}
 	}
 
-	// Create the summary post in the specified format
-	summaryText := fmt.Sprintf("For %s Bluesky was %s\n\n", timePeriod, overallSentiment)
-
-	// Add links to the top 5 posts (ranked by engagement score)
-	// Use handle format with clickable links
-	for i := range posts {
-		if i >= 5 { // Limit to top 5
-			break
-		}
-		// Use the pre-calculated engagement score from the analyzer
-		engagementScore := int(posts[i].EngagementScore)
-
-		// Determine sentiment indicator
-		var sentimentIndicator string
-		switch posts[i].Sentiment {
-		case "positive":
-			sentimentIndicator = "+"
-		case "negative":
-			sentimentIndicator = "-"
-		case "neutral":
-			sentimentIndicator = "x"
-		default:
-			sentimentIndicator = "x" // Default to neutral if unknown
-		}
-
-		summaryText += fmt.Sprintf("%d. @%s (%d) %s\n", i+1, posts[i].Author, engagementScore, sentimentIndicator)
-	}
+	// Use shared formatter to generate the post content
+	summaryText := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes)
 
 	// Check if we need to truncate, but try to keep all 5 posts
 	if len([]rune(summaryText)) > 300 {

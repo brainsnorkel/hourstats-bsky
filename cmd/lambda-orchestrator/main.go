@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	awslambda "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
@@ -101,9 +103,20 @@ func (h *OrchestratorHandler) handleStartWorkflow(ctx context.Context, event Eve
 
 	log.Printf("Created run state for continuous fetching: %s", runID)
 
+	// Dispatch the first fetcher lambda
+	err = h.dispatchFetcher(ctx, runID, analysisIntervalMinutes)
+	if err != nil {
+		log.Printf("Failed to dispatch first fetcher: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to dispatch first fetcher: " + err.Error(),
+			RunID:      runID,
+		}, err
+	}
+
 	return Response{
 		StatusCode: 200,
-		Body:       "Run state created successfully",
+		Body:       "Run state created and first fetcher dispatched successfully",
 		RunID:      runID,
 	}, nil
 }
@@ -138,6 +151,59 @@ func (h *OrchestratorHandler) handleCheckCompletion(ctx context.Context, event E
 		RunID:      runID,
 		IsComplete: isComplete,
 	}, nil
+}
+
+// dispatchFetcher invokes the fetcher lambda
+func (h *OrchestratorHandler) dispatchFetcher(ctx context.Context, runID string, analysisIntervalMinutes int) error {
+	fetcherPayload := map[string]interface{}{
+		"runId":                   runID,
+		"analysisIntervalMinutes": analysisIntervalMinutes,
+		"status":                  "fetching",
+		"maxIterations":           30,
+	}
+
+	payloadBytes, err := json.Marshal(fetcherPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal fetcher payload: %w", err)
+	}
+
+	_, err = h.lambdaClient.Invoke(ctx, &awslambda.InvokeInput{
+		FunctionName: aws.String("hourstats-fetcher"),
+		Payload:      payloadBytes,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to invoke fetcher lambda: %w", err)
+	}
+
+	log.Printf("Successfully dispatched fetcher for run: %s", runID)
+	return nil
+}
+
+// dispatchProcessor invokes the processor lambda
+func (h *OrchestratorHandler) dispatchProcessor(ctx context.Context, runID string, analysisIntervalMinutes int) error {
+	processorPayload := map[string]interface{}{
+		"runId":                   runID,
+		"analysisIntervalMinutes": analysisIntervalMinutes,
+		"status":                  "processing",
+	}
+
+	payloadBytes, err := json.Marshal(processorPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal processor payload: %w", err)
+	}
+
+	_, err = h.lambdaClient.Invoke(ctx, &awslambda.InvokeInput{
+		FunctionName: aws.String("hourstats-processor"),
+		Payload:      payloadBytes,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to invoke processor lambda: %w", err)
+	}
+
+	log.Printf("Successfully dispatched processor for run: %s", runID)
+	return nil
 }
 
 func main() {

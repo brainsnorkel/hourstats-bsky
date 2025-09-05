@@ -18,18 +18,19 @@ The bot posts summaries in this format:
 ```
 For 30 minutes Bluesky was passionate
 
-1. @username.bsky.social (15)
-2. @anotheruser.bsky.social (12)
-3. @thirduser.bsky.social (8)
-4. @fourthuser.bsky.social (6)
-5. @fifthuser.bsky.social (4)
+1. @username.bsky.social (15) +
+2. @anotheruser.bsky.social (12) -
+3. @thirduser.bsky.social (8) x
+4. @fourthuser.bsky.social (6) +
+5. @fifthuser.bsky.social (4) x
 ```
 
 **Features:**
 - **Time period**: Configurable (minutes or hours)
 - **Sentiment**: Emotion-based analysis (passionate, excited, steady, etc.)
 - **Top 5 posts**: Ranked by total engagement score
-- **Engagement scores**: Displayed in parentheses (likes + reposts + replies)
+- **Engagement scores**: Total score in parentheses (likes + reposts + replies)
+- **Sentiment indicators**: + for positive, - for negative, x for neutral
 - **Adult content filtering**: Uses Bluesky's official moderation labels
 
 
@@ -438,7 +439,29 @@ go test ./cmd/lambda-...
 
 # Test complete workflow
 make test-workflow
+
+# Query previous runs and test processor output
+./scripts/query-runs.sh list 10          # List last 10 runs
+./scripts/query-runs.sh analyze <runID>  # Analyze specific run
 ```
+
+### Query Utility
+
+The system includes a query utility to inspect previous runs and test what would be posted:
+
+```bash
+# List recent runs with details
+go run cmd/query-runs/main.go -list -limit=10 -details
+
+# Analyze a specific run and see what would be posted
+go run cmd/query-runs/main.go -run <runID>
+```
+
+The utility shows:
+- Run statistics (posts collected, sentiment, etc.)
+- Generated post content that would be posted to Bluesky
+- Character count and remaining characters before Bluesky's 300-character limit
+- Warnings if the post is too long or close to the limit
 
 ## Contributing
 
