@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
+	"github.com/christophergentle/hourstats-bsky/internal/state"
 )
 
 // StepFunctionsEvent represents the event from Step Functions
@@ -24,11 +24,11 @@ type StepFunctionsEvent struct {
 
 // Response represents the Lambda response
 type Response struct {
-	StatusCode    int    `json:"statusCode"`
-	Body          string `json:"body"`
-	HasMorePosts  bool   `json:"hasMorePosts"`
-	PostsRetrieved int   `json:"postsRetrieved"`
-	NextCursor    string `json:"nextCursor,omitempty"`
+	StatusCode     int    `json:"statusCode"`
+	Body           string `json:"body"`
+	HasMorePosts   bool   `json:"hasMorePosts"`
+	PostsRetrieved int    `json:"postsRetrieved"`
+	NextCursor     string `json:"nextCursor,omitempty"`
 }
 
 // FetcherHandler handles the fetcher Lambda function
@@ -63,14 +63,18 @@ func NewFetcherHandler(ctx context.Context) (*FetcherHandler, error) {
 func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsEvent) (Response, error) {
 	log.Printf("Fetcher received event: %+v", event)
 
-	// Get current run state for the fetcher step
+	// Get current run state (try fetcher step first, fall back to orchestrator)
 	runState, err := h.stateManager.GetRun(ctx, event.RunID, "fetcher")
 	if err != nil {
-		log.Printf("Failed to get run state: %v", err)
-		return Response{
-			StatusCode: 500,
-			Body:       "Failed to get run state: " + err.Error(),
-		}, err
+		// If fetcher step doesn't exist, get orchestrator step
+		runState, err = h.stateManager.GetRun(ctx, event.RunID, "orchestrator")
+		if err != nil {
+			log.Printf("Failed to get run state: %v", err)
+			return Response{
+				StatusCode: 500,
+				Body:       "Failed to get run state: " + err.Error(),
+			}, err
+		}
 	}
 
 	// Get Bluesky credentials from SSM
@@ -115,7 +119,17 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 		}, err
 	}
 
-	// Update cursor
+	// Get updated state to show cumulative count
+	updatedState, err := h.stateManager.GetRun(ctx, event.RunID, "fetcher")
+	if err != nil {
+		// Fall back to orchestrator step if fetcher step doesn't exist yet
+		updatedState, err = h.stateManager.GetRun(ctx, event.RunID, "orchestrator")
+		if err != nil {
+			log.Printf("Warning: Could not get updated state for cumulative count: %v", err)
+		}
+	}
+
+	// Update cursor and create fetcher step
 	if err := h.stateManager.UpdateCursor(ctx, event.RunID, nextCursor, hasMorePosts); err != nil {
 		log.Printf("Failed to update cursor: %v", err)
 		return Response{
@@ -124,13 +138,19 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 		}, err
 	}
 
-	log.Printf("Successfully fetched %d posts for run: %s", len(posts), event.RunID)
+	// Log cumulative post count
+	cumulativeCount := 0
+	if updatedState != nil {
+		cumulativeCount = updatedState.TotalPostsRetrieved
+	}
+	log.Printf("✅ FETCHER BATCH COMPLETE - Run: %s, Batch: %s, Posts this batch: %d, Cumulative posts: %d, Cursor: %s → %s, HasMore: %v",
+		event.RunID, event.BatchID, len(posts), cumulativeCount, runState.CurrentCursor, nextCursor, hasMorePosts)
 	return Response{
-		StatusCode:    200,
-		Body:          "Posts fetched successfully",
-		HasMorePosts:  hasMorePosts,
+		StatusCode:     200,
+		Body:           "Posts fetched successfully",
+		HasMorePosts:   hasMorePosts,
 		PostsRetrieved: len(posts),
-		NextCursor:    nextCursor,
+		NextCursor:     nextCursor,
 	}, nil
 }
 
@@ -171,14 +191,14 @@ func (h *FetcherHandler) getBlueskyCredentials(ctx context.Context) (string, str
 func (h *FetcherHandler) fetchPostsWithCursor(ctx context.Context, client *client.BlueskyClient, cursor string, analysisIntervalMinutes int) ([]client.Post, string, bool, error) {
 	// Calculate cutoff time
 	cutoffTime := time.Now().Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
-	
+
 	// Use the existing GetTrendingPosts method but with cursor support
 	// For now, we'll fetch one batch of 100 posts
 	posts, nextCursor, hasMorePosts, err := client.GetTrendingPostsBatch(ctx, cursor, cutoffTime)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("failed to fetch posts batch: %w", err)
 	}
-	
+
 	return posts, nextCursor, hasMorePosts, nil
 }
 
@@ -187,15 +207,15 @@ func (h *FetcherHandler) convertToStatePosts(posts []client.Post) []state.Post {
 	statePosts := make([]state.Post, len(posts))
 	for i, post := range posts {
 		statePosts[i] = state.Post{
-			URI:            post.URI,
-			Text:           post.Text,
-			Author:         post.Author,
-			Likes:          post.Likes,
-			Reposts:        post.Reposts,
-			Replies:        post.Replies,
-			Sentiment:      post.Sentiment,
+			URI:             post.URI,
+			Text:            post.Text,
+			Author:          post.Author,
+			Likes:           post.Likes,
+			Reposts:         post.Reposts,
+			Replies:         post.Replies,
+			Sentiment:       post.Sentiment,
 			EngagementScore: 0, // Will be calculated by analyzer
-			CreatedAt:      post.CreatedAt,
+			CreatedAt:       post.CreatedAt,
 		}
 	}
 	return statePosts
