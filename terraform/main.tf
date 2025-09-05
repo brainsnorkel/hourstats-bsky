@@ -133,10 +133,15 @@ resource "aws_dynamodb_table" "hourstats_state" {
   name           = "hourstats-state"
   billing_mode   = "PAY_PER_REQUEST"
   hash_key       = "runId"
-  range_key      = "step"
+  range_key      = "postId"
 
   attribute {
     name = "runId"
+    type = "S"
+  }
+
+  attribute {
+    name = "postId"
     type = "S"
   }
 
@@ -147,11 +152,6 @@ resource "aws_dynamodb_table" "hourstats_state" {
 
   attribute {
     name = "status"
-    type = "S"
-  }
-
-  attribute {
-    name = "postId"
     type = "S"
   }
 
