@@ -296,16 +296,10 @@ resource "aws_ssm_parameter" "bluesky_handle" {
   }
 }
 
-resource "aws_ssm_parameter" "bluesky_password" {
-  name      = "/hourstats/bluesky/password"
-  type      = "SecureString"
-  value     = "your-app-password"
-  overwrite = true
-
-  tags = {
-    Name        = "${var.function_name}-bluesky-password"
-    Environment = "production"
-  }
+# Note: The bluesky password should be set manually via AWS CLI or Console
+# This data source references the existing parameter without managing it
+data "aws_ssm_parameter" "bluesky_password" {
+  name = "/hourstats/bluesky/password"
 }
 
 # CloudWatch Log Groups
