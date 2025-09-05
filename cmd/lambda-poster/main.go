@@ -83,6 +83,8 @@ func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEv
 	// Use aggregator state as the main state but get sentiment from analyzer
 	runState := aggregatorState
 	runState.OverallSentiment = analyzerState.OverallSentiment
+	
+	log.Printf("🔍 POSTER DEBUG: Analyzer sentiment: '%s', OverallSentiment: '%s'", analyzerState.OverallSentiment, runState.OverallSentiment)
 
 	// Check if there's data to post
 	if runState.TotalPostsRetrieved == 0 {
