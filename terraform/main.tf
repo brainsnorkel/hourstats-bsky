@@ -302,36 +302,8 @@ data "aws_ssm_parameter" "bluesky_password" {
   name = "/hourstats/bluesky/password"
 }
 
-# CloudWatch Log Groups
-resource "aws_cloudwatch_log_group" "orchestrator_logs" {
-  name              = "/aws/lambda/hourstats-orchestrator"
-  retention_in_days = 14
-
-  tags = {
-    Name        = "${var.function_name}-orchestrator-logs"
-    Environment = "production"
-  }
-}
-
-resource "aws_cloudwatch_log_group" "fetcher_logs" {
-  name              = "/aws/lambda/hourstats-fetcher"
-  retention_in_days = 14
-
-  tags = {
-    Name        = "${var.function_name}-fetcher-logs"
-    Environment = "production"
-  }
-}
-
-resource "aws_cloudwatch_log_group" "processor_logs" {
-  name              = "/aws/lambda/hourstats-processor"
-  retention_in_days = 14
-
-  tags = {
-    Name        = "${var.function_name}-processor-logs"
-    Environment = "production"
-  }
-}
+# CloudWatch Log Groups are automatically created by AWS Lambda
+# No need to define them explicitly in Terraform
 
 # Outputs
 output "dynamodb_table_name" {
@@ -361,5 +333,5 @@ output "eventbridge_rule_arn" {
 
 output "log_group_name" {
   description = "Name of the CloudWatch log group"
-  value       = aws_cloudwatch_log_group.orchestrator_logs.name
+  value       = "/aws/lambda/hourstats-orchestrator"
 }
