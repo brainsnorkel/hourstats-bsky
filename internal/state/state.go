@@ -23,7 +23,6 @@ type RunState struct {
 	CurrentCursor           string    `json:"currentCursor,omitempty" dynamodbav:"currentCursor,omitempty"`
 	TotalPostsRetrieved     int       `json:"totalPostsRetrieved" dynamodbav:"totalPostsRetrieved"`
 	HasMorePosts            bool      `json:"hasMorePosts" dynamodbav:"hasMorePosts"`
-	Posts                   []Post    `json:"posts,omitempty" dynamodbav:"posts,omitempty"`
 	OverallSentiment        string    `json:"overallSentiment,omitempty" dynamodbav:"overallSentiment,omitempty"`
 	TopPosts                []Post    `json:"topPosts,omitempty" dynamodbav:"topPosts,omitempty"`
 	CreatedAt               time.Time `json:"createdAt" dynamodbav:"createdAt"`
@@ -42,6 +41,15 @@ type Post struct {
 	Sentiment       string  `json:"sentiment" dynamodbav:"sentiment"`
 	EngagementScore float64 `json:"engagementScore" dynamodbav:"engagementScore"`
 	CreatedAt       string  `json:"createdAt" dynamodbav:"createdAt"`
+}
+
+// PostItem represents a post stored separately in DynamoDB
+type PostItem struct {
+	RunID     string    `json:"runId" dynamodbav:"runId"`
+	PostID    string    `json:"postId" dynamodbav:"postId"` // runId#postIndex
+	Post      Post      `json:"post" dynamodbav:"post"`
+	CreatedAt time.Time `json:"createdAt" dynamodbav:"createdAt"`
+	TTL       int64     `json:"ttl" dynamodbav:"ttl"`
 }
 
 // StateManager handles DynamoDB state operations
@@ -175,7 +183,7 @@ func (sm *StateManager) GetLatestRun(ctx context.Context, runID string) (*RunSta
 	return &state, nil
 }
 
-// AddPosts adds posts to the run state
+// AddPosts adds posts to the run state by storing them separately
 func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post) error {
 	// Try to get fetcher step first, fall back to orchestrator step
 	state, err := sm.GetRun(ctx, runID, "fetcher")
@@ -187,15 +195,38 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 		}
 	}
 
-	log.Printf("🔍 STATE DEBUG: Before adding posts - existing posts: %d, new posts: %d", len(state.Posts), len(posts))
+	log.Printf("🔍 STATE DEBUG: Adding %d new posts to run %s", len(posts), runID)
 
-	// Add new posts
-	state.Posts = append(state.Posts, posts...)
-	state.TotalPostsRetrieved = len(state.Posts)
+	// Store posts separately in DynamoDB
+	for i, post := range posts {
+		postItem := PostItem{
+			RunID:     runID,
+			PostID:    fmt.Sprintf("%s#%d", runID, state.TotalPostsRetrieved+i),
+			Post:      post,
+			CreatedAt: time.Now(),
+			TTL:       time.Now().Add(7 * 24 * time.Hour).Unix(), // 7 days TTL
+		}
+
+		item, err := attributevalue.MarshalMap(postItem)
+		if err != nil {
+			return fmt.Errorf("failed to marshal post item: %w", err)
+		}
+
+		_, err = sm.client.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName: aws.String(sm.tableName),
+			Item:      item,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to store post item: %w", err)
+		}
+	}
+
+	// Update the run state with new totals
+	state.TotalPostsRetrieved += len(posts)
 	state.Step = "fetcher"
 	state.Status = "fetching"
 
-	log.Printf("🔍 STATE DEBUG: After adding posts - total posts: %d, posts array length: %d", state.TotalPostsRetrieved, len(state.Posts))
+	log.Printf("🔍 STATE DEBUG: After adding posts - total posts: %d", state.TotalPostsRetrieved)
 
 	err = sm.UpdateRun(ctx, state)
 	if err != nil {
@@ -203,8 +234,41 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 		return err
 	}
 
-	log.Printf("🔍 STATE DEBUG: Successfully updated run state with %d posts", len(state.Posts))
+	log.Printf("🔍 STATE DEBUG: Successfully stored %d posts separately and updated run state", len(posts))
 	return nil
+}
+
+// GetAllPosts retrieves all posts for a run
+func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, error) {
+	log.Printf("🔍 STATE DEBUG: Retrieving all posts for run %s", runID)
+
+	// Query all posts for this run using the GSI
+	result, err := sm.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(sm.tableName),
+		IndexName:              aws.String("posts-index"),
+		KeyConditionExpression: aws.String("runId = :runId AND begins_with(postId, :postIdPrefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":runId":        &types.AttributeValueMemberS{Value: runID},
+			":postIdPrefix": &types.AttributeValueMemberS{Value: runID + "#"},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query posts: %w", err)
+	}
+
+	var posts []Post
+	for _, item := range result.Items {
+		var postItem PostItem
+		err := attributevalue.UnmarshalMap(item, &postItem)
+		if err != nil {
+			log.Printf("Warning: failed to unmarshal post item: %v", err)
+			continue
+		}
+		posts = append(posts, postItem.Post)
+	}
+
+	log.Printf("🔍 STATE DEBUG: Retrieved %d posts for run %s", len(posts), runID)
+	return posts, nil
 }
 
 // UpdateCursor updates the cursor for the next fetch
@@ -219,18 +283,11 @@ func (sm *StateManager) UpdateCursor(ctx context.Context, runID, cursor string, 
 		}
 	}
 
-	// Preserve existing posts and total count
-	existingPosts := state.Posts
-	existingTotal := state.TotalPostsRetrieved
-
+	// Update cursor and status
 	state.CurrentCursor = cursor
 	state.HasMorePosts = hasMorePosts
 	state.Step = "fetcher"
 	state.Status = "fetching"
-
-	// Restore the posts and total count
-	state.Posts = existingPosts
-	state.TotalPostsRetrieved = existingTotal
 
 	return sm.UpdateRun(ctx, state)
 }

@@ -520,6 +520,14 @@ resource "aws_dynamodb_table" "hourstats_state" {
     projection_type = "ALL"
   }
 
+  # Global Secondary Index for querying posts by runId
+  global_secondary_index {
+    name     = "posts-index"
+    hash_key = "runId"
+    range_key = "postId"
+    projection_type = "ALL"
+  }
+
   attribute {
     name = "status"
     type = "S"

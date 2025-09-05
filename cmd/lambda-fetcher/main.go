@@ -20,6 +20,7 @@ type StepFunctionsEvent struct {
 	AnalysisIntervalMinutes int    `json:"analysisIntervalMinutes"`
 	Status                  string `json:"status"`
 	BatchID                 string `json:"batchId,omitempty"`
+	MaxIterations           int    `json:"maxIterations"` // Maximum number of fetch iterations
 }
 
 // Response represents the Lambda response
@@ -97,74 +98,88 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 		}, err
 	}
 
+	// Set default max iterations if not specified
+	maxIterations := event.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 30 // Default to 30 iterations
+	}
+
 	// Log the time range being used for fetching
-	log.Printf("📅 FETCHER: Fetching posts from time range - From: %s, To: %s (current time: %s)",
+	log.Printf("📅 FETCHER: Fetching posts from time range - From: %s, To: %s (current time: %s), Max iterations: %d",
 		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"),
-		time.Now().Format("2006-01-02 15:04:05 UTC"))
+		time.Now().Format("2006-01-02 15:04:05 UTC"),
+		maxIterations)
 
-	// Fetch posts using current cursor and cutoff time from run state
-	posts, nextCursor, hasMorePosts, err := h.fetchPostsWithCursor(ctx, blueskyClient, runState.CurrentCursor, runState.CutoffTime)
-	if err != nil {
-		log.Printf("Failed to fetch posts: %v", err)
-		return Response{
-			StatusCode: 500,
-			Body:       "Failed to fetch posts: " + err.Error(),
-		}, err
-	}
+	var totalPostsRetrieved int
+	var finalCursor string
+	var finalHasMorePosts bool
 
-	// Convert to state posts
-	statePosts := h.convertToStatePosts(posts)
-	log.Printf("🔍 FETCHER DEBUG: Converting %d posts to state format", len(posts))
+	// Loop to fetch multiple batches
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		log.Printf("🔄 FETCHER ITERATION %d/%d - Current cursor: %s", iteration+1, maxIterations, runState.CurrentCursor)
 
-	// Add posts to state
-	log.Printf("🔍 FETCHER DEBUG: Storing %d posts in DynamoDB for run %s", len(statePosts), event.RunID)
-	if err := h.stateManager.AddPosts(ctx, event.RunID, statePosts); err != nil {
-		log.Printf("Failed to add posts to state: %v", err)
-		return Response{
-			StatusCode: 500,
-			Body:       "Failed to add posts: " + err.Error(),
-		}, err
-	}
-	log.Printf("✅ FETCHER DEBUG: Successfully stored %d posts in DynamoDB", len(statePosts))
-
-	// Get updated state to show cumulative count
-	updatedState, err := h.stateManager.GetRun(ctx, event.RunID, "fetcher")
-	if err != nil {
-		// Fall back to orchestrator step if fetcher step doesn't exist yet
-		updatedState, err = h.stateManager.GetRun(ctx, event.RunID, "orchestrator")
+		// Fetch posts using current cursor and cutoff time from run state
+		posts, nextCursor, hasMorePosts, err := h.fetchPostsWithCursor(ctx, blueskyClient, runState.CurrentCursor, runState.CutoffTime)
 		if err != nil {
-			log.Printf("Warning: Could not get updated state for cumulative count: %v", err)
+			log.Printf("Failed to fetch posts in iteration %d: %v", iteration+1, err)
+			return Response{
+				StatusCode: 500,
+				Body:       fmt.Sprintf("Failed to fetch posts in iteration %d: %v", iteration+1, err.Error()),
+			}, err
 		}
+
+		// Convert to state posts
+		statePosts := h.convertToStatePosts(posts)
+		log.Printf("🔍 FETCHER DEBUG: Converting %d posts to state format in iteration %d", len(posts), iteration+1)
+
+		// Add posts to state
+		log.Printf("🔍 FETCHER DEBUG: Storing %d posts in DynamoDB for run %s in iteration %d", len(statePosts), event.RunID, iteration+1)
+		if err := h.stateManager.AddPosts(ctx, event.RunID, statePosts); err != nil {
+			log.Printf("Failed to add posts to state in iteration %d: %v", iteration+1, err)
+			return Response{
+				StatusCode: 500,
+				Body:       fmt.Sprintf("Failed to add posts in iteration %d: %v", iteration+1, err.Error()),
+			}, err
+		}
+		log.Printf("✅ FETCHER DEBUG: Successfully stored %d posts in DynamoDB in iteration %d", len(statePosts), iteration+1)
+
+		// Update totals
+		totalPostsRetrieved += len(posts)
+		finalCursor = nextCursor
+		finalHasMorePosts = hasMorePosts
+
+		// Update cursor and hasMorePosts status
+		if err := h.stateManager.UpdateCursor(ctx, event.RunID, nextCursor, hasMorePosts); err != nil {
+			log.Printf("Failed to update cursor in iteration %d: %v", iteration+1, err)
+			return Response{
+				StatusCode: 500,
+				Body:       fmt.Sprintf("Failed to update cursor in iteration %d: %v", iteration+1, err.Error()),
+			}, err
+		}
+
+		log.Printf("✅ FETCHER ITERATION %d COMPLETE - Posts this iteration: %d, Cumulative posts: %d, Cursor: %s → %s, HasMore: %t",
+			iteration+1, len(posts), totalPostsRetrieved, runState.CurrentCursor, nextCursor, hasMorePosts)
+
+		// If no more posts, break the loop
+		if !hasMorePosts {
+			log.Printf("🛑 FETCHER: No more posts available, stopping after %d iterations", iteration+1)
+			break
+		}
+
+		// Update runState for next iteration
+		runState.CurrentCursor = nextCursor
 	}
 
-	if updatedState != nil {
-		log.Printf("🔍 FETCHER DEBUG: Total posts now in DynamoDB: %d (run: %s)", updatedState.TotalPostsRetrieved, event.RunID)
-		log.Printf("🔍 FETCHER DEBUG: DynamoDB cutoff time: %s", updatedState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
-	}
+	log.Printf("✅ FETCHER BATCH COMPLETE - Run: %s, Batch: %s, Total iterations: %d, Total posts retrieved: %d, Final cursor: %s, HasMore: %t",
+		event.RunID, event.BatchID, maxIterations, totalPostsRetrieved, finalCursor, finalHasMorePosts)
 
-	// Update cursor and create fetcher step
-	if err := h.stateManager.UpdateCursor(ctx, event.RunID, nextCursor, hasMorePosts); err != nil {
-		log.Printf("Failed to update cursor: %v", err)
-		return Response{
-			StatusCode: 500,
-			Body:       "Failed to update cursor: " + err.Error(),
-		}, err
-	}
-
-	// Log cumulative post count
-	cumulativeCount := 0
-	if updatedState != nil {
-		cumulativeCount = updatedState.TotalPostsRetrieved
-	}
-	log.Printf("✅ FETCHER BATCH COMPLETE - Run: %s, Batch: %s, Posts this batch: %d, Cumulative posts: %d, Cursor: %s → %s, HasMore: %v",
-		event.RunID, event.BatchID, len(posts), cumulativeCount, runState.CurrentCursor, nextCursor, hasMorePosts)
 	return Response{
 		StatusCode:     200,
 		Body:           "Posts fetched successfully",
-		HasMorePosts:   hasMorePosts,
-		PostsRetrieved: len(posts),
-		NextCursor:     nextCursor,
+		PostsRetrieved: totalPostsRetrieved,
+		NextCursor:     finalCursor,
+		HasMorePosts:   finalHasMorePosts,
 	}, nil
 }
 
@@ -231,7 +246,7 @@ func (h *FetcherHandler) convertToStatePosts(posts []client.Post) []state.Post {
 
 		// Debug logging for first few posts to see what's being stored
 		if i < 5 {
-			log.Printf("🔍 FETCHER DEBUG: Converting post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d",
+			log.Printf("🔍 FETCHER DEBUG: Sample post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d",
 				i+1, post.Author, post.Likes, post.Reposts, post.Replies)
 		}
 	}
