@@ -20,9 +20,9 @@ type StepFunctionsEvent struct {
 
 // Response represents the Lambda response
 type Response struct {
-	StatusCode int    `json:"statusCode"`
-	Body       string `json:"body"`
-	TopPostsCount int `json:"topPostsCount"`
+	StatusCode    int    `json:"statusCode"`
+	Body          string `json:"body"`
+	TopPostsCount int    `json:"topPostsCount"`
 }
 
 // AggregatorHandler handles the aggregator Lambda function
@@ -57,6 +57,12 @@ func (h *AggregatorHandler) HandleRequest(ctx context.Context, event StepFunctio
 		}, err
 	}
 
+	// Log the time range being used for aggregation
+	log.Printf("📅 AGGREGATOR: Aggregating posts from time range - From: %s, To: %s (current time: %s)", 
+		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"), 
+		time.Now().Format("2006-01-02 15:04:05 UTC"),
+		time.Now().Format("2006-01-02 15:04:05 UTC"))
+	
 	// Filter posts by cutoff time and aggregate
 	filteredPosts := h.filterPostsByCutoffTime(runState.Posts, runState.CutoffTime)
 	log.Printf("Aggregating %d posts after cutoff filtering", len(filteredPosts))
@@ -77,8 +83,8 @@ func (h *AggregatorHandler) HandleRequest(ctx context.Context, event StepFunctio
 
 	log.Printf("Successfully aggregated top %d posts for run: %s", len(topPosts), event.RunID)
 	return Response{
-		StatusCode: 200,
-		Body:       "Posts aggregated successfully",
+		StatusCode:    200,
+		Body:          "Posts aggregated successfully",
 		TopPostsCount: len(topPosts),
 	}, nil
 }
@@ -107,13 +113,13 @@ func (h *AggregatorHandler) filterPostsByCutoffTime(posts []state.Post, cutoffTi
 			log.Printf("Warning: Skipping post with invalid timestamp: %s", post.URI)
 			continue
 		}
-		
+
 		// Only include posts after the cutoff time
 		if postTime.After(cutoffTime) {
 			filteredPosts = append(filteredPosts, post)
 		}
 	}
-	
+
 	log.Printf("Filtered posts by cutoff time: %d original -> %d after cutoff", len(posts), len(filteredPosts))
 	return filteredPosts
 }

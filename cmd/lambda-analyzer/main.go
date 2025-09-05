@@ -20,14 +20,14 @@ type StepFunctionsEvent struct {
 
 // Response represents the Lambda response
 type Response struct {
-	StatusCode int    `json:"statusCode"`
-	Body       string `json:"body"`
-	PostsAnalyzed int `json:"postsAnalyzed"`
+	StatusCode    int    `json:"statusCode"`
+	Body          string `json:"body"`
+	PostsAnalyzed int    `json:"postsAnalyzed"`
 }
 
 // AnalyzerHandler handles the analyzer Lambda function
 type AnalyzerHandler struct {
-	stateManager    *state.StateManager
+	stateManager      *state.StateManager
 	sentimentAnalyzer *analyzer.SentimentAnalyzer
 }
 
@@ -43,7 +43,7 @@ func NewAnalyzerHandler(ctx context.Context) (*AnalyzerHandler, error) {
 	sentimentAnalyzer := analyzer.New()
 
 	return &AnalyzerHandler{
-		stateManager:    stateManager,
+		stateManager:      stateManager,
 		sentimentAnalyzer: sentimentAnalyzer,
 	}, nil
 }
@@ -62,6 +62,12 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 		}, err
 	}
 
+	// Log the time range being used for analysis
+	log.Printf("📅 ANALYZER: Analyzing posts from time range - From: %s, To: %s (current time: %s)", 
+		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"), 
+		time.Now().Format("2006-01-02 15:04:05 UTC"),
+		time.Now().Format("2006-01-02 15:04:05 UTC"))
+	
 	// Filter posts by cutoff time and analyze
 	filteredPosts := h.filterPostsByCutoffTime(runState.Posts, runState.CutoffTime)
 	analyzedPosts, overallSentiment, err := h.analyzePosts(filteredPosts)
@@ -89,8 +95,8 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 
 	log.Printf("Successfully analyzed %d posts for run: %s", len(analyzedPosts), event.RunID)
 	return Response{
-		StatusCode: 200,
-		Body:       "Posts analyzed successfully",
+		StatusCode:    200,
+		Body:          "Posts analyzed successfully",
 		PostsAnalyzed: len(analyzedPosts),
 	}, nil
 }
@@ -98,7 +104,7 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 // analyzePosts analyzes sentiment and calculates engagement scores
 func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string, error) {
 	log.Printf("Analyzing %d posts", len(posts))
-	
+
 	// Convert state posts to analyzer posts
 	analyzerPosts := make([]analyzer.Post, len(posts))
 	for i, post := range posts {
@@ -126,15 +132,15 @@ func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string
 	statePosts := make([]state.Post, len(analyzedPosts))
 	for i, analyzed := range analyzedPosts {
 		statePosts[i] = state.Post{
-			URI:            analyzed.URI,
-			Text:           analyzed.Text,
-			Author:         analyzed.Author,
-			Likes:          analyzed.Likes,
-			Reposts:        analyzed.Reposts,
-			Replies:        analyzed.Replies,
-			Sentiment:      analyzed.Sentiment,
+			URI:             analyzed.URI,
+			Text:            analyzed.Text,
+			Author:          analyzed.Author,
+			Likes:           analyzed.Likes,
+			Reposts:         analyzed.Reposts,
+			Replies:         analyzed.Replies,
+			Sentiment:       analyzed.Sentiment,
 			EngagementScore: analyzed.EngagementScore,
-			CreatedAt:      analyzed.CreatedAt,
+			CreatedAt:       analyzed.CreatedAt,
 		}
 	}
 
@@ -185,13 +191,13 @@ func (h *AnalyzerHandler) filterPostsByCutoffTime(posts []state.Post, cutoffTime
 			log.Printf("Warning: Skipping post with invalid timestamp: %s", post.URI)
 			continue
 		}
-		
+
 		// Only include posts after the cutoff time
 		if postTime.After(cutoffTime) {
 			filteredPosts = append(filteredPosts, post)
 		}
 	}
-	
+
 	log.Printf("Filtered posts by cutoff time: %d original -> %d after cutoff", len(posts), len(filteredPosts))
 	return filteredPosts
 }

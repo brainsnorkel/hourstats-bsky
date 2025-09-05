@@ -14,12 +14,12 @@ import (
 
 // Event represents the EventBridge event structure or Step Functions event
 type Event struct {
-	Source                   string `json:"source"`
-	Time                     string `json:"time"`
-	Action                   string `json:"action,omitempty"`
-	RunID                    string `json:"runId,omitempty"`
-	IsComplete               bool   `json:"isComplete,omitempty"`
-	AnalysisIntervalMinutes  int    `json:"analysisIntervalMinutes,omitempty"`
+	Source                  string `json:"source"`
+	Time                    string `json:"time"`
+	Action                  string `json:"action,omitempty"`
+	RunID                   string `json:"runId,omitempty"`
+	IsComplete              bool   `json:"isComplete,omitempty"`
+	AnalysisIntervalMinutes int    `json:"analysisIntervalMinutes,omitempty"`
 }
 
 // Response represents the Lambda response
@@ -80,6 +80,15 @@ func (h *OrchestratorHandler) handleStartWorkflow(ctx context.Context, event Eve
 	if event.AnalysisIntervalMinutes > 0 {
 		analysisIntervalMinutes = event.AnalysisIntervalMinutes
 	}
+	
+	// Calculate and log the time range for this analysis
+	now := time.Now()
+	cutoffTime := now.Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
+	log.Printf("📅 ORCHESTRATOR: Analysis time range - From: %s, To: %s (interval: %d minutes)", 
+		cutoffTime.Format("2006-01-02 15:04:05 UTC"), 
+		now.Format("2006-01-02 15:04:05 UTC"), 
+		analysisIntervalMinutes)
+	
 	_, err := h.stateManager.CreateRun(ctx, runID, analysisIntervalMinutes)
 	if err != nil {
 		log.Printf("Failed to create run state: %v", err)
