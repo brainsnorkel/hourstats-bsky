@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,6 +19,7 @@ type StepFunctionsEvent struct {
 	RunID                   string `json:"runId"`
 	AnalysisIntervalMinutes int    `json:"analysisIntervalMinutes"`
 	Status                  string `json:"status"`
+	BatchID                 string `json:"batchId,omitempty"`
 }
 
 // Response represents the Lambda response
@@ -92,7 +94,7 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 	}
 
 	// Fetch posts using current cursor
-	posts, err := h.fetchPostsWithCursor(ctx, blueskyClient, runState.CurrentCursor, event.AnalysisIntervalMinutes)
+	posts, nextCursor, hasMorePosts, err := h.fetchPostsWithCursor(ctx, blueskyClient, runState.CurrentCursor, event.AnalysisIntervalMinutes)
 	if err != nil {
 		log.Printf("Failed to fetch posts: %v", err)
 		return Response{
@@ -112,10 +114,6 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 			Body:       "Failed to add posts: " + err.Error(),
 		}, err
 	}
-
-	// Determine if there are more posts (simplified logic)
-	hasMorePosts := len(posts) >= 100 // If we got 100 posts, there might be more
-	nextCursor := "" // TODO: Extract from API response
 
 	// Update cursor
 	if err := h.stateManager.UpdateCursor(ctx, event.RunID, nextCursor, hasMorePosts); err != nil {
@@ -170,10 +168,18 @@ func (h *FetcherHandler) getBlueskyCredentials(ctx context.Context) (string, str
 }
 
 // fetchPostsWithCursor fetches posts using the current cursor
-func (h *FetcherHandler) fetchPostsWithCursor(ctx context.Context, client *client.BlueskyClient, cursor string, analysisIntervalMinutes int) ([]client.Post, error) {
-	// This is a simplified version - in reality, we'd need to modify the client
-	// to accept a cursor parameter and return the next cursor
-	return client.GetTrendingPosts(analysisIntervalMinutes)
+func (h *FetcherHandler) fetchPostsWithCursor(ctx context.Context, client *client.BlueskyClient, cursor string, analysisIntervalMinutes int) ([]client.Post, string, bool, error) {
+	// Calculate cutoff time
+	cutoffTime := time.Now().Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
+	
+	// Use the existing GetTrendingPosts method but with cursor support
+	// For now, we'll fetch one batch of 100 posts
+	posts, nextCursor, hasMorePosts, err := client.GetTrendingPostsBatch(ctx, cursor, cutoffTime)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("failed to fetch posts batch: %w", err)
+	}
+	
+	return posts, nextCursor, hasMorePosts, nil
 }
 
 // convertToStatePosts converts client posts to state posts

@@ -153,6 +153,77 @@ resource "aws_lambda_function" "hourstats" {
   }
 }
 
+# Step Functions State Machine
+resource "aws_sfn_state_machine" "hourstats_workflow" {
+  name     = "${var.function_name}-workflow"
+  role_arn = aws_iam_role.step_functions_role.arn
+
+  definition = templatefile("${path.module}/step-functions-definition.json", {
+    aws_region    = var.aws_region
+    aws_account_id = data.aws_caller_identity.current.account_id
+  })
+
+  tags = {
+    Name        = "${var.function_name}-workflow"
+    Environment = "production"
+  }
+}
+
+# IAM Role for Step Functions
+resource "aws_iam_role" "step_functions_role" {
+  name = "${var.function_name}-step-functions-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "states.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.function_name}-step-functions-role"
+    Environment = "production"
+  }
+}
+
+# IAM Policy for Step Functions to invoke Lambda functions
+resource "aws_iam_policy" "step_functions_policy" {
+  name        = "${var.function_name}-step-functions-policy"
+  description = "Policy for Step Functions to invoke Lambda functions"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction"
+        ]
+        Resource = [
+          "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:hourstats-*"
+        ]
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.function_name}-step-functions-policy"
+    Environment = "production"
+  }
+}
+
+# Attach policy to role
+resource "aws_iam_role_policy_attachment" "step_functions_policy" {
+  role       = aws_iam_role.step_functions_role.name
+  policy_arn = aws_iam_policy.step_functions_policy.arn
+}
+
 # Individual Lambda Functions for Multi-Lambda Architecture
 resource "aws_lambda_function" "orchestrator" {
   filename         = "lambda-orchestrator.zip"
@@ -306,20 +377,67 @@ resource "aws_cloudwatch_event_rule" "hourstats_schedule" {
   }
 }
 
-# EventBridge Target
+# EventBridge Target to invoke Step Functions workflow
 resource "aws_cloudwatch_event_target" "hourstats_target" {
   rule      = aws_cloudwatch_event_rule.hourstats_schedule.name
   target_id = "HourStatsTarget"
-  arn       = aws_lambda_function.hourstats.arn
+  arn       = aws_sfn_state_machine.hourstats_workflow.arn
+  role_arn  = aws_iam_role.eventbridge_step_functions_role.arn
 }
 
-# Lambda Permission for EventBridge
-resource "aws_lambda_permission" "allow_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.hourstats.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.hourstats_schedule.arn
+# IAM Role for EventBridge to invoke Step Functions
+resource "aws_iam_role" "eventbridge_step_functions_role" {
+  name = "${var.function_name}-eventbridge-step-functions-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.function_name}-eventbridge-step-functions-role"
+    Environment = "production"
+  }
+}
+
+# IAM Policy for EventBridge to invoke Step Functions
+resource "aws_iam_policy" "eventbridge_step_functions_policy" {
+  name        = "${var.function_name}-eventbridge-step-functions-policy"
+  description = "Policy for EventBridge to invoke Step Functions"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "states:StartExecution"
+        ]
+        Resource = [
+          aws_sfn_state_machine.hourstats_workflow.arn
+        ]
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.function_name}-eventbridge-step-functions-policy"
+    Environment = "production"
+  }
+}
+
+# Attach policy to role
+resource "aws_iam_role_policy_attachment" "eventbridge_step_functions_policy" {
+  role       = aws_iam_role.eventbridge_step_functions_role.name
+  policy_arn = aws_iam_policy.eventbridge_step_functions_policy.arn
 }
 
 # SSM Parameters
