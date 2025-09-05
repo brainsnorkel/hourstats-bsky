@@ -181,7 +181,7 @@ jobs:
             --overwrite \
             --region ${{ env.AWS_REGION }}
 
-      - name: Test Step Functions Workflow
+      - name: Test Lambda Functions
         run: |
           # Set dry run mode to make workflow complete faster
           echo "Setting workflow to dry run mode for faster testing..."
@@ -192,55 +192,23 @@ jobs:
             --overwrite \
             --region ${{ env.AWS_REGION }}
           
-          # Start Step Functions execution
-          echo "Starting Step Functions workflow execution..."
-          EXECUTION_ARN=$(aws stepfunctions start-execution \
-            --state-machine-arn "arn:aws:states:${{ env.AWS_REGION }}:478250316157:stateMachine:hourstats-workflow" \
-            --name "test-execution-$(date +%s)" \
+          # Test orchestrator Lambda directly
+          echo "Testing orchestrator Lambda function..."
+          aws lambda invoke \
+            --function-name "hourstats-orchestrator" \
             --region ${{ env.AWS_REGION }} \
-            --query 'executionArn' \
-            --output text)
+            --payload '{}' \
+            --cli-read-timeout 300 \
+            /tmp/orchestrator-response.json
           
-          echo "Step Functions execution started with ARN: $EXECUTION_ARN"
+          echo "Orchestrator Lambda response:"
+          cat /tmp/orchestrator-response.json
           
-          # Wait for 30 seconds and check execution status
-          echo "Waiting 30 seconds to check workflow execution..."
-          sleep 30
-          
-          # Check execution status
-          EXECUTION_STATUS=$(aws stepfunctions describe-execution \
-            --execution-arn "$EXECUTION_ARN" \
-            --region ${{ env.AWS_REGION }} \
-            --query 'status' \
-            --output text)
-          
-          echo "Step Functions execution status: $EXECUTION_STATUS"
-          
-          if [ "$EXECUTION_STATUS" = "RUNNING" ] || [ "$EXECUTION_STATUS" = "SUCCEEDED" ]; then
-            echo "✅ Step Functions workflow has been running for 30+ seconds without error - SUCCESS"
-            echo "Workflow status: $EXECUTION_STATUS"
-            
-            # If still running, stop it to save resources
-            if [ "$EXECUTION_STATUS" = "RUNNING" ]; then
-              echo "Stopping execution to save resources..."
-              aws stepfunctions stop-execution \
-                --execution-arn "$EXECUTION_ARN" \
-                --region ${{ env.AWS_REGION }} || true
-            fi
-            
-            echo "Step Functions test completed successfully - workflow is working correctly"
+          # Check if the response indicates success
+          if grep -q '"statusCode":200' /tmp/orchestrator-response.json; then
+            echo "✅ Orchestrator Lambda executed successfully"
           else
-            echo "❌ Step Functions execution failed or completed too quickly"
-            echo "Final status: $EXECUTION_STATUS"
-            
-            # Get execution history for debugging
-            echo "Execution history:"
-            aws stepfunctions get-execution-history \
-              --execution-arn "$EXECUTION_ARN" \
-              --region ${{ env.AWS_REGION }} \
-              --query 'events[*].{Type:type,Time:timestamp,Details:eventDetails}' \
-              --output table || true
-            
+            echo "❌ Orchestrator Lambda execution failed"
             exit 1
           fi
           
@@ -261,7 +229,7 @@ jobs:
       - name: Notify deployment status
         run: |
           if [ "${{ needs.deploy.result }}" == "success" ]; then
-            echo "✅ Multi-Lambda Step Functions workflow deployed successfully"
+            echo "✅ Multi-Lambda EventBridge workflow deployed successfully"
           else
-            echo "❌ Multi-Lambda Step Functions workflow deployment failed"
+            echo "❌ Multi-Lambda EventBridge workflow deployment failed"
           fi
