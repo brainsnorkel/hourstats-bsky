@@ -133,15 +133,10 @@ resource "aws_dynamodb_table" "hourstats_state" {
   name           = "hourstats-state"
   billing_mode   = "PAY_PER_REQUEST"
   hash_key       = "runId"
-  range_key      = "postId"
+  range_key      = "step"
 
   attribute {
     name = "runId"
-    type = "S"
-  }
-
-  attribute {
-    name = "postId"
     type = "S"
   }
 
@@ -152,6 +147,11 @@ resource "aws_dynamodb_table" "hourstats_state" {
 
   attribute {
     name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "postId"
     type = "S"
   }
 
@@ -173,6 +173,14 @@ resource "aws_dynamodb_table" "hourstats_state" {
     name            = "posts-index"
     hash_key        = "runId"
     range_key       = "postId"
+    projection_type = "ALL"
+  }
+
+  # Global Secondary Index for efficient run listing
+  global_secondary_index {
+    name            = "runs-index"
+    hash_key        = "step"
+    range_key       = "createdAt"
     projection_type = "ALL"
   }
 

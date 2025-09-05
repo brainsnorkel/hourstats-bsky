@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -26,7 +25,6 @@ func getMapKeys(m map[string]types.AttributeValue) []string {
 // RunState represents the state of a single analysis run
 type RunState struct {
 	RunID                   string    `json:"runId" dynamodbav:"runId"`
-	PostID                  string    `json:"postId" dynamodbav:"postId"` // For RunState, this equals Step
 	Step                    string    `json:"step" dynamodbav:"step"`
 	Status                  string    `json:"status" dynamodbav:"status"`
 	AnalysisIntervalMinutes int       `json:"analysisIntervalMinutes" dynamodbav:"analysisIntervalMinutes"`
@@ -39,6 +37,17 @@ type RunState struct {
 	CreatedAt               time.Time `json:"createdAt" dynamodbav:"createdAt"`
 	UpdatedAt               time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
 	TTL                     int64     `json:"ttl" dynamodbav:"ttl"`
+
+	// Error tracking fields
+	ErrorMessage  string    `json:"errorMessage,omitempty" dynamodbav:"errorMessage,omitempty"`
+	RetryCount    int       `json:"retryCount" dynamodbav:"retryCount"`
+	LastErrorTime time.Time `json:"lastErrorTime,omitempty" dynamodbav:"lastErrorTime,omitempty"`
+	LastErrorStep string    `json:"lastErrorStep,omitempty" dynamodbav:"lastErrorStep,omitempty"`
+
+	// Performance monitoring fields
+	ProcessingTimeMs int64   `json:"processingTimeMs" dynamodbav:"processingTimeMs"`
+	PostsPerSecond   float64 `json:"postsPerSecond" dynamodbav:"postsPerSecond"`
+	MemoryUsageMB    int64   `json:"memoryUsageMB" dynamodbav:"memoryUsageMB"`
 }
 
 // Post represents a single post in the state
@@ -56,9 +65,9 @@ type Post struct {
 
 // PostItem represents a post stored separately in DynamoDB
 type PostItem struct {
-	RunID     string    `json:"runId" dynamodbav:"runId"`   // Hash key
-	PostID    string    `json:"postId" dynamodbav:"postId"` // Range key (runId#postIndex)
-	Step      string    `json:"step" dynamodbav:"step"`     // For filtering/metadata
+	RunID     string    `json:"runId" dynamodbav:"runId"`
+	Step      string    `json:"step" dynamodbav:"step"`     // Required for DynamoDB composite key
+	PostID    string    `json:"postId" dynamodbav:"postId"` // runId#postIndex
 	Post      Post      `json:"post" dynamodbav:"post"`
 	CreatedAt time.Time `json:"createdAt" dynamodbav:"createdAt"`
 	TTL       int64     `json:"ttl" dynamodbav:"ttl"`
@@ -93,7 +102,6 @@ func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisInt
 
 	state := &RunState{
 		RunID:                   runID,
-		PostID:                  "orchestrator", // For RunState, PostID = Step
 		Step:                    "orchestrator",
 		Status:                  "initializing",
 		AnalysisIntervalMinutes: analysisIntervalMinutes,
@@ -124,8 +132,6 @@ func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisInt
 // UpdateRun updates an existing run state
 func (sm *StateManager) UpdateRun(ctx context.Context, state *RunState) error {
 	state.UpdatedAt = time.Now()
-	// Ensure PostID matches Step for RunState items
-	state.PostID = state.Step
 
 	item, err := attributevalue.MarshalMap(state)
 	if err != nil {
@@ -148,8 +154,8 @@ func (sm *StateManager) GetRun(ctx context.Context, runID, step string) (*RunSta
 	result, err := sm.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(sm.tableName),
 		Key: map[string]types.AttributeValue{
-			"runId":  &types.AttributeValueMemberS{Value: runID},
-			"postId": &types.AttributeValueMemberS{Value: step}, // For RunState, postId = step
+			"runId": &types.AttributeValueMemberS{Value: runID},
+			"step":  &types.AttributeValueMemberS{Value: step},
 		},
 	})
 	if err != nil {
@@ -268,17 +274,15 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 	result, err := sm.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(sm.tableName),
 		IndexName:              aws.String("posts-index"),
-		KeyConditionExpression: aws.String("runId = :runId"),
+		KeyConditionExpression: aws.String("runId = :runId AND begins_with(postId, :postIdPrefix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":runId": &types.AttributeValueMemberS{Value: runID},
+			":runId":        &types.AttributeValueMemberS{Value: runID},
+			":postIdPrefix": &types.AttributeValueMemberS{Value: runID + "#"},
 		},
 	})
 	if err != nil {
-		log.Printf("🔍 STATE DEBUG: Query failed with error: %v", err)
 		return nil, fmt.Errorf("failed to query posts: %w", err)
 	}
-	
-	log.Printf("🔍 STATE DEBUG: Query returned %d items", len(result.Items))
 
 	var posts []Post
 	for _, item := range result.Items {
@@ -288,10 +292,7 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 			log.Printf("Warning: failed to unmarshal post item: %v", err)
 			continue
 		}
-		// Only include posts that have numeric postId (filter out run state items like "orchestrator", "fetcher")
-		if strings.Contains(postItem.PostID, "#") && postItem.Step == "fetcher" {
-			posts = append(posts, postItem.Post)
-		}
+		posts = append(posts, postItem.Post)
 	}
 
 	log.Printf("🔍 STATE DEBUG: Retrieved %d posts for run %s", len(posts), runID)
