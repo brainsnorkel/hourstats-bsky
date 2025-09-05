@@ -228,6 +228,12 @@ func (h *FetcherHandler) convertToStatePosts(posts []client.Post) []state.Post {
 			EngagementScore: 0, // Will be calculated by analyzer
 			CreatedAt:       post.CreatedAt,
 		}
+		
+		// Debug logging for first few posts to see what's being stored
+		if i < 5 {
+			log.Printf("🔍 FETCHER DEBUG: Converting post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d", 
+				i+1, post.Author, post.Likes, post.Reposts, post.Replies)
+		}
 	}
 	return statePosts
 }

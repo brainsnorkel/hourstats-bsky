@@ -145,10 +145,10 @@ func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string
 			EngagementScore: analyzed.EngagementScore,
 			CreatedAt:       analyzed.CreatedAt,
 		}
-		
+
 		// Debug logging for first few posts
 		if i < 5 {
-			log.Printf("🔍 ANALYZER DEBUG: Post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d, Sentiment: %s, EngagementScore: %.2f", 
+			log.Printf("🔍 ANALYZER DEBUG: Post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d, Sentiment: %s, EngagementScore: %.2f",
 				i+1, analyzed.Author, analyzed.Likes, analyzed.Reposts, analyzed.Replies, analyzed.Sentiment, analyzed.EngagementScore)
 		}
 	}
@@ -182,7 +182,7 @@ func (h *AnalyzerHandler) calculateOverallSentiment(posts []analyzer.AnalyzedPos
 	negativePercent := float64(negativeCount) / float64(total)
 	neutralPercent := float64(neutralCount) / float64(total)
 
-	log.Printf("🔍 ANALYZER DEBUG: Sentiment counts - Positive: %d (%.1f%%), Negative: %d (%.1f%%), Neutral: %d (%.1f%%)", 
+	log.Printf("🔍 ANALYZER DEBUG: Sentiment counts - Positive: %d (%.1f%%), Negative: %d (%.1f%%), Neutral: %d (%.1f%%)",
 		positiveCount, positivePercent*100, negativeCount, negativePercent*100, neutralCount, neutralPercent*100)
 
 	// Determine dominant sentiment
