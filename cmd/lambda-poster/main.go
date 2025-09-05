@@ -60,10 +60,10 @@ func NewPosterHandler(ctx context.Context) (*PosterHandler, error) {
 func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEvent) (Response, error) {
 	log.Printf("Poster received event: %+v", event)
 
-	// Get current run state - specifically look for fetcher step which has the posts
-	runState, err := h.stateManager.GetRun(ctx, event.RunID, "fetcher")
+	// Get current run state - specifically look for aggregator step which has the top posts
+	runState, err := h.stateManager.GetRun(ctx, event.RunID, "aggregator")
 	if err != nil {
-		log.Printf("Failed to get fetcher run state: %v", err)
+		log.Printf("Failed to get aggregator run state: %v", err)
 		return Response{
 			StatusCode: 500,
 			Body:       "Failed to get run state: " + err.Error(),
@@ -85,8 +85,8 @@ func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEv
 		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"))
-	
-	log.Printf("🔍 POSTER DEBUG: Retrieved %d total posts, %d top posts from DynamoDB for run %s", 
+
+	log.Printf("🔍 POSTER DEBUG: Retrieved %d total posts, %d top posts from DynamoDB for run %s",
 		runState.TotalPostsRetrieved, len(runState.TopPosts), event.RunID)
 	log.Printf("🔍 POSTER DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
