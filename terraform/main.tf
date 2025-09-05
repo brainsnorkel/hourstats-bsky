@@ -281,15 +281,15 @@ resource "aws_lambda_function" "fetcher" {
   }
 }
 
-resource "aws_lambda_function" "analyzer" {
-  filename         = "lambda-analyzer.zip"
-  function_name    = "${var.function_name}-analyzer"
+resource "aws_lambda_function" "processor" {
+  filename         = "lambda-processor.zip"
+  function_name    = "${var.function_name}-processor"
   role            = aws_iam_role.lambda_role.arn
   handler         = "bootstrap"
-  source_code_hash = filebase64sha256("lambda-analyzer.zip")
+  source_code_hash = filebase64sha256("lambda-processor.zip")
   runtime         = "provided.al2"
-  timeout         = 180  # 3 minutes
-  memory_size     = 256  # 256MB
+  timeout         = 300  # 5 minutes
+  memory_size     = 512  # 512MB
 
   environment {
     variables = {
@@ -304,66 +304,11 @@ resource "aws_lambda_function" "analyzer" {
   ]
 
   tags = {
-    Name        = "${var.function_name}-analyzer"
+    Name        = "${var.function_name}-processor"
     Environment = "production"
   }
 }
 
-resource "aws_lambda_function" "aggregator" {
-  filename         = "lambda-aggregator.zip"
-  function_name    = "${var.function_name}-aggregator"
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "bootstrap"
-  source_code_hash = filebase64sha256("lambda-aggregator.zip")
-  runtime         = "provided.al2"
-  timeout         = 60   # 1 minute
-  memory_size     = 128  # 128MB
-
-  environment {
-    variables = {
-      LOG_LEVEL = "INFO"
-    }
-  }
-
-  depends_on = [
-    aws_cloudwatch_log_group.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_basic,
-    aws_iam_role_policy_attachment.lambda_ssm,
-  ]
-
-  tags = {
-    Name        = "${var.function_name}-aggregator"
-    Environment = "production"
-  }
-}
-
-resource "aws_lambda_function" "poster" {
-  filename         = "lambda-poster.zip"
-  function_name    = "${var.function_name}-poster"
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "bootstrap"
-  source_code_hash = filebase64sha256("lambda-poster.zip")
-  runtime         = "provided.al2"
-  timeout         = 60   # 1 minute
-  memory_size     = 128  # 128MB
-
-  environment {
-    variables = {
-      LOG_LEVEL = "INFO"
-    }
-  }
-
-  depends_on = [
-    aws_cloudwatch_log_group.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_basic,
-    aws_iam_role_policy_attachment.lambda_ssm,
-  ]
-
-  tags = {
-    Name        = "${var.function_name}-poster"
-    Environment = "production"
-  }
-}
 
 # EventBridge Rule
 resource "aws_cloudwatch_event_rule" "hourstats_schedule" {
