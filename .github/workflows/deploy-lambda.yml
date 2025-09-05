@@ -66,18 +66,35 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Build Lambda function
+      - name: Build Lambda functions
         run: |
+          # Build individual Lambda functions
+          for dir in cmd/lambda-*; do
+            echo "Building $dir..."
+            cd "$dir"
+            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
+            zip "${dir##*/}.zip" bootstrap
+            mv "${dir##*/}.zip" ../../terraform/
+            cd ../..
+          done
+          
+          # Also build the original single Lambda for backward compatibility
+          echo "Building original single Lambda..."
           cd cmd/lambda
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
           zip hourstats.zip bootstrap
           mv hourstats.zip ../../terraform/
+          cd ../..
+          
+          # List all built files
+          echo "Built Lambda functions:"
+          ls -la terraform/*.zip
 
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: lambda-function
-          path: terraform/hourstats.zip
+          name: lambda-functions
+          path: terraform/
 
   deploy:
     needs: build
@@ -88,10 +105,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download build artifact
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: lambda-function
+          name: lambda-functions
           path: terraform/
 
       - name: Configure AWS credentials
@@ -162,10 +179,10 @@ jobs:
             --overwrite \
             --region ${{ env.AWS_REGION }}
 
-      - name: Test Lambda Function
+      - name: Test Step Functions Workflow
         run: |
-          # Set dry run mode to make Lambda complete faster
-          echo "Setting Lambda to dry run mode for faster testing..."
+          # Set dry run mode to make workflow complete faster
+          echo "Setting workflow to dry run mode for faster testing..."
           aws ssm put-parameter \
             --name "/hourstats/settings/dry_run" \
             --value "true" \
@@ -173,54 +190,57 @@ jobs:
             --overwrite \
             --region ${{ env.AWS_REGION }}
           
-          # Use a test payload
-          echo "{\"source\":\"aws.events\",\"time\":\"2024-01-01T00:00:00Z\"}" > payload.json
-          
-          # Start Lambda invocation in background
-          echo "Starting Lambda invocation..."
-          aws lambda invoke \
-            --function-name ${{ env.FUNCTION_NAME }} \
+          # Start Step Functions execution
+          echo "Starting Step Functions workflow execution..."
+          EXECUTION_ARN=$(aws stepfunctions start-execution \
+            --state-machine-arn "arn:aws:states:${{ env.AWS_REGION }}:478250316157:stateMachine:hourstats-workflow" \
+            --name "test-execution-$(date +%s)" \
             --region ${{ env.AWS_REGION }} \
-            --payload file://payload.json \
-            --cli-binary-format raw-in-base64-out \
-            response.json \
-            --cli-read-timeout 0 \
-            --cli-connect-timeout 60 &
+            --query 'executionArn' \
+            --output text)
           
-          LAMBDA_PID=$!
-          echo "Lambda invocation started with PID: $LAMBDA_PID"
+          echo "Step Functions execution started with ARN: $EXECUTION_ARN"
           
-          # Wait for 30 seconds and check if Lambda is still running
-          echo "Waiting 30 seconds to check Lambda execution..."
+          # Wait for 30 seconds and check execution status
+          echo "Waiting 30 seconds to check workflow execution..."
           sleep 30
           
-          # Check if the Lambda process is still running
-          if kill -0 $LAMBDA_PID 2>/dev/null; then
-            echo "✅ Lambda has been running for 30+ seconds without error - SUCCESS"
-            echo "Stopping local process to save resources (Lambda will continue running)..."
+          # Check execution status
+          EXECUTION_STATUS=$(aws stepfunctions describe-execution \
+            --execution-arn "$EXECUTION_ARN" \
+            --region ${{ env.AWS_REGION }} \
+            --query 'status' \
+            --output text)
+          
+          echo "Step Functions execution status: $EXECUTION_STATUS"
+          
+          if [ "$EXECUTION_STATUS" = "RUNNING" ] || [ "$EXECUTION_STATUS" = "SUCCEEDED" ]; then
+            echo "✅ Step Functions workflow has been running for 30+ seconds without error - SUCCESS"
+            echo "Workflow status: $EXECUTION_STATUS"
             
-            # Kill the local AWS CLI process that's waiting for the response
-            # The Lambda function will continue running on AWS but we won't wait for it
-            kill $LAMBDA_PID 2>/dev/null || true
-            wait $LAMBDA_PID 2>/dev/null || true
-            
-            echo "Lambda test completed successfully - function is working correctly"
-            echo "Note: The Lambda function may still be running on AWS but will complete naturally"
-          else
-            echo "❌ Lambda process ended before 30 seconds - checking response"
-            if [ -f response.json ]; then
-              echo "Lambda response (raw):"
-              cat response.json
-              echo ""
-              echo "Lambda response (hex):"
-              hexdump -C response.json
-              echo ""
+            # If still running, stop it to save resources
+            if [ "$EXECUTION_STATUS" = "RUNNING" ]; then
+              echo "Stopping execution to save resources..."
+              aws stepfunctions stop-execution \
+                --execution-arn "$EXECUTION_ARN" \
+                --region ${{ env.AWS_REGION }} || true
             fi
+            
+            echo "Step Functions test completed successfully - workflow is working correctly"
+          else
+            echo "❌ Step Functions execution failed or completed too quickly"
+            echo "Final status: $EXECUTION_STATUS"
+            
+            # Get execution history for debugging
+            echo "Execution history:"
+            aws stepfunctions get-execution-history \
+              --execution-arn "$EXECUTION_ARN" \
+              --region ${{ env.AWS_REGION }} \
+              --query 'events[*].{Type:type,Time:timestamp,Details:eventDetails}' \
+              --output table || true
+            
             exit 1
           fi
-          
-          # Clean up
-          rm -f payload.json response.json
           
           # Restore dry run setting to false for production
           echo "Restoring dry run setting to false for production..."
@@ -239,7 +259,7 @@ jobs:
       - name: Notify deployment status
         run: |
           if [ "${{ needs.deploy.result }}" == "success" ]; then
-            echo "✅ Lambda function deployed successfully"
+            echo "✅ Multi-Lambda Step Functions workflow deployed successfully"
           else
-            echo "❌ Lambda function deployment failed"
+            echo "❌ Multi-Lambda Step Functions workflow deployment failed"
           fi
