@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
@@ -62,7 +63,7 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 	}
 
 	// Analyze posts
-	analyzedPosts, overallSentiment, err := h.analyzePosts(runState.Posts)
+	analyzedPosts, overallSentiment, err := h.analyzePosts(runState.Posts, event.AnalysisIntervalMinutes)
 	if err != nil {
 		log.Printf("Failed to analyze posts: %v", err)
 		return Response{
@@ -94,10 +95,13 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 }
 
 // analyzePosts analyzes sentiment and calculates engagement scores
-func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string, error) {
+func (h *AnalyzerHandler) analyzePosts(posts []state.Post, analysisIntervalMinutes int) ([]state.Post, string, error) {
+	// Filter posts by time range to ensure we only analyze posts within the analysis interval
+	filteredPosts := h.filterPostsByTimeRange(posts, analysisIntervalMinutes)
+	
 	// Convert state posts to analyzer posts
-	analyzerPosts := make([]analyzer.Post, len(posts))
-	for i, post := range posts {
+	analyzerPosts := make([]analyzer.Post, len(filteredPosts))
+	for i, post := range filteredPosts {
 		analyzerPosts[i] = analyzer.Post{
 			URI:       post.URI,
 			Text:      post.Text,
@@ -170,6 +174,29 @@ func (h *AnalyzerHandler) calculateOverallSentiment(posts []analyzer.AnalyzedPos
 		return "negative"
 	}
 	return "neutral"
+}
+
+// filterPostsByTimeRange filters posts to only include those within the analysis interval
+func (h *AnalyzerHandler) filterPostsByTimeRange(posts []state.Post, analysisIntervalMinutes int) []state.Post {
+	// Calculate cutoff time based on the analysis interval
+	cutoffTime := time.Now().Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
+	
+	var filteredPosts []state.Post
+	for _, post := range posts {
+		postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+		if err != nil {
+			log.Printf("Warning: Skipping post with invalid timestamp: %s", post.URI)
+			continue
+		}
+		
+		// Only include posts from the analysis interval
+		if postTime.After(cutoffTime) {
+			filteredPosts = append(filteredPosts, post)
+		}
+	}
+	
+	log.Printf("Filtered posts by time range: %d original -> %d within time range", len(posts), len(filteredPosts))
+	return filteredPosts
 }
 
 func main() {

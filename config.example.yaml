@@ -8,7 +8,7 @@ bluesky:
 # Optional: Override default settings
 settings:
   # How often to run the analysis (in minutes)
-  analysis_interval_minutes: 5
+  analysis_interval_minutes: 15
   
   # Number of top posts to include in summary
   top_posts_count: 5

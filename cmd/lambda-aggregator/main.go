@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
@@ -56,8 +57,9 @@ func (h *AggregatorHandler) HandleRequest(ctx context.Context, event StepFunctio
 		}, err
 	}
 
-	// Get top 5 posts by engagement score
-	topPosts := h.getTopPosts(runState.Posts, 5)
+	// Filter posts by time range and get top 5 posts by engagement score
+	filteredPosts := h.filterPostsByTimeRange(runState.Posts, event.AnalysisIntervalMinutes)
+	topPosts := h.getTopPosts(filteredPosts, 5)
 
 	// Update state with top posts
 	runState.TopPosts = topPosts
@@ -93,6 +95,29 @@ func (h *AggregatorHandler) getTopPosts(posts []state.Post, count int) []state.P
 	}
 
 	return posts[:count]
+}
+
+// filterPostsByTimeRange filters posts to only include those within the analysis interval
+func (h *AggregatorHandler) filterPostsByTimeRange(posts []state.Post, analysisIntervalMinutes int) []state.Post {
+	// Calculate cutoff time based on the analysis interval
+	cutoffTime := time.Now().Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
+	
+	var filteredPosts []state.Post
+	for _, post := range posts {
+		postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+		if err != nil {
+			log.Printf("Warning: Skipping post with invalid timestamp: %s", post.URI)
+			continue
+		}
+		
+		// Only include posts from the analysis interval
+		if postTime.After(cutoffTime) {
+			filteredPosts = append(filteredPosts, post)
+		}
+	}
+	
+	log.Printf("Filtered posts by time range: %d original -> %d within time range", len(posts), len(filteredPosts))
+	return filteredPosts
 }
 
 func main() {
