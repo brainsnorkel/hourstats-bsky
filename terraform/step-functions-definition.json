@@ -32,7 +32,7 @@
           "Next": "FetchBatch2"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch2": {
       "Type": "Task",
@@ -54,7 +54,7 @@
           "Next": "FetchBatch3"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch3": {
       "Type": "Task",
@@ -76,7 +76,7 @@
           "Next": "FetchBatch4"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch4": {
       "Type": "Task",
@@ -98,7 +98,7 @@
           "Next": "FetchBatch5"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch5": {
       "Type": "Task",
@@ -120,7 +120,7 @@
           "Next": "FetchBatch6"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch6": {
       "Type": "Task",
@@ -142,7 +142,7 @@
           "Next": "FetchBatch7"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch7": {
       "Type": "Task",
@@ -164,7 +164,7 @@
           "Next": "FetchBatch8"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch8": {
       "Type": "Task",
@@ -186,7 +186,7 @@
           "Next": "FetchBatch9"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch9": {
       "Type": "Task",
@@ -208,7 +208,7 @@
           "Next": "FetchBatch10"
         }
       ],
-      "Default": "AnalyzePosts"
+      "Default": "ProcessPosts"
     },
     "FetchBatch10": {
       "Type": "Task",
@@ -219,35 +219,16 @@
         "batchId": "batch-9"
       },
       "ResultPath": "$.FetcherOutput10",
-      "Next": "AnalyzePosts"
+      "Next": "ProcessPosts"
     },
-    "AnalyzePosts": {
+    "ProcessPosts": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-analyzer",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-processor",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 15
+        "analysisIntervalMinutes": 60
       },
-      "ResultPath": "$.AnalyzerOutput",
-      "Next": "AggregateResults"
-    },
-    "AggregateResults": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-aggregator",
-      "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 15
-      },
-      "ResultPath": "$.AggregatorOutput",
-      "Next": "PostSummary"
-    },
-    "PostSummary": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-poster",
-      "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 15
-      },
+      "ResultPath": "$.ProcessorOutput",
       "End": true
     }
   }

@@ -136,9 +136,9 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 
 		// Debug logging for first few posts to see actual engagement data
 		if len(posts) < 5 {
-			log.Printf("🔍 BLUESKY DEBUG: Post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d", 
+			log.Printf("🔍 BLUESKY DEBUG: Post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d",
 				len(posts)+1, author, likes, reposts, replies)
-			log.Printf("🔍 BLUESKY DEBUG: Raw pointers - LikeCount: %v (%T), RepostCount: %v (%T), ReplyCount: %v (%T)", 
+			log.Printf("🔍 BLUESKY DEBUG: Raw pointers - LikeCount: %v (%T), RepostCount: %v (%T), ReplyCount: %v (%T)",
 				postView.LikeCount, postView.LikeCount, postView.RepostCount, postView.RepostCount, postView.ReplyCount, postView.ReplyCount)
 			if postView.LikeCount != nil {
 				log.Printf("🔍 BLUESKY DEBUG: LikeCount value: %d", *postView.LikeCount)
@@ -149,7 +149,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			if postView.ReplyCount != nil {
 				log.Printf("🔍 BLUESKY DEBUG: ReplyCount value: %d", *postView.ReplyCount)
 			}
-			
+
 			// Debug: Check if there are other engagement fields available
 			log.Printf("🔍 BLUESKY DEBUG: PostView fields - IndexedAt: %s, Uri: %s", postView.IndexedAt, postView.Uri)
 			if postView.Author != nil {
