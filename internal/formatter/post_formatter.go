@@ -55,19 +55,6 @@ func formatTimePeriod(analysisIntervalMinutes int) string {
 	}
 }
 
-// mapSentimentToText converts sentiment to descriptive text
-func mapSentimentToText(sentiment string) string {
-	sentimentMap := map[string]string{
-		"positive": "passionate",
-		"negative": "concerned",
-		"neutral":  "steady",
-	}
-
-	if text, exists := sentimentMap[sentiment]; exists {
-		return text
-	}
-	return "steady" // fallback
-}
 
 // getSentimentSymbol returns the symbol for sentiment (+ for positive, - for negative, x for neutral)
 func getSentimentSymbol(sentiment string) string {

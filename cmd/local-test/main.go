@@ -387,34 +387,6 @@ func (m *MockLambdaClient) shouldContinueFetching(posts []client.Post, cutoffTim
 	return true
 }
 
-func (m *MockLambdaClient) calculateOverallSentiment(posts []state.Post) string {
-	if len(posts) == 0 {
-		return "neutral"
-	}
-
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
-
-	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		default:
-			neutralCount++
-		}
-	}
-
-	total := len(posts)
-	if positiveCount > total/2 {
-		return "positive"
-	} else if negativeCount > total/2 {
-		return "negative"
-	}
-	return "neutral"
-}
 
 func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []state.Post) (string, float64, float64) {
 	if len(posts) == 0 {

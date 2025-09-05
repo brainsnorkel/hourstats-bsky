@@ -261,39 +261,6 @@ func analyzePosts(posts []state.Post) ([]state.Post, string, float64, float64, e
 	return statePosts, overallSentiment, positivePercent, negativePercent, nil
 }
 
-func calculateOverallSentiment(posts []analyzer.AnalyzedPost) string {
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
-
-	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		case "neutral":
-			neutralCount++
-		}
-	}
-
-	total := len(posts)
-	if total == 0 {
-		return "neutral"
-	}
-
-	positivePercent := float64(positiveCount) / float64(total)
-	negativePercent := float64(negativeCount) / float64(total)
-	neutralPercent := float64(neutralCount) / float64(total)
-
-	// Determine dominant sentiment
-	if positivePercent > negativePercent && positivePercent > neutralPercent {
-		return "positive"
-	} else if negativePercent > positivePercent && negativePercent > neutralPercent {
-		return "negative"
-	}
-	return "neutral"
-}
 
 func calculateOverallSentimentWithPercentages(posts []analyzer.AnalyzedPost) (string, float64, float64) {
 	positiveCount := 0
