@@ -538,6 +538,11 @@ resource "aws_dynamodb_table" "hourstats_state" {
     type = "S"
   }
 
+  attribute {
+    name = "postId"
+    type = "S"
+  }
+
   # TTL for automatic cleanup of old runs (7 days)
   ttl {
     attribute_name = "ttl"
