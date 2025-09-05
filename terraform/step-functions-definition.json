@@ -1,0 +1,90 @@
+{
+  "Comment": "HourStats Bluesky Bot Workflow",
+  "StartAt": "Start",
+  "States": {
+    "Start": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-orchestrator",
+      "Parameters": {
+        "action": "startWorkflow"
+      },
+      "ResultPath": "$.OrchestratorOutput",
+      "Next": "MapFetchBatches"
+    },
+    "MapFetchBatches": {
+      "Type": "Map",
+      "InputPath": "$.OrchestratorOutput",
+      "ItemsPath": "$.FetchBatches",
+      "MaxConcurrency": 10,
+      "Iterator": {
+        "StartAt": "FetchPosts",
+        "States": {
+          "FetchPosts": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-fetcher",
+            "Parameters": {
+              "runId.$": "$.RunID",
+              "analysisIntervalMinutes": 30,
+              "batchId.$": "$$.Map.Item.Value"
+            },
+            "ResultPath": "$.FetcherOutput",
+            "End": true
+          }
+        }
+      },
+      "Next": "CheckCompletion"
+    },
+    "CheckCompletion": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-orchestrator",
+      "Parameters": {
+        "action": "checkCompletion",
+        "runId.$": "$.OrchestratorOutput.RunID"
+      },
+      "ResultPath": "$.CompletionOutput",
+      "Next": "IsComplete"
+    },
+    "IsComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.CompletionOutput.IsComplete",
+          "BooleanEquals": false,
+          "Next": "WaitAndRefetch"
+        }
+      ],
+      "Default": "AnalyzePosts"
+    },
+    "WaitAndRefetch": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "MapFetchBatches"
+    },
+    "AnalyzePosts": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-analyzer",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.RunID"
+      },
+      "ResultPath": "$.AnalyzerOutput",
+      "Next": "AggregateResults"
+    },
+    "AggregateResults": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-aggregator",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.RunID"
+      },
+      "ResultPath": "$.AggregatorOutput",
+      "Next": "PostSummary"
+    },
+    "PostSummary": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-poster",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.RunID"
+      },
+      "End": true
+    }
+  }
+}
