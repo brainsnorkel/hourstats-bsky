@@ -69,6 +69,34 @@ func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEv
 		}, err
 	}
 
+	// Check if there's data to post
+	if runState.TotalPostsRetrieved == 0 {
+		log.Printf("No posts retrieved for run: %s, skipping post", event.RunID)
+		return Response{
+			StatusCode: 200,
+			Body:       "No posts retrieved - post skipped",
+			Posted:     false,
+		}, nil
+	}
+
+	if len(runState.TopPosts) == 0 {
+		log.Printf("No top posts found for run: %s, skipping post", event.RunID)
+		return Response{
+			StatusCode: 200,
+			Body:       "No top posts found - post skipped",
+			Posted:     false,
+		}, nil
+	}
+
+	if runState.OverallSentiment == "" {
+		log.Printf("No sentiment analysis completed for run: %s, skipping post", event.RunID)
+		return Response{
+			StatusCode: 200,
+			Body:       "No sentiment analysis - post skipped",
+			Posted:     false,
+		}, nil
+	}
+
 	// Check if dry run mode is enabled
 	dryRun, err := h.isDryRunMode(ctx)
 	if err != nil {
