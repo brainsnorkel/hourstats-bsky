@@ -27,7 +27,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, ubuntu-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -58,7 +58,7 @@ jobs:
 
   build:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, ubuntu-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -100,7 +100,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, ubuntu-latest]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     
     steps:
@@ -255,7 +255,7 @@ jobs:
 
   notify:
     needs: [test, build, deploy]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, ubuntu-latest]
     if: always()
     steps:
       - name: Notify deployment status
