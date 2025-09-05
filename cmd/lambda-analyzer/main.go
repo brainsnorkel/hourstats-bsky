@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
@@ -61,8 +62,9 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 		}, err
 	}
 
-	// Analyze posts
-	analyzedPosts, overallSentiment, err := h.analyzePosts(runState.Posts, event.AnalysisIntervalMinutes)
+	// Filter posts by cutoff time and analyze
+	filteredPosts := h.filterPostsByCutoffTime(runState.Posts, runState.CutoffTime)
+	analyzedPosts, overallSentiment, err := h.analyzePosts(filteredPosts)
 	if err != nil {
 		log.Printf("Failed to analyze posts: %v", err)
 		return Response{
@@ -94,9 +96,8 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 }
 
 // analyzePosts analyzes sentiment and calculates engagement scores
-func (h *AnalyzerHandler) analyzePosts(posts []state.Post, analysisIntervalMinutes int) ([]state.Post, string, error) {
-	// Posts are already time-filtered by the fetcher, so no need to filter again
-	log.Printf("Analyzing %d posts (already time-filtered by fetcher)", len(posts))
+func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string, error) {
+	log.Printf("Analyzing %d posts", len(posts))
 	
 	// Convert state posts to analyzer posts
 	analyzerPosts := make([]analyzer.Post, len(posts))
@@ -175,6 +176,25 @@ func (h *AnalyzerHandler) calculateOverallSentiment(posts []analyzer.AnalyzedPos
 	return "neutral"
 }
 
+// filterPostsByCutoffTime filters posts to only include those after the cutoff time
+func (h *AnalyzerHandler) filterPostsByCutoffTime(posts []state.Post, cutoffTime time.Time) []state.Post {
+	var filteredPosts []state.Post
+	for _, post := range posts {
+		postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+		if err != nil {
+			log.Printf("Warning: Skipping post with invalid timestamp: %s", post.URI)
+			continue
+		}
+		
+		// Only include posts after the cutoff time
+		if postTime.After(cutoffTime) {
+			filteredPosts = append(filteredPosts, post)
+		}
+	}
+	
+	log.Printf("Filtered posts by cutoff time: %d original -> %d after cutoff", len(posts), len(filteredPosts))
+	return filteredPosts
+}
 
 func main() {
 	ctx := context.Background()

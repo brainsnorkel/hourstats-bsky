@@ -97,8 +97,8 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 		}, err
 	}
 
-	// Fetch posts using current cursor
-	posts, nextCursor, hasMorePosts, err := h.fetchPostsWithCursor(ctx, blueskyClient, runState.CurrentCursor, event.AnalysisIntervalMinutes)
+	// Fetch posts using current cursor and cutoff time from run state
+	posts, nextCursor, hasMorePosts, err := h.fetchPostsWithCursor(ctx, blueskyClient, runState.CurrentCursor, runState.CutoffTime)
 	if err != nil {
 		log.Printf("Failed to fetch posts: %v", err)
 		return Response{
@@ -188,10 +188,7 @@ func (h *FetcherHandler) getBlueskyCredentials(ctx context.Context) (string, str
 }
 
 // fetchPostsWithCursor fetches posts using the current cursor
-func (h *FetcherHandler) fetchPostsWithCursor(ctx context.Context, client *client.BlueskyClient, cursor string, analysisIntervalMinutes int) ([]client.Post, string, bool, error) {
-	// Calculate cutoff time
-	cutoffTime := time.Now().Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
-
+func (h *FetcherHandler) fetchPostsWithCursor(ctx context.Context, client *client.BlueskyClient, cursor string, cutoffTime time.Time) ([]client.Post, string, bool, error) {
 	// Use the existing GetTrendingPosts method but with cursor support
 	// For now, we'll fetch one batch of 100 posts
 	posts, nextCursor, hasMorePosts, err := client.GetTrendingPostsBatch(ctx, cursor, cutoffTime)

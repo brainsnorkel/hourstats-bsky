@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
@@ -56,9 +57,10 @@ func (h *AggregatorHandler) HandleRequest(ctx context.Context, event StepFunctio
 		}, err
 	}
 
-	// Posts are already time-filtered by the fetcher, so no need to filter again
-	log.Printf("Aggregating %d posts (already time-filtered by fetcher)", len(runState.Posts))
-	topPosts := h.getTopPosts(runState.Posts, 5)
+	// Filter posts by cutoff time and aggregate
+	filteredPosts := h.filterPostsByCutoffTime(runState.Posts, runState.CutoffTime)
+	log.Printf("Aggregating %d posts after cutoff filtering", len(filteredPosts))
+	topPosts := h.getTopPosts(filteredPosts, 5)
 
 	// Update state with top posts
 	runState.TopPosts = topPosts
@@ -96,6 +98,25 @@ func (h *AggregatorHandler) getTopPosts(posts []state.Post, count int) []state.P
 	return posts[:count]
 }
 
+// filterPostsByCutoffTime filters posts to only include those after the cutoff time
+func (h *AggregatorHandler) filterPostsByCutoffTime(posts []state.Post, cutoffTime time.Time) []state.Post {
+	var filteredPosts []state.Post
+	for _, post := range posts {
+		postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+		if err != nil {
+			log.Printf("Warning: Skipping post with invalid timestamp: %s", post.URI)
+			continue
+		}
+		
+		// Only include posts after the cutoff time
+		if postTime.After(cutoffTime) {
+			filteredPosts = append(filteredPosts, post)
+		}
+	}
+	
+	log.Printf("Filtered posts by cutoff time: %d original -> %d after cutoff", len(posts), len(filteredPosts))
+	return filteredPosts
+}
 
 func main() {
 	ctx := context.Background()
