@@ -18,6 +18,7 @@ type RunState struct {
 	Step                    string    `json:"step" dynamodbav:"step"`
 	Status                  string    `json:"status" dynamodbav:"status"`
 	AnalysisIntervalMinutes int       `json:"analysisIntervalMinutes" dynamodbav:"analysisIntervalMinutes"`
+	CutoffTime              time.Time `json:"cutoffTime" dynamodbav:"cutoffTime"`
 	CurrentCursor           string    `json:"currentCursor,omitempty" dynamodbav:"currentCursor,omitempty"`
 	TotalPostsRetrieved     int       `json:"totalPostsRetrieved" dynamodbav:"totalPostsRetrieved"`
 	HasMorePosts            bool      `json:"hasMorePosts" dynamodbav:"hasMorePosts"`
@@ -65,12 +66,16 @@ func NewStateManager(ctx context.Context, tableName string) (*StateManager, erro
 func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisIntervalMinutes int) (*RunState, error) {
 	now := time.Now()
 	ttl := now.Add(7 * 24 * time.Hour).Unix() // 7 days TTL
+	
+	// Calculate cutoff time once for consistency across all processes
+	cutoffTime := now.Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
 
 	state := &RunState{
 		RunID:                   runID,
 		Step:                    "orchestrator",
 		Status:                  "initializing",
 		AnalysisIntervalMinutes: analysisIntervalMinutes,
+		CutoffTime:              cutoffTime,
 		TotalPostsRetrieved:     0,
 		HasMorePosts:            true,
 		CreatedAt:               now,
@@ -210,7 +215,7 @@ func (sm *StateManager) UpdateCursor(ctx context.Context, runID, cursor string, 
 	state.HasMorePosts = hasMorePosts
 	state.Step = "fetcher"
 	state.Status = "fetching"
-	
+
 	// Restore the posts and total count
 	state.Posts = existingPosts
 	state.TotalPostsRetrieved = existingTotal
