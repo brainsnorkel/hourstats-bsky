@@ -16,7 +16,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-0"
       },
       "ResultPath": "$.FetcherOutput1",
@@ -38,7 +38,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-1"
       },
       "ResultPath": "$.FetcherOutput2",
@@ -60,7 +60,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-2"
       },
       "ResultPath": "$.FetcherOutput3",
@@ -82,7 +82,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-3"
       },
       "ResultPath": "$.FetcherOutput4",
@@ -104,7 +104,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-4"
       },
       "ResultPath": "$.FetcherOutput5",
@@ -126,7 +126,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-5"
       },
       "ResultPath": "$.FetcherOutput6",
@@ -148,7 +148,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-6"
       },
       "ResultPath": "$.FetcherOutput7",
@@ -170,7 +170,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-7"
       },
       "ResultPath": "$.FetcherOutput8",
@@ -192,7 +192,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-8"
       },
       "ResultPath": "$.FetcherOutput9",
@@ -214,7 +214,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30,
+        "analysisIntervalMinutes": 15,
         "batchId": "batch-9"
       },
       "ResultPath": "$.FetcherOutput10",

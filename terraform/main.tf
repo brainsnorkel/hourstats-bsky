@@ -29,7 +29,7 @@ variable "function_name" {
 variable "schedule_expression" {
   description = "EventBridge schedule expression"
   type        = string
-  default     = "rate(30 minutes)"
+  default     = "rate(15 minutes)"
 }
 
 # Data sources

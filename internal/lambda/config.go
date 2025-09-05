@@ -78,7 +78,7 @@ func (s *SSMConfigLoader) LoadConfig(ctx context.Context) (*config.Config, error
 	}
 
 	// Parse numeric parameters with defaults
-	analysisIntervalMinutes := parseIntWithDefault(params["/hourstats/settings/analysis_interval_minutes"], 30)
+	analysisIntervalMinutes := parseIntWithDefault(params["/hourstats/settings/analysis_interval_minutes"], 15)
 	topPostsCount := parseIntWithDefault(params["/hourstats/settings/top_posts_count"], 5)
 	minEngagementScore := parseIntWithDefault(params["/hourstats/settings/min_engagement_score"], 10)
 
