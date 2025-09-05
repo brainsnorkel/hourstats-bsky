@@ -68,11 +68,21 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 		time.Now().Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"))
 
+	// Get all posts from DynamoDB
+	allPosts, err := h.stateManager.GetAllPosts(ctx, event.RunID)
+	if err != nil {
+		log.Printf("Failed to get posts from DynamoDB: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to get posts: " + err.Error(),
+		}, err
+	}
+
 	// Filter posts by cutoff time and analyze
-	log.Printf("🔍 ANALYZER DEBUG: Retrieved %d posts from DynamoDB for run %s", len(runState.Posts), event.RunID)
+	log.Printf("🔍 ANALYZER DEBUG: Retrieved %d posts from DynamoDB for run %s", len(allPosts), event.RunID)
 	log.Printf("🔍 ANALYZER DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
-	filteredPosts := h.filterPostsByCutoffTime(runState.Posts, runState.CutoffTime)
-	log.Printf("🔍 ANALYZER DEBUG: After time filtering: %d posts (from %d original)", len(filteredPosts), len(runState.Posts))
+	filteredPosts := h.filterPostsByCutoffTime(allPosts, runState.CutoffTime)
+	log.Printf("🔍 ANALYZER DEBUG: After time filtering: %d posts (from %d original)", len(filteredPosts), len(allPosts))
 	analyzedPosts, overallSentiment, err := h.analyzePosts(filteredPosts)
 	if err != nil {
 		log.Printf("Failed to analyze posts: %v", err)
@@ -82,8 +92,7 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 		}, err
 	}
 
-	// Update state with analyzed posts
-	runState.Posts = analyzedPosts
+	// Update state with analysis results
 	runState.OverallSentiment = overallSentiment
 	runState.Step = "analyzer"
 	runState.Status = "analyzed"
