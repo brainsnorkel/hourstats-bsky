@@ -25,14 +25,7 @@ env:
 
 jobs:
   test:
-    runs-on: [self-hosted, macOS, X64, ARM64]
-    # Fallback to GitHub-hosted runners if self-hosted not available
-    # runs-on: ubuntu-latest
-    # Alternative: Use matrix strategy for runner selection
-    # strategy:
-    #   matrix:
-    #     runner: [self-hosted, ubuntu-latest]
-    # runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -78,9 +71,7 @@ jobs:
 
   build:
     needs: test
-    runs-on: [self-hosted, macOS, X64, ARM64]
-    # Fallback to GitHub-hosted runners if self-hosted not available
-    # runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -122,9 +113,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: [self-hosted, macOS, X64, ARM64]
-    # Fallback to GitHub-hosted runners if self-hosted not available
-    # runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     
     steps:
@@ -279,9 +268,7 @@ jobs:
 
   notify:
     needs: [test, build, deploy]
-    runs-on: [self-hosted, macOS, X64, ARM64]
-    # Fallback to GitHub-hosted runners if self-hosted not available
-    # runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Notify deployment status
