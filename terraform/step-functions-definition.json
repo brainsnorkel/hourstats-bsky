@@ -1,0 +1,165 @@
+{
+  "Comment": "HourStats Multi-Lambda Workflow",
+  "StartAt": "Orchestrator",
+  "States": {
+    "Orchestrator": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
+      "Next": "FetcherLoop",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Failure"
+        }
+      ]
+    },
+    "FetcherLoop": {
+      "Type": "Map",
+      "ItemsPath": "$.fetchBatches",
+      "MaxConcurrency": 5,
+      "Iterator": {
+        "StartAt": "Fetcher",
+        "States": {
+          "Fetcher": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
+            "End": true,
+            "Retry": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Next": "FetcherFailure"
+              }
+            ]
+          },
+          "FetcherFailure": {
+            "Type": "Fail",
+            "Cause": "Fetcher failed"
+          }
+        }
+      },
+      "Next": "WaitForCompletion",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Failure"
+        }
+      ]
+    },
+    "WaitForCompletion": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckCompletion"
+    },
+    "CheckCompletion": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
+      "Parameters": {
+        "action": "checkCompletion",
+        "runId.$": "$.runId"
+      },
+      "Next": "IsComplete",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Failure"
+        }
+      ]
+    },
+    "IsComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.isComplete",
+          "BooleanEquals": true,
+          "Next": "Analyzer"
+        }
+      ],
+      "Default": "WaitForCompletion"
+    },
+    "Analyzer": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-analyzer",
+      "Next": "Aggregator",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Failure"
+        }
+      ]
+    },
+    "Aggregator": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-aggregator",
+      "Next": "Poster",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Failure"
+        }
+      ]
+    },
+    "Poster": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-poster",
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Failure"
+        }
+      ]
+    },
+    "Failure": {
+      "Type": "Fail",
+      "Cause": "Workflow failed"
+    }
+  }
+}

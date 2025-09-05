@@ -58,3 +58,4 @@ terraform/.terraform/
 terraform/*.zip
 terraform/*.tfstate*
 *.json
+!terraform/step-functions-definition.json
