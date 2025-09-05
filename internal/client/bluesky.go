@@ -15,14 +15,15 @@ import (
 )
 
 type Post struct {
-	URI       string
-	Text      string
-	Author    string
-	Likes     int
-	Reposts   int
-	Replies   int
-	CreatedAt string
-	Sentiment string // "positive", "negative", or "neutral"
+	URI             string
+	Text            string
+	Author          string
+	Likes           int
+	Reposts         int
+	Replies         int
+	CreatedAt       string
+	Sentiment       string // "positive", "negative", or "neutral"
+	EngagementScore float64
 }
 
 type BlueskyClient struct {
@@ -158,7 +159,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		if err == nil {
 			// If the oldest post is before our cutoff time, we've gone past the time period
 			if oldestPostTime.Before(cutoffTime) {
-				log.Printf("Reached time period boundary - oldest post (%s) is before cutoff (%s), stopping pagination", 
+				log.Printf("Reached time period boundary - oldest post (%s) is before cutoff (%s), stopping pagination",
 					oldestPostTime.Format("2006-01-02 15:04:05"), cutoffTime.Format("2006-01-02 15:04:05"))
 				hasMorePosts = false
 			}
@@ -344,14 +345,14 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	// Create the summary post in the specified format
 	summaryText := fmt.Sprintf("For %s Bluesky was %s\n\n", timePeriod, overallSentiment)
 
-	// Add links to the top 5 posts (ranked by replies + likes + reposts)
+	// Add links to the top 5 posts (ranked by engagement score)
 	// Use handle format with clickable links
 	for i := range posts {
 		if i >= 5 { // Limit to top 5
 			break
 		}
-		// Format as @handle with engagement score and sentiment indicator
-		engagementScore := posts[i].Likes + posts[i].Reposts + posts[i].Replies
+		// Use the pre-calculated engagement score from the analyzer
+		engagementScore := int(posts[i].EngagementScore)
 
 		// Determine sentiment indicator
 		var sentimentIndicator string
