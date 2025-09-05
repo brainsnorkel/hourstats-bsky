@@ -15,7 +15,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
-        "runId.$": "$.runId",
+        "runId.$": "$.OrchestratorOutput.runId",
         "analysisIntervalMinutes": 30,
         "batchId": "batch-0"
       },
@@ -26,7 +26,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
-        "runId.$": "$.runId",
+        "runId.$": "$.OrchestratorOutput.runId",
         "analysisIntervalMinutes": 30,
         "batchId": "batch-1"
       },
@@ -37,7 +37,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
-        "runId.$": "$.runId",
+        "runId.$": "$.OrchestratorOutput.runId",
         "analysisIntervalMinutes": 30,
         "batchId": "batch-2"
       },
@@ -48,7 +48,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
-        "runId.$": "$.runId",
+        "runId.$": "$.OrchestratorOutput.runId",
         "analysisIntervalMinutes": 30,
         "batchId": "batch-3"
       },
@@ -59,7 +59,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
       "Parameters": {
-        "runId.$": "$.runId",
+        "runId.$": "$.OrchestratorOutput.runId",
         "analysisIntervalMinutes": 30,
         "batchId": "batch-4"
       },
