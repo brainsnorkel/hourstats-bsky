@@ -1,165 +1,90 @@
 {
-  "Comment": "HourStats Multi-Lambda Workflow",
-  "StartAt": "Orchestrator",
+  "Comment": "HourStats Bluesky Bot Workflow",
+  "StartAt": "Start",
   "States": {
-    "Orchestrator": {
+    "Start": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
-      "Next": "FetcherLoop",
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "Failure"
-        }
-      ]
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-orchestrator",
+      "Parameters": {
+        "action": "startWorkflow"
+      },
+      "ResultPath": "$.OrchestratorOutput",
+      "Next": "MapFetchBatches"
     },
-    "FetcherLoop": {
+    "MapFetchBatches": {
       "Type": "Map",
-      "ItemsPath": "$.fetchBatches",
-      "MaxConcurrency": 5,
+      "InputPath": "$.OrchestratorOutput",
+      "ItemsPath": "$.FetchBatches",
+      "MaxConcurrency": 10,
       "Iterator": {
-        "StartAt": "Fetcher",
+        "StartAt": "FetchPosts",
         "States": {
-          "Fetcher": {
+          "FetchPosts": {
             "Type": "Task",
-            "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
-            "End": true,
-            "Retry": [
-              {
-                "ErrorEquals": ["States.ALL"],
-                "IntervalSeconds": 2,
-                "MaxAttempts": 3,
-                "BackoffRate": 2.0
-              }
-            ],
-            "Catch": [
-              {
-                "ErrorEquals": ["States.ALL"],
-                "Next": "FetcherFailure"
-              }
-            ]
-          },
-          "FetcherFailure": {
-            "Type": "Fail",
-            "Cause": "Fetcher failed"
+            "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-fetcher",
+            "Parameters": {
+              "runId.$": "$.RunID",
+              "analysisIntervalMinutes": 30,
+              "batchId.$": "$$.Map.Item.Value"
+            },
+            "ResultPath": "$.FetcherOutput",
+            "End": true
           }
         }
       },
-      "Next": "WaitForCompletion",
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "Failure"
-        }
-      ]
-    },
-    "WaitForCompletion": {
-      "Type": "Wait",
-      "Seconds": 30,
       "Next": "CheckCompletion"
     },
     "CheckCompletion": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-orchestrator",
       "Parameters": {
         "action": "checkCompletion",
-        "runId.$": "$.runId"
+        "runId.$": "$.OrchestratorOutput.RunID"
       },
-      "Next": "IsComplete",
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "Failure"
-        }
-      ]
+      "ResultPath": "$.CompletionOutput",
+      "Next": "IsComplete"
     },
     "IsComplete": {
       "Type": "Choice",
       "Choices": [
         {
-          "Variable": "$.isComplete",
-          "BooleanEquals": true,
-          "Next": "Analyzer"
+          "Variable": "$.CompletionOutput.IsComplete",
+          "BooleanEquals": false,
+          "Next": "WaitAndRefetch"
         }
       ],
-      "Default": "WaitForCompletion"
+      "Default": "AnalyzePosts"
     },
-    "Analyzer": {
+    "WaitAndRefetch": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "MapFetchBatches"
+    },
+    "AnalyzePosts": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-analyzer",
-      "Next": "Aggregator",
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "Failure"
-        }
-      ]
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-analyzer",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.RunID"
+      },
+      "ResultPath": "$.AnalyzerOutput",
+      "Next": "AggregateResults"
     },
-    "Aggregator": {
+    "AggregateResults": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-aggregator",
-      "Next": "Poster",
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "Failure"
-        }
-      ]
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-aggregator",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.RunID"
+      },
+      "ResultPath": "$.AggregatorOutput",
+      "Next": "PostSummary"
     },
-    "Poster": {
+    "PostSummary": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-poster",
-      "End": true,
-      "Retry": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "Failure"
-        }
-      ]
-    },
-    "Failure": {
-      "Type": "Fail",
-      "Cause": "Workflow failed"
+      "Resource": "arn:aws:lambda:#{aws_region}:#{aws_account_id}:function:hourstats-poster",
+      "Parameters": {
+        "runId.$": "$.OrchestratorOutput.RunID"
+      },
+      "End": true
     }
   }
 }
