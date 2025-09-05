@@ -13,6 +13,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
+// getMapKeys returns the keys of a map for debugging
+func getMapKeys(m map[string]types.AttributeValue) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // RunState represents the state of a single analysis run
 type RunState struct {
 	RunID                   string    `json:"runId" dynamodbav:"runId"`
@@ -209,10 +218,14 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 			TTL:       time.Now().Add(7 * 24 * time.Hour).Unix(), // 7 days TTL
 		}
 
+		log.Printf("🔍 STATE DEBUG: Creating PostItem - RunID: %s, Step: %s, PostID: %s", postItem.RunID, postItem.Step, postItem.PostID)
+		
 		item, err := attributevalue.MarshalMap(postItem)
 		if err != nil {
 			return fmt.Errorf("failed to marshal post item: %w", err)
 		}
+		
+		log.Printf("🔍 STATE DEBUG: Marshaled item keys: %v", getMapKeys(item))
 
 		_, err = sm.client.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: aws.String(sm.tableName),
