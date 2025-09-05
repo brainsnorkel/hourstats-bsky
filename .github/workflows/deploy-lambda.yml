@@ -4,19 +4,21 @@ on:
   push:
     branches: [main, develop]
     paths:
-      - 'cmd/lambda/**'
+      - 'cmd/lambda*/**'
       - 'internal/lambda/**'
       - 'internal/client/**'
       - 'internal/analyzer/**'
       - 'internal/scheduler/**'
       - 'internal/config/**'
+      - 'internal/state/**'
       - 'terraform/**'
       - '.github/workflows/deploy-lambda.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'cmd/lambda/**'
+      - 'cmd/lambda*/**'
       - 'internal/lambda/**'
+      - 'internal/state/**'
       - 'terraform/**'
 
 env:
@@ -29,21 +31,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
-      - name: Verify self-hosted runner
-        run: |
-          echo "Running on self-hosted runner: $(uname -a)"
-          echo "Platform: $(uname -s) $(uname -m)"
-          echo "Go version: $(go version)"
-          if [[ "$OSTYPE" == "darwin"* ]]; then
-            echo "macOS detected - cross-compiling for Linux"
-            echo "Available disk space: $(df -h)"
-            echo "Available memory: $(sysctl -n hw.memsize | awk '{print $0/1024/1024/1024 " GB"}')"
-          else
-            echo "Linux detected - native build"
-            echo "Available disk space: $(df -h)"
-            echo "Available memory: $(free -h)"
-          fi
 
       - name: Set up Go
         uses: actions/setup-go@v4
