@@ -158,7 +158,7 @@ resource "aws_sfn_state_machine" "hourstats_workflow" {
   name     = "${var.function_name}-workflow"
   role_arn = aws_iam_role.step_functions_role.arn
 
-  definition = templatefile("${path.module}/step-functions-definition.json", {
+  definition = templatefile("step-functions-definition.json", {
     aws_region    = var.aws_region
     aws_account_id = data.aws_caller_identity.current.account_id
   })
