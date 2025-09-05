@@ -232,8 +232,10 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 			Item:      item,
 		})
 		if err != nil {
+			log.Printf("🔍 STATE DEBUG: PutItem failed for PostID %s: %v", postItem.PostID, err)
 			return fmt.Errorf("failed to store post item: %w", err)
 		}
+		log.Printf("🔍 STATE DEBUG: Successfully stored PostID %s in table %s", postItem.PostID, sm.tableName)
 	}
 
 	// Update the run state with new totals
