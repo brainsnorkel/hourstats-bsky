@@ -225,7 +225,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-analyzer",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30
+        "analysisIntervalMinutes": 15
       },
       "ResultPath": "$.AnalyzerOutput",
       "Next": "AggregateResults"
@@ -235,7 +235,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-aggregator",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30
+        "analysisIntervalMinutes": 15
       },
       "ResultPath": "$.AggregatorOutput",
       "Next": "PostSummary"
@@ -245,7 +245,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-poster",
       "Parameters": {
         "runId.$": "$.OrchestratorOutput.runId",
-        "analysisIntervalMinutes": 30
+        "analysisIntervalMinutes": 15
       },
       "End": true
     }
