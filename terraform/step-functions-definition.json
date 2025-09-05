@@ -224,7 +224,8 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-analyzer",
       "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId"
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30
       },
       "ResultPath": "$.AnalyzerOutput",
       "Next": "AggregateResults"
@@ -233,7 +234,8 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-aggregator",
       "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId"
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30
       },
       "ResultPath": "$.AggregatorOutput",
       "Next": "PostSummary"
@@ -242,7 +244,8 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-poster",
       "Parameters": {
-        "runId.$": "$.OrchestratorOutput.runId"
+        "runId.$": "$.OrchestratorOutput.runId",
+        "analysisIntervalMinutes": 30
       },
       "End": true
     }
