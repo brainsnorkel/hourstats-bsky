@@ -129,12 +129,12 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		}
 
 		post := Post{
-			URI:     postView.Uri,
-			Text:    text,
-			Author:  author,
-			Likes:   likes,
-			Reposts: reposts,
-			Replies: replies,
+			URI:       postView.Uri,
+			Text:      text,
+			Author:    author,
+			Likes:     likes,
+			Reposts:   reposts,
+			Replies:   replies,
 			CreatedAt: postTime.Format(time.RFC3339),
 		}
 
