@@ -97,6 +97,12 @@ func (h *FetcherHandler) HandleRequest(ctx context.Context, event StepFunctionsE
 		}, err
 	}
 
+	// Log the time range being used for fetching
+	log.Printf("📅 FETCHER: Fetching posts from time range - From: %s, To: %s (current time: %s)", 
+		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"), 
+		time.Now().Format("2006-01-02 15:04:05 UTC"),
+		time.Now().Format("2006-01-02 15:04:05 UTC"))
+	
 	// Fetch posts using current cursor and cutoff time from run state
 	posts, nextCursor, hasMorePosts, err := h.fetchPostsWithCursor(ctx, blueskyClient, runState.CurrentCursor, runState.CutoffTime)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -78,6 +79,12 @@ func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEv
 			Posted:     false,
 		}, nil
 	}
+
+	// Log the time range being used for posting
+	log.Printf("📅 POSTER: Posting summary for time range - From: %s, To: %s (current time: %s)", 
+		runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"), 
+		time.Now().Format("2006-01-02 15:04:05 UTC"),
+		time.Now().Format("2006-01-02 15:04:05 UTC"))
 
 	if len(runState.TopPosts) == 0 {
 		log.Printf("No top posts found for run: %s, skipping post", event.RunID)
