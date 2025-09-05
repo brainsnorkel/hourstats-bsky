@@ -134,6 +134,12 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			replies = int(*postView.ReplyCount)
 		}
 
+		// Debug logging for first few posts to see actual engagement data
+		if len(posts) < 5 {
+			log.Printf("🔍 BLUESKY DEBUG: Post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d (Raw: LikeCount=%v, RepostCount=%v, ReplyCount=%v)", 
+				len(posts)+1, author, likes, reposts, replies, postView.LikeCount, postView.RepostCount, postView.ReplyCount)
+		}
+
 		post := Post{
 			URI:       postView.Uri,
 			Text:      text,
