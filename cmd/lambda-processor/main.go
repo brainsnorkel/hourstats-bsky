@@ -10,12 +10,13 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/config"
+	"github.com/christophergentle/hourstats-bsky/internal/formatter"
 	lambdapkg "github.com/christophergentle/hourstats-bsky/internal/lambda"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 )
 
-// StepFunctionsEvent represents the event from Step Functions
-type StepFunctionsEvent struct {
+// ProcessorEvent represents the event for the processor lambda
+type ProcessorEvent struct {
 	RunID                   string `json:"runId"`
 	AnalysisIntervalMinutes int    `json:"analysisIntervalMinutes"`
 	Status                  string `json:"status"`
@@ -23,19 +24,19 @@ type StepFunctionsEvent struct {
 
 // Response represents the Lambda response
 type Response struct {
-	StatusCode     int    `json:"statusCode"`
-	Body           string `json:"body"`
-	PostsAnalyzed  int    `json:"postsAnalyzed,omitempty"`
-	TopPostsCount  int    `json:"topPostsCount,omitempty"`
+	StatusCode       int    `json:"statusCode"`
+	Body             string `json:"body"`
+	PostsAnalyzed    int    `json:"postsAnalyzed,omitempty"`
+	TopPostsCount    int    `json:"topPostsCount,omitempty"`
 	OverallSentiment string `json:"overallSentiment,omitempty"`
 }
 
 // ProcessorHandler handles the combined analysis, aggregation, and posting
 type ProcessorHandler struct {
-	stateManager    *state.StateManager
+	stateManager      *state.StateManager
 	sentimentAnalyzer *analyzer.SentimentAnalyzer
-	blueskyClient   *client.BlueskyClient
-	config          *config.Config
+	blueskyClient     *client.BlueskyClient
+	config            *config.Config
 }
 
 // NewProcessorHandler creates a new processor handler
@@ -72,7 +73,7 @@ func NewProcessorHandler(ctx context.Context) (*ProcessorHandler, error) {
 }
 
 // HandleRequest is the main Lambda handler
-func (h *ProcessorHandler) HandleRequest(ctx context.Context, event StepFunctionsEvent) (Response, error) {
+func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEvent) (Response, error) {
 	log.Printf("Processor received event: %+v", event)
 
 	// Get current run state - look for fetcher step which has the collected posts
@@ -151,10 +152,10 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event StepFunction
 
 	log.Printf("Successfully processed %d posts and posted summary for run: %s", len(analyzedPosts), event.RunID)
 	return Response{
-		StatusCode:     200,
-		Body:           "Posts processed and summary posted successfully",
-		PostsAnalyzed:  len(analyzedPosts),
-		TopPostsCount:  len(topPosts),
+		StatusCode:       200,
+		Body:             "Posts processed and summary posted successfully",
+		PostsAnalyzed:    len(analyzedPosts),
+		TopPostsCount:    len(topPosts),
 		OverallSentiment: overallSentiment,
 	}, nil
 }
@@ -200,7 +201,7 @@ func (h *ProcessorHandler) analyzePosts(posts []state.Post) ([]state.Post, strin
 			EngagementScore: analyzed.EngagementScore,
 			CreatedAt:       analyzed.CreatedAt,
 		}
-		
+
 		// Debug logging for first few posts
 		if i < 5 {
 			log.Printf("🔍 PROCESSOR DEBUG: Post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d, Sentiment: %s, EngagementScore: %.2f",
@@ -320,6 +321,34 @@ func (h *ProcessorHandler) postSummary(ctx context.Context, runState *state.RunS
 			Sentiment:       post.Sentiment,
 			EngagementScore: post.EngagementScore,
 		}
+	}
+
+	// Generate post content to check character count using shared formatter
+	formatterPosts := make([]formatter.Post, len(topPosts))
+	for i, post := range topPosts {
+		formatterPosts[i] = formatter.Post{
+			Author:          post.Author,
+			Likes:           post.Likes,
+			Reposts:         post.Reposts,
+			Replies:         post.Replies,
+			Sentiment:       post.Sentiment,
+			EngagementScore: post.EngagementScore,
+		}
+	}
+
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, runState.AnalysisIntervalMinutes)
+	characterCount := len(postContent)
+	blueskyLimit := 300
+	remainingChars := blueskyLimit - characterCount
+
+	log.Printf("📊 Post Statistics - Characters: %d/%d, Remaining: %d", characterCount, blueskyLimit, remainingChars)
+
+	if remainingChars < 0 {
+		log.Printf("⚠️  WARNING: Post exceeds Bluesky limit by %d characters!", -remainingChars)
+	} else if remainingChars < 50 {
+		log.Printf("⚠️  WARNING: Post is close to Bluesky limit (%d characters remaining)", remainingChars)
+	} else {
+		log.Printf("✅ Post is within Bluesky limits")
 	}
 
 	// Post the summary

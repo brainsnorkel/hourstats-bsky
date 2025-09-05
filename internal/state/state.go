@@ -55,7 +55,7 @@ type Post struct {
 // PostItem represents a post stored separately in DynamoDB
 type PostItem struct {
 	RunID     string    `json:"runId" dynamodbav:"runId"`
-	Step      string    `json:"step" dynamodbav:"step"` // Required for DynamoDB composite key
+	Step      string    `json:"step" dynamodbav:"step"`     // Required for DynamoDB composite key
 	PostID    string    `json:"postId" dynamodbav:"postId"` // runId#postIndex
 	Post      Post      `json:"post" dynamodbav:"post"`
 	CreatedAt time.Time `json:"createdAt" dynamodbav:"createdAt"`
@@ -219,12 +219,12 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 		}
 
 		log.Printf("🔍 STATE DEBUG: Creating PostItem - RunID: %s, Step: %s, PostID: %s", postItem.RunID, postItem.Step, postItem.PostID)
-		
+
 		item, err := attributevalue.MarshalMap(postItem)
 		if err != nil {
 			return fmt.Errorf("failed to marshal post item: %w", err)
 		}
-		
+
 		log.Printf("🔍 STATE DEBUG: Marshaled item keys: %v", getMapKeys(item))
 
 		_, err = sm.client.PutItem(ctx, &dynamodb.PutItemInput{
@@ -335,4 +335,79 @@ func (sm *StateManager) SetPostingComplete(ctx context.Context, runID string) er
 	state.Status = "completed"
 
 	return sm.UpdateRun(ctx, state)
+}
+
+// ListRuns retrieves all run IDs from DynamoDB
+func (sm *StateManager) ListRuns(ctx context.Context, limit int32) ([]string, error) {
+	// Query for all runs using the GSI
+	result, err := sm.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(sm.tableName),
+		IndexName:              aws.String("status-index"),
+		KeyConditionExpression: aws.String("status = :status"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":status": &types.AttributeValueMemberS{Value: "orchestrator"},
+		},
+		ScanIndexForward: aws.Bool(false), // Most recent first
+		Limit:            aws.Int32(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query runs: %w", err)
+	}
+
+	var runIDs []string
+	for _, item := range result.Items {
+		var state RunState
+		err := attributevalue.UnmarshalMap(item, &state)
+		if err != nil {
+			log.Printf("Warning: failed to unmarshal run state: %v", err)
+			continue
+		}
+		runIDs = append(runIDs, state.RunID)
+	}
+
+	return runIDs, nil
+}
+
+// GetRunStats returns statistics about a run
+func (sm *StateManager) GetRunStats(ctx context.Context, runID string) (*RunStats, error) {
+	// Get the run state
+	state, err := sm.GetLatestRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run state: %w", err)
+	}
+
+	// Get all posts for this run
+	posts, err := sm.GetAllPosts(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get posts: %w", err)
+	}
+
+	return &RunStats{
+		RunID:                   state.RunID,
+		Status:                  state.Status,
+		Step:                    state.Step,
+		AnalysisIntervalMinutes: state.AnalysisIntervalMinutes,
+		CutoffTime:              state.CutoffTime,
+		TotalPostsRetrieved:     state.TotalPostsRetrieved,
+		ActualPostsCount:        len(posts),
+		CreatedAt:               state.CreatedAt,
+		UpdatedAt:               state.UpdatedAt,
+		OverallSentiment:        state.OverallSentiment,
+		TopPostsCount:           len(state.TopPosts),
+	}, nil
+}
+
+// RunStats represents statistics about a run
+type RunStats struct {
+	RunID                   string    `json:"runId"`
+	Status                  string    `json:"status"`
+	Step                    string    `json:"step"`
+	AnalysisIntervalMinutes int       `json:"analysisIntervalMinutes"`
+	CutoffTime              time.Time `json:"cutoffTime"`
+	TotalPostsRetrieved     int       `json:"totalPostsRetrieved"`
+	ActualPostsCount        int       `json:"actualPostsCount"`
+	CreatedAt               time.Time `json:"createdAt"`
+	UpdatedAt               time.Time `json:"updatedAt"`
+	OverallSentiment        string    `json:"overallSentiment,omitempty"`
+	TopPostsCount           int       `json:"topPostsCount"`
 }
