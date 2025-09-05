@@ -91,12 +91,22 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event StepFunction
 		time.Now().Format("2006-01-02 15:04:05 UTC"),
 		time.Now().Format("2006-01-02 15:04:05 UTC"))
 
-	log.Printf("🔍 PROCESSOR DEBUG: Retrieved %d posts from DynamoDB for run %s", len(runState.Posts), event.RunID)
+	// Retrieve all posts for this run
+	allPosts, err := h.stateManager.GetAllPosts(ctx, event.RunID)
+	if err != nil {
+		log.Printf("Failed to get all posts: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to get posts: " + err.Error(),
+		}, err
+	}
+
+	log.Printf("🔍 PROCESSOR DEBUG: Retrieved %d posts from DynamoDB for run %s", len(allPosts), event.RunID)
 	log.Printf("🔍 PROCESSOR DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
 	// Filter posts by cutoff time
-	filteredPosts := h.filterPostsByCutoffTime(runState.Posts, runState.CutoffTime)
-	log.Printf("🔍 PROCESSOR DEBUG: After time filtering: %d posts (from %d original)", len(filteredPosts), len(runState.Posts))
+	filteredPosts := h.filterPostsByCutoffTime(allPosts, runState.CutoffTime)
+	log.Printf("🔍 PROCESSOR DEBUG: After time filtering: %d posts (from %d original)", len(filteredPosts), len(allPosts))
 
 	if len(filteredPosts) == 0 {
 		log.Printf("No posts found for the time period, skipping analysis")
