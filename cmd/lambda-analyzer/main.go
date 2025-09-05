@@ -52,10 +52,10 @@ func NewAnalyzerHandler(ctx context.Context) (*AnalyzerHandler, error) {
 func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctionsEvent) (Response, error) {
 	log.Printf("Analyzer received event: %+v", event)
 
-	// Get current run state
-	runState, err := h.stateManager.GetLatestRun(ctx, event.RunID)
+	// Get current run state - specifically look for fetcher step which has the posts
+	runState, err := h.stateManager.GetRun(ctx, event.RunID, "fetcher")
 	if err != nil {
-		log.Printf("Failed to get run state: %v", err)
+		log.Printf("Failed to get fetcher run state: %v", err)
 		return Response{
 			StatusCode: 500,
 			Body:       "Failed to get run state: " + err.Error(),
