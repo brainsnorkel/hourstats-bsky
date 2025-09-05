@@ -14,7 +14,7 @@ func TestEventStructure(t *testing.T) {
 		Source: "aws.events",
 		Time:   "2024-01-01T00:00:00Z",
 	}
-	
+
 	assert.Equal(t, "aws.events", event.Source)
 	assert.Equal(t, "2024-01-01T00:00:00Z", event.Time)
 }
@@ -26,7 +26,7 @@ func TestResponseStructure(t *testing.T) {
 		Body:       "Success",
 		RunID:      "run-1234567890",
 	}
-	
+
 	assert.Equal(t, 200, response.StatusCode)
 	assert.Equal(t, "Success", response.Body)
 	assert.Equal(t, "run-1234567890", response.RunID)
@@ -37,7 +37,7 @@ func TestRunIDGeneration(t *testing.T) {
 	runID1 := generateRunID()
 	time.Sleep(1 * time.Millisecond) // Ensure different timestamps
 	runID2 := generateRunID()
-	
+
 	assert.Contains(t, runID1, "run-")
 	assert.Contains(t, runID2, "run-")
 	assert.NotEqual(t, runID1, runID2) // Should be different
