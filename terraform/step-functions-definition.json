@@ -23,7 +23,7 @@
             "Type": "Task",
             "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-fetcher",
             "Parameters": {
-              "runId.$": "$.RunID",
+              "runId.$": "$.runId",
               "analysisIntervalMinutes": 30,
               "batchId.$": "$$.Map.Item.Value"
             },
@@ -39,7 +39,7 @@
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-orchestrator",
       "Parameters": {
         "action": "checkCompletion",
-        "runId.$": "$.OrchestratorOutput.RunID"
+        "runId.$": "$.OrchestratorOutput.runId"
       },
       "ResultPath": "$.CompletionOutput",
       "Next": "IsComplete"
@@ -64,7 +64,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-analyzer",
       "Parameters": {
-        "runId.$": "$.OrchestratorOutput.RunID"
+        "runId.$": "$.OrchestratorOutput.runId"
       },
       "ResultPath": "$.AnalyzerOutput",
       "Next": "AggregateResults"
@@ -73,7 +73,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-aggregator",
       "Parameters": {
-        "runId.$": "$.OrchestratorOutput.RunID"
+        "runId.$": "$.OrchestratorOutput.runId"
       },
       "ResultPath": "$.AggregatorOutput",
       "Next": "PostSummary"
@@ -82,7 +82,7 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:${aws_region}:${aws_account_id}:function:hourstats-poster",
       "Parameters": {
-        "runId.$": "$.OrchestratorOutput.RunID"
+        "runId.$": "$.OrchestratorOutput.runId"
       },
       "End": true
     }
