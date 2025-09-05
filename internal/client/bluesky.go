@@ -88,15 +88,20 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 
 	// Convert to our Post format and filter by time
 	var posts []Post
+	var filteredCount int
+	log.Printf("🔍 FETCHER DEBUG: Processing %d posts from API, cutoff time: %s", len(searchResult.Posts), cutoffTime.Format("2006-01-02 15:04:05 UTC"))
+	
 	for _, postView := range searchResult.Posts {
 		// Filter posts by creation time
 		postTime, err := time.Parse(time.RFC3339, postView.IndexedAt)
 		if err != nil {
+			log.Printf("⚠️ FETCHER DEBUG: Skipping post with invalid timestamp: %s", postView.IndexedAt)
 			continue // Skip posts with invalid timestamps
 		}
 
 		// Only include posts from the analysis interval
 		if postTime.Before(cutoffTime) {
+			filteredCount++
 			continue
 		}
 
@@ -166,6 +171,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		}
 	}
 
+	log.Printf("🔍 FETCHER DEBUG: Filtered out %d posts (too old), kept %d posts", filteredCount, len(posts))
 	log.Printf("Retrieved %d posts from batch (cursor: %s, nextCursor: %s, hasMore: %v)", len(posts), cursor, nextCursor, hasMorePosts)
 	return posts, nextCursor, hasMorePosts, nil
 }
