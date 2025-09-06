@@ -464,8 +464,8 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 			break
 		}
 
-		// Prepare for next iteration (500 posts ahead)
-		currentCursor = fmt.Sprintf("%d", iteration*500)
+		// Prepare for next iteration (1000 posts ahead)
+		currentCursor = fmt.Sprintf("%d", iteration*1000)
 		fmt.Printf("    ➡️ Preparing next iteration with cursor: %s\n", currentCursor)
 	}
 
@@ -473,25 +473,30 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 	return totalPosts, nil
 }
 
-// fetchBatchInParallel makes 5 parallel API calls and returns combined results
+// fetchBatchInParallel makes 10 parallel API calls and returns combined results
 func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time) ([]bskyclient.Post, bool, error) {
-	// Define cursors for 5 parallel calls (100 posts each = 500 total)
+	// Define cursors for 10 parallel calls (100 posts each = 1000 total)
 	cursors := []string{
 		startCursor,
-		fmt.Sprintf("%s", addToCursor(startCursor, 100)),
-		fmt.Sprintf("%s", addToCursor(startCursor, 200)),
-		fmt.Sprintf("%s", addToCursor(startCursor, 300)),
-		fmt.Sprintf("%s", addToCursor(startCursor, 400)),
+		addToCursor(startCursor, 100),
+		addToCursor(startCursor, 200),
+		addToCursor(startCursor, 300),
+		addToCursor(startCursor, 400),
+		addToCursor(startCursor, 500),
+		addToCursor(startCursor, 600),
+		addToCursor(startCursor, 700),
+		addToCursor(startCursor, 800),
+		addToCursor(startCursor, 900),
 	}
 
-	fmt.Printf("      🚀 Making 5 parallel API calls with cursors: %v\n", cursors)
+	fmt.Printf("      🚀 Making 10 parallel API calls with cursors: %v\n", cursors)
 
 	var allPosts []bskyclient.Post
 	var hasOldPosts bool
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	// Launch 5 goroutines for parallel fetching
+	// Launch 10 goroutines for parallel fetching
 	for i, cursor := range cursors {
 		wg.Add(1)
 		go func(cursorIndex int, cursorValue string) {

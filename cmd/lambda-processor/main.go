@@ -223,7 +223,6 @@ func (h *ProcessorHandler) analyzePosts(posts []state.Post) ([]state.Post, strin
 	return statePosts, overallSentiment, positivePercent, negativePercent, nil
 }
 
-
 // calculateOverallSentimentWithPercentages calculates the overall sentiment and returns percentages
 func (h *ProcessorHandler) calculateOverallSentimentWithPercentages(posts []analyzer.AnalyzedPost) (string, float64, float64) {
 	positiveCount := 0

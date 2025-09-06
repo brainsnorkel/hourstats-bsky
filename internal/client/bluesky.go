@@ -515,14 +515,23 @@ func (c *BlueskyClient) hasAdultContentLabel(labels []*atproto.LabelDefs_Label) 
 
 // PostText posts a simple text message to Bluesky
 func (c *BlueskyClient) PostText(ctx context.Context, text string) error {
+	return c.PostWithFacets(ctx, text, nil)
+}
+
+func (c *BlueskyClient) PostWithFacets(ctx context.Context, text string, facets []*bsky.RichtextFacet) error {
 	if c.client == nil {
 		return fmt.Errorf("client not authenticated")
 	}
 
-	// Create a simple text post
+	// Create a text post with optional facets
 	postRecord := &bsky.FeedPost{
 		Text:      text,
 		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	// Add facets if provided
+	if facets != nil {
+		postRecord.Facets = facets
 	}
 
 	// Post the record using the AT Protocol
