@@ -90,13 +90,11 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 	// Convert to our Post format and filter by time
 	var posts []Post
 	var filteredCount int
-	log.Printf("🔍 FETCHER DEBUG: Processing %d posts from API, cutoff time: %s", len(searchResult.Posts), cutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
 	for _, postView := range searchResult.Posts {
 		// Filter posts by creation time
 		postTime, err := time.Parse(time.RFC3339, postView.IndexedAt)
 		if err != nil {
-			log.Printf("⚠️ FETCHER DEBUG: Skipping post with invalid timestamp: %s", postView.IndexedAt)
 			continue // Skip posts with invalid timestamps
 		}
 
@@ -135,30 +133,6 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			replies = int(*postView.ReplyCount)
 		}
 
-		// Debug logging for first few posts to see actual engagement data
-		if len(posts) < 5 {
-			log.Printf("🔍 BLUESKY DEBUG: Post %d - Author: %s, Likes: %d, Reposts: %d, Replies: %d",
-				len(posts)+1, author, likes, reposts, replies)
-			log.Printf("🔍 BLUESKY DEBUG: Raw pointers - LikeCount: %v (%T), RepostCount: %v (%T), ReplyCount: %v (%T)",
-				postView.LikeCount, postView.LikeCount, postView.RepostCount, postView.RepostCount, postView.ReplyCount, postView.ReplyCount)
-			if postView.LikeCount != nil {
-				log.Printf("🔍 BLUESKY DEBUG: LikeCount value: %d", *postView.LikeCount)
-			}
-			if postView.RepostCount != nil {
-				log.Printf("🔍 BLUESKY DEBUG: RepostCount value: %d", *postView.RepostCount)
-			}
-			if postView.ReplyCount != nil {
-				log.Printf("🔍 BLUESKY DEBUG: ReplyCount value: %d", *postView.ReplyCount)
-			}
-
-			// Debug: Check if there are other engagement fields available
-			log.Printf("🔍 BLUESKY DEBUG: PostView fields - IndexedAt: %s, Uri: %s", postView.IndexedAt, postView.Uri)
-			if postView.Author != nil {
-				log.Printf("🔍 BLUESKY DEBUG: Author: %s", postView.Author.Handle)
-			}
-			// Check if there are other count fields we're missing
-			log.Printf("🔍 BLUESKY DEBUG: PostView struct type: %T", postView)
-		}
 
 		post := Post{
 			URI:       postView.Uri,
@@ -197,7 +171,6 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		}
 	}
 
-	log.Printf("🔍 FETCHER DEBUG: Filtered out %d posts (too old), kept %d posts", filteredCount, len(posts))
 	log.Printf("Retrieved %d posts from batch (cursor: %s, nextCursor: %s, hasMore: %v)", len(posts), cursor, nextCursor, hasMorePosts)
 	return posts, nextCursor, hasMorePosts, nil
 }
