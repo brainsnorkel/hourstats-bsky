@@ -79,15 +79,30 @@ func (h *HourStatsAnalyzer) RunAnalysis(ctx context.Context) (*AnalysisResult, e
 	// Get top 5 posts
 	topPosts := h.getTopPosts(analyzedPosts, h.config.Settings.TopPostsCount)
 
-	// Calculate overall sentiment from top posts
-	overallSentiment := h.calculateOverallSentiment(topPosts)
+	// Calculate overall sentiment from all analyzed posts
+	overallSentiment := h.calculateOverallSentiment(analyzedPosts)
+	
+	// Calculate sentiment percentages from all analyzed posts
+	positiveCount := 0
+	negativeCount := 0
+	for _, post := range analyzedPosts {
+		switch post.Sentiment {
+		case "positive":
+			positiveCount++
+		case "negative":
+			negativeCount++
+		}
+	}
+	totalPosts := len(analyzedPosts)
+	positivePercent := float64(positiveCount) / float64(totalPosts) * 100
+	negativePercent := float64(negativeCount) / float64(totalPosts) * 100
 
 	// Convert back to client posts for posting
 	clientTopPosts := h.convertToClientPosts(topPosts)
 
 	// Post the results (skip if dry run)
 	if !h.config.Settings.DryRun {
-		if err := h.client.PostTrendingSummary(clientTopPosts, overallSentiment, h.config.Settings.AnalysisIntervalMinutes); err != nil {
+		if err := h.client.PostTrendingSummary(clientTopPosts, overallSentiment, h.config.Settings.AnalysisIntervalMinutes, totalPosts, positivePercent, negativePercent); err != nil {
 			return &AnalysisResult{
 				Success:      false,
 				ErrorMessage: "Failed to post trending summary: " + err.Error(),
