@@ -161,6 +161,8 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	currentCursor := ""
 	iteration := 0
 	maxIterations := 20 // Safety limit to prevent infinite loops
+	useTimeBasedSearch := false
+	timeBasedSearchStart := cutoffTime
 
 	for {
 		iteration++
@@ -169,10 +171,10 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 			break
 		}
 
-		log.Printf("🔄 FETCHER: Starting iteration %d with cursor: %s", iteration, currentCursor)
+		log.Printf("🔄 FETCHER: Starting iteration %d with cursor: %s (time-based: %t)", iteration, currentCursor, useTimeBasedSearch)
 
 		// Make 4 parallel API calls for this iteration
-		posts, shouldStop, err := h.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
+		posts, shouldStop, err := h.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime, useTimeBasedSearch, timeBasedSearchStart)
 		if err != nil {
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
 		}
@@ -199,26 +201,68 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 			break
 		}
 
-		// Prepare for next iteration (400 posts ahead)
-		currentCursor = fmt.Sprintf("%d", iteration*400)
-		log.Printf("➡️ FETCHER: Preparing next iteration with cursor: %s", currentCursor)
+		// Check if we need to switch to time-based search (cursor limit avoidance)
+		if !useTimeBasedSearch {
+			// Parse current cursor to check if we're approaching the limit
+			var cursorNum int
+			if currentCursor != "" {
+				if _, parseErr := fmt.Sscanf(currentCursor, "%d", &cursorNum); parseErr == nil {
+					if cursorNum >= 9000 {
+						log.Printf("🚨 FETCHER: Cursor limit avoidance triggered! Switching to time-based search at cursor %d", cursorNum)
+						
+						// Find the timestamp of the last post retrieved to use as new search boundary
+						if len(posts) > 0 {
+							// Find the oldest post in this batch (posts are sorted by most recent first)
+							oldestPost := posts[len(posts)-1]
+							lastPostTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
+							if err == nil {
+								timeBasedSearchStart = lastPostTime
+								log.Printf("🕐 FETCHER: Switching to time-based search from timestamp: %s", 
+									timeBasedSearchStart.Format("2006-01-02 15:04:05 UTC"))
+								useTimeBasedSearch = true
+								currentCursor = "" // Reset cursor for time-based search
+								continue
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Prepare for next iteration
+		if useTimeBasedSearch {
+			// For time-based search, we don't use cursors - the API handles time filtering
+			log.Printf("🕐 FETCHER: Time-based search - no cursor advancement needed")
+		} else {
+			// For cursor-based search, advance by 400 posts
+			currentCursor = fmt.Sprintf("%d", iteration*400)
+			log.Printf("➡️ FETCHER: Preparing next iteration with cursor: %s", currentCursor)
+		}
 	}
 
-	log.Printf("🏁 FETCHER: Parallel fetch complete - Total posts: %d across %d iterations", totalPosts, iteration)
+	log.Printf("🏁 FETCHER: Parallel fetch complete - Total posts: %d across %d iterations (time-based: %t)", totalPosts, iteration, useTimeBasedSearch)
 	return totalPosts, nil
 }
 
 // fetchBatchInParallel makes 4 parallel API calls and returns combined results
-func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time) ([]bskyclient.Post, bool, error) {
-	// Define cursors for 4 parallel calls (100 posts each = 400 total)
-	cursors := []string{
-		startCursor,
-		addToCursor(startCursor, 100),
-		addToCursor(startCursor, 200),
-		addToCursor(startCursor, 300),
+func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time, useTimeBasedSearch bool, timeBasedSearchStart time.Time) ([]bskyclient.Post, bool, error) {
+	var cursors []string
+	
+	if useTimeBasedSearch {
+		// For time-based search, we don't use cursors - make 4 calls with empty cursors
+		// The API will handle time filtering based on the search parameters
+		cursors = []string{"", "", "", ""}
+		log.Printf("🕐 FETCHER: Making 4 parallel time-based API calls (no cursors)")
+	} else {
+		// Define cursors for 4 parallel calls (100 posts each = 400 total)
+		cursors = []string{
+			startCursor,
+			addToCursor(startCursor, 100),
+			addToCursor(startCursor, 200),
+			addToCursor(startCursor, 300),
+		}
+		log.Printf("🚀 FETCHER: Making 4 parallel API calls with cursors: %v", cursors)
 	}
-
-	log.Printf("🚀 FETCHER: Making 4 parallel API calls with cursors: %v", cursors)
 
 	var allPosts []bskyclient.Post
 	var oldestPostTime *time.Time
@@ -233,9 +277,25 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 
 			// Add 1-second delay between goroutine starts to reduce API load
 			time.Sleep(time.Duration(cursorIndex) * time.Second)
-			log.Printf("📡 FETCHER: Starting parallel call %d with cursor: %s", cursorIndex+1, cursorValue)
+			
+			if useTimeBasedSearch {
+				log.Printf("📡 FETCHER: Starting time-based parallel call %d", cursorIndex+1)
+			} else {
+				log.Printf("📡 FETCHER: Starting parallel call %d with cursor: %s", cursorIndex+1, cursorValue)
+			}
 
-			posts, _, _, err := client.GetTrendingPostsBatch(ctx, cursorValue, cutoffTime)
+			// Use the appropriate search method based on the mode
+			var posts []bskyclient.Post
+			var err error
+			
+			if useTimeBasedSearch {
+				// For time-based search, we need to modify the client to support time-based queries
+				// For now, we'll use the regular batch method but with time filtering
+				posts, _, _, err = client.GetTrendingPostsBatch(ctx, cursorValue, timeBasedSearchStart)
+			} else {
+				posts, _, _, err = client.GetTrendingPostsBatch(ctx, cursorValue, cutoffTime)
+			}
+			
 			if err != nil {
 				log.Printf("❌ FETCHER: Parallel call %d failed: %v", cursorIndex+1, err)
 				return
@@ -291,7 +351,7 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 			oldestPostTime.Format("2006-01-02 15:04:05"), cutoffTime.Format("2006-01-02 15:04:05"))
 	}
 
-	log.Printf("🎯 FETCHER: Parallel batch complete - Total posts: %d, Should stop: %t", len(allPosts), shouldStop)
+	log.Printf("🎯 FETCHER: Parallel batch complete - Total posts: %d, Should stop: %t (time-based: %t)", len(allPosts), shouldStop, useTimeBasedSearch)
 	return allPosts, shouldStop, nil
 }
 
