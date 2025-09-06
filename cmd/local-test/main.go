@@ -488,7 +488,7 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 
 		fmt.Printf("    🔄 Starting iteration %d with cursor: %s\n", iteration, currentCursor)
 
-		// Make 8 parallel API calls for this iteration
+		// Make 4 parallel API calls for this iteration
 		posts, shouldStop, err := m.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
 		if err != nil {
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
@@ -516,8 +516,8 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 			break
 		}
 
-		// Prepare for next iteration (800 posts ahead)
-		currentCursor = fmt.Sprintf("%d", iteration*800)
+		// Prepare for next iteration (400 posts ahead)
+		currentCursor = fmt.Sprintf("%d", iteration*400)
 		fmt.Printf("    ➡️ Preparing next iteration with cursor: %s\n", currentCursor)
 	}
 
@@ -525,21 +525,17 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 	return totalPosts, nil
 }
 
-// fetchBatchInParallel makes 8 parallel API calls and returns combined results
+// fetchBatchInParallel makes 4 parallel API calls and returns combined results
 func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time) ([]bskyclient.Post, bool, error) {
-	// Define cursors for 8 parallel calls (100 posts each = 800 total)
+	// Define cursors for 4 parallel calls (100 posts each = 400 total)
 	cursors := []string{
 		startCursor,
 		addToCursor(startCursor, 100),
 		addToCursor(startCursor, 200),
 		addToCursor(startCursor, 300),
-		addToCursor(startCursor, 400),
-		addToCursor(startCursor, 500),
-		addToCursor(startCursor, 600),
-		addToCursor(startCursor, 700),
 	}
 
-	fmt.Printf("      🚀 Making 8 parallel API calls with cursors: %v\n", cursors)
+	fmt.Printf("      🚀 Making 4 parallel API calls with cursors: %v\n", cursors)
 
 	var allPosts []bskyclient.Post
 	var oldestPostTime *time.Time

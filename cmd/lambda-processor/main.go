@@ -162,6 +162,17 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	log.Printf("Posting summary to Bluesky")
 	log.Printf("🔍 PROCESSOR DEBUG: Sentiment data - Overall: %s, Positive: %.1f%%, Negative: %.1f%%, Total posts: %d",
 		overallSentiment, positivePercent, negativePercent, len(filteredPosts))
+	
+	// Authenticate before posting
+	if err := h.blueskyClient.Authenticate(); err != nil {
+		log.Printf("Failed to authenticate with Bluesky: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to authenticate with Bluesky: " + err.Error(),
+		}, err
+	}
+	log.Printf("✅ Successfully authenticated with Bluesky")
+	
 	err = h.postSummary(runState, topPosts, overallSentiment, len(filteredPosts), positivePercent, negativePercent)
 	if err != nil {
 		log.Printf("Failed to post summary: %v", err)
