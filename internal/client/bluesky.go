@@ -86,7 +86,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			if httpErr, ok := err.(interface{ Response() interface{} }); ok {
 				log.Printf("HTTP Response details: %+v", httpErr.Response())
 			}
-			
+
 			// Check if this might be a cursor pagination limit
 			if cursor != "" {
 				// Try to parse cursor as number to detect if we've hit a limit
@@ -99,7 +99,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 					}
 				}
 			}
-			
+
 			// For HTTP 400 errors, don't retry - likely a permanent issue
 			return nil, "", false, fmt.Errorf("API request failed with HTTP 400: %w", err)
 		}
@@ -194,7 +194,6 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			CreatedAt: postTime.Format(time.RFC3339),
 		}
 
-
 		posts = append(posts, post)
 	}
 
@@ -269,7 +268,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 				if httpErr, ok := err.(interface{ Response() interface{} }); ok {
 					log.Printf("HTTP Response details: %+v", httpErr.Response())
 				}
-				
+
 				// Check if this might be a cursor pagination limit
 				if cursor != "" {
 					// Try to parse cursor as number to detect if we've hit a limit
@@ -282,7 +281,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 						}
 					}
 				}
-				
+
 				// For HTTP 400 errors, don't retry - likely a permanent issue
 				return nil, fmt.Errorf("API request failed with HTTP 400: %w", err)
 			}
@@ -425,7 +424,6 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 			log.Printf("DEBUG: Non-standard URI format: %s for post by @%s (original: %s)", uri, postView.Author.Handle, postView.Uri)
 		}
 
-
 		// Check if we've seen this URI before (use the properly formatted URI)
 		if existingPost, exists := uriToPost[uri]; exists {
 			// Calculate engagement scores for comparison
@@ -530,9 +528,9 @@ func (c *BlueskyClient) createEmbedCard(ctx context.Context, post Post) *bsky.Fe
 		log.Printf("Cannot create embed card: missing URI (%s) or CID (%s)", post.URI, post.CID)
 		return nil
 	}
-	
+
 	log.Printf("Creating embed card for post: URI=%s, CID=%s", post.URI, post.CID)
-	
+
 	return &bsky.FeedPost_Embed{
 		EmbedRecord: &bsky.EmbedRecord{
 			Record: &atproto.RepoStrongRef{
@@ -543,9 +541,44 @@ func (c *BlueskyClient) createEmbedCard(ctx context.Context, post Post) *bsky.Fe
 	}
 }
 
-// createUserHandleFacets creates facets to link user handles to their posts
+// createUserHandleFacets creates facets to link user handles to their posts and mood hashtag
 func createUserHandleFacets(text string, posts []Post) []*bsky.RichtextFacet {
 	var facets []*bsky.RichtextFacet
+
+	// Create hashtag facet for mood word (e.g., #satisfied)
+	if strings.HasPrefix(text, "Bluesky is #") {
+		// Find the hashtag in the text
+		hashtagStart := strings.Index(text, "#")
+		if hashtagStart != -1 {
+			// Find the end of the hashtag (end of line or space)
+			hashtagEnd := strings.Index(text[hashtagStart:], "\n")
+			if hashtagEnd == -1 {
+				hashtagEnd = len(text)
+			} else {
+				hashtagEnd = hashtagStart + hashtagEnd
+			}
+
+			// Extract the hashtag text (without #)
+			hashtagText := text[hashtagStart+1 : hashtagEnd]
+
+			// Create hashtag facet
+			hashtagFacet := &bsky.RichtextFacet{
+				Index: &bsky.RichtextFacet_ByteSlice{
+					ByteStart: int64(hashtagStart),
+					ByteEnd:   int64(hashtagEnd),
+				},
+				Features: []*bsky.RichtextFacet_Features_Elem{
+					{
+						RichtextFacet_Tag: &bsky.RichtextFacet_Tag{
+							Tag: hashtagText,
+						},
+					},
+				},
+			}
+
+			facets = append(facets, hashtagFacet)
+		}
+	}
 
 	// Create facets for each user handle linking to their post
 	for _, post := range posts {

@@ -21,19 +21,17 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 	// Calculate net sentiment (positive - negative)
 	netSentiment := positivePercent - negativePercent
 
-	// Format time period
-	timePeriod := formatTimePeriod(analysisIntervalMinutes)
+	// Get descriptive word for sentiment
+	moodWord := getMoodWord(netSentiment)
 
-	// Generate the post content with new format
-	content := fmt.Sprintf("Bluesky mood %+.0f%% from %d posts in %s\n\n",
-		netSentiment, totalPosts, timePeriod)
+	// Generate the post content with new format (mood word as hashtag)
+	content := fmt.Sprintf("Bluesky is #%s\n\n", moodWord)
 
 	for i, post := range topPosts {
-		engagementScore := int(post.Likes + post.Reposts + post.Replies)
 		sentimentSymbol := getSentimentSymbol(post.Sentiment)
 
-		// Just show the handle, engagement, and sentiment - facets will handle the linking
-		content += fmt.Sprintf("%d. @%s (%d) %s\n", i+1, post.Author, engagementScore, sentimentSymbol)
+		// Just show the handle and sentiment - facets will handle the linking
+		content += fmt.Sprintf("%d. @%s %s\n", i+1, post.Author, sentimentSymbol)
 	}
 
 	return content
@@ -60,6 +58,51 @@ func formatTimePeriod(analysisIntervalMinutes int) string {
 	}
 }
 
+// getMoodWord maps sentiment percentage to a descriptive word
+func getMoodWord(netSentiment float64) string {
+	// Map sentiment percentage to descriptive words
+	switch {
+	case netSentiment >= 90:
+		return "ecstatic"
+	case netSentiment >= 80:
+		return "thrilled"
+	case netSentiment >= 70:
+		return "excited"
+	case netSentiment >= 60:
+		return "optimistic"
+	case netSentiment >= 50:
+		return "hopeful"
+	case netSentiment >= 40:
+		return "cheerful"
+	case netSentiment >= 30:
+		return "content"
+	case netSentiment >= 20:
+		return "satisfied"
+	case netSentiment >= 10:
+		return "pleased"
+	case netSentiment >= -10:
+		return "neutral"
+	case netSentiment >= -20:
+		return "concerned"
+	case netSentiment >= -30:
+		return "worried"
+	case netSentiment >= -40:
+		return "disappointed"
+	case netSentiment >= -50:
+		return "frustrated"
+	case netSentiment >= -60:
+		return "upset"
+	case netSentiment >= -70:
+		return "angry"
+	case netSentiment >= -80:
+		return "distressed"
+	case netSentiment >= -90:
+		return "devastated"
+	default:
+		return "hopeless"
+	}
+}
+
 // getSentimentSymbol returns the symbol for sentiment (+ for positive, - for negative, x for neutral)
 func getSentimentSymbol(sentiment string) string {
 	switch sentiment {
@@ -73,4 +116,3 @@ func getSentimentSymbol(sentiment string) string {
 		return "x" // fallback to neutral
 	}
 }
-
