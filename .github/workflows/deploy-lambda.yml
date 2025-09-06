@@ -201,7 +201,7 @@ jobs:
           
           # Test orchestrator Lambda directly
           echo "Testing orchestrator Lambda function (dry run mode)..."
-          echo -n '{"analysisIntervalMinutes": 60}' | base64 > /tmp/lambda-payload.b64
+          printf '{"analysisIntervalMinutes": 60}' | base64 > /tmp/lambda-payload.b64
           aws lambda invoke \
             --function-name "hourstats-orchestrator" \
             --region ${{ env.AWS_REGION }} \
