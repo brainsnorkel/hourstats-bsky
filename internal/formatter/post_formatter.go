@@ -31,8 +31,8 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 		engagementScore := int(post.Likes + post.Reposts + post.Replies)
 		sentimentSymbol := getSentimentSymbol(post.Sentiment)
 		
-		// Create clickable link to the original post
-		if post.URI != "" {
+		// Create clickable link to the original post only if it's a proper AT Protocol URI
+		if post.URI != "" && strings.HasPrefix(post.URI, "at://") {
 			webURL := convertATURItoWebURL(post.URI)
 			content += fmt.Sprintf("%d. @%s (%d) %s %s\n", i+1, post.Author, engagementScore, sentimentSymbol, webURL)
 		} else {
