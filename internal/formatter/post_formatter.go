@@ -18,26 +18,22 @@ type Post struct {
 
 // FormatPostContent generates the post content that will be posted to Bluesky
 func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, positivePercent, negativePercent float64) string {
+	// Calculate net sentiment (positive - negative)
+	netSentiment := positivePercent - negativePercent
+
 	// Format time period
 	timePeriod := formatTimePeriod(analysisIntervalMinutes)
 
 	// Generate the post content with new format
-	content := fmt.Sprintf("For the last %s I found %d posts with sentiment +%.0f%% -%.0f%%\n\n", 
-		timePeriod, totalPosts, positivePercent, negativePercent)
-	
-	content += "Top engagement:\n"
+	content := fmt.Sprintf("Bluesky mood %+.0f%% from %d posts in %s\n\n",
+		netSentiment, totalPosts, timePeriod)
 
 	for i, post := range topPosts {
 		engagementScore := int(post.Likes + post.Reposts + post.Replies)
 		sentimentSymbol := getSentimentSymbol(post.Sentiment)
-		
-		// Create clickable link to the original post only if it's a proper AT Protocol URI
-		if post.URI != "" && strings.HasPrefix(post.URI, "at://") {
-			webURL := convertATURItoWebURL(post.URI)
-			content += fmt.Sprintf("%d. @%s (%d) %s %s\n", i+1, post.Author, engagementScore, sentimentSymbol, webURL)
-		} else {
-			content += fmt.Sprintf("%d. @%s (%d) %s\n", i+1, post.Author, engagementScore, sentimentSymbol)
-		}
+
+		// Just show the handle, engagement, and sentiment - facets will handle the linking
+		content += fmt.Sprintf("%d. @%s (%d) %s\n", i+1, post.Author, engagementScore, sentimentSymbol)
 	}
 
 	return content
@@ -85,7 +81,7 @@ func convertATURItoWebURL(uri string) string {
 	if strings.HasPrefix(uri, "at://") {
 		// Remove the at:// prefix
 		uri = strings.TrimPrefix(uri, "at://")
-		
+
 		// Split by / to get the components
 		parts := strings.Split(uri, "/")
 		if len(parts) >= 3 {
@@ -94,7 +90,7 @@ func convertATURItoWebURL(uri string) string {
 			return fmt.Sprintf("https://bsky.app/profile/%s/post/%s", did, postID)
 		}
 	}
-	
+
 	// If it's not a valid AT Protocol URI, return as-is
 	return uri
 }

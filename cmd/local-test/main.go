@@ -18,7 +18,8 @@ import (
 
 // MockLambdaClient simulates Lambda invocations locally
 type MockLambdaClient struct {
-	stateManager *state.StateManager
+	stateManager   *state.StateManager
+	superDebugMode bool
 }
 
 // MockFetcherEvent represents the event for the fetcher lambda
@@ -39,13 +40,15 @@ type MockProcessorEvent struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run cmd/local-test/main.go <test-interval-minutes> [live]")
+		fmt.Println("Usage: go run cmd/local-test/main.go <test-interval-minutes> [live] [super-debug]")
 		fmt.Println("Example: go run cmd/local-test/main.go 5")
 		fmt.Println("Example: go run cmd/local-test/main.go 60 live")
+		fmt.Println("Example: go run cmd/local-test/main.go 2 super-debug")
 		fmt.Println("")
 		fmt.Println("Options:")
 		fmt.Println("  <test-interval-minutes>  Number of minutes to analyze (1-60)")
 		fmt.Println("  live                     Run in live mode: process all posts and post to Bluesky")
+		fmt.Println("  super-debug              Print detailed info for each post (handle, URI, timestamp, analysis window)")
 		os.Exit(1)
 	}
 
@@ -60,8 +63,17 @@ func main() {
 		log.Fatalf("Test interval must be between 1 and 60 minutes")
 	}
 
-	// Check for live mode
+	// Check for live mode and super debug mode
 	liveMode := len(os.Args) > 2 && os.Args[2] == "live"
+	superDebugMode := false
+
+	// Check for super-debug in any argument position
+	for _, arg := range os.Args[2:] {
+		if arg == "super-debug" {
+			superDebugMode = true
+			break
+		}
+	}
 
 	if liveMode {
 		fmt.Printf("🚀 Starting LIVE test with %d minute interval...\n", testIntervalMinutes)
@@ -69,6 +81,11 @@ func main() {
 		fmt.Println("")
 	} else {
 		fmt.Printf("🧪 Starting local test with %d minute interval...\n\n", testIntervalMinutes)
+	}
+
+	if superDebugMode {
+		fmt.Println("🔍 SUPER DEBUG MODE: Will print detailed info for each post")
+		fmt.Println("")
 	}
 
 	ctx := context.Background()
@@ -80,7 +97,10 @@ func main() {
 	}
 
 	// Create mock lambda client
-	mockClient := &MockLambdaClient{stateManager: stateManager}
+	mockClient := &MockLambdaClient{
+		stateManager:   stateManager,
+		superDebugMode: superDebugMode,
+	}
 
 	// Generate a test run ID
 	runID := fmt.Sprintf("test-run-%d", time.Now().Unix())
@@ -315,8 +335,22 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 			return fmt.Errorf("failed to authenticate with Bluesky for posting: %w", err)
 		}
 
-		// Post to Bluesky
-		err = blueskyClient.PostText(ctx, postContent)
+		// Convert posts to client format for posting with facets and embed cards
+		clientPosts := make([]bskyclient.Post, len(topPosts))
+		for i, post := range topPosts {
+			clientPosts[i] = bskyclient.Post{
+				URI:             post.URI,
+				Author:          post.Author,
+				Likes:           post.Likes,
+				Reposts:         post.Reposts,
+				Replies:         post.Replies,
+				Sentiment:       post.Sentiment,
+				EngagementScore: post.EngagementScore,
+			}
+		}
+
+		// Post to Bluesky with facets and embed cards
+		err = blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, analysisIntervalMinutes, len(deduplicatedPosts), positivePercent, negativePercent)
 		if err != nil {
 			return fmt.Errorf("failed to post to Bluesky: %w", err)
 		}
@@ -373,7 +407,7 @@ func (m *MockLambdaClient) convertToStatePosts(posts []bskyclient.Post) []state.
 	statePosts := make([]state.Post, len(posts))
 	for i, post := range posts {
 		statePosts[i] = state.Post{
-			URI:             fmt.Sprintf("at://post-%d", i), // Generate a simple URI
+			URI:             post.URI, // Use the real URI from the client
 			Author:          post.Author,
 			Text:            post.Text,
 			Likes:           post.Likes,
@@ -386,7 +420,6 @@ func (m *MockLambdaClient) convertToStatePosts(posts []bskyclient.Post) []state.
 	}
 	return statePosts
 }
-
 
 func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []state.Post) (string, float64, float64) {
 	if len(posts) == 0 {
@@ -429,7 +462,7 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 	if liveMode {
 		maxIterations = 20 // Allow more iterations in live mode
 	}
-	
+
 	maxFetchTime := 5 * time.Minute // Maximum time to spend fetching
 	startTime := time.Now()
 
@@ -439,7 +472,7 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 			fmt.Printf("    ⚠️ Reached max iterations (%d), stopping\n", maxIterations)
 			break
 		}
-		
+
 		// Check if we've exceeded maximum fetch time
 		if time.Since(startTime) > maxFetchTime {
 			fmt.Printf("    ⏰ Exceeded maximum fetch time (%v), stopping\n", maxFetchTime)
@@ -448,8 +481,8 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 
 		fmt.Printf("    🔄 Starting iteration %d with cursor: %s\n", iteration, currentCursor)
 
-		// Make 5 parallel API calls for this iteration
-		posts, hasOldPosts, err := m.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
+		// Make 8 parallel API calls for this iteration
+		posts, shouldStop, err := m.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
 		if err != nil {
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
 		}
@@ -471,7 +504,7 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 		fmt.Printf("    ✅ Iteration %d complete - Retrieved %d posts (Total: %d)\n", iteration, len(posts), totalPosts)
 
 		// Check if we've reached posts before our time window
-		if hasOldPosts {
+		if shouldStop {
 			fmt.Printf("    ⏰ Found posts before time window, stopping at iteration %d\n", iteration)
 			break
 		}
@@ -502,7 +535,7 @@ func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bsk
 	fmt.Printf("      🚀 Making 8 parallel API calls with cursors: %v\n", cursors)
 
 	var allPosts []bskyclient.Post
-	var hasOldPosts bool
+	var oldestPostTime *time.Time
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
@@ -522,34 +555,68 @@ func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bsk
 
 			fmt.Printf("        ✅ Parallel call %d completed - Retrieved %d posts\n", cursorIndex+1, len(posts))
 
-			// Check if we've reached posts before cutoff time
-			// Only set hasOldPosts if we have posts and the oldest post is before cutoff
-			localHasOldPosts := false
+			// Super debug: Print detailed info for each post
+			if m.superDebugMode && len(posts) > 0 {
+				fmt.Printf("        🔍 SUPER DEBUG - Parallel call %d posts:\n", cursorIndex+1)
+				for i, post := range posts {
+					postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+					if err == nil {
+						// Calculate seconds before the end of the analysis period
+						// Analysis period ends at now, so this shows how many seconds before now the post was created
+						secondsBeforeEnd := time.Since(postTime).Seconds()
+						isBeforeWindow := postTime.Before(cutoffTime)
+						status := "✅ IN WINDOW"
+						if isBeforeWindow {
+							status = "❌ BEFORE WINDOW"
+						}
+
+						fmt.Printf("          %d. @%s | URI: %s | %.1fs before end of analysis period | %s\n",
+							i+1, post.Author, post.URI, secondsBeforeEnd, status)
+					}
+				}
+				fmt.Printf("        🔍 End super debug for parallel call %d\n", cursorIndex+1)
+			}
+
+			// Debug: Show first and last few timestamps to verify order
+			if len(posts) > 0 {
+				firstPost, _ := time.Parse(time.RFC3339, posts[0].CreatedAt)
+				lastPost, _ := time.Parse(time.RFC3339, posts[len(posts)-1].CreatedAt)
+				fmt.Printf("        🔍 Parallel call %d: First post: %d, Last post: %d (diff: %d seconds)\n",
+					cursorIndex+1, firstPost.Unix(), lastPost.Unix(), firstPost.Unix()-lastPost.Unix())
+			}
+
+			// Find the oldest post in this batch to track the true boundary
+			var localOldestTime *time.Time
 			if len(posts) > 0 {
 				// Find the oldest post in this batch (posts are sorted by most recent first)
 				oldestPost := posts[len(posts)-1]
 				postTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
 				if err == nil {
+					localOldestTime = &postTime
+
 					// Convert to Unix timestamps for clean comparison
 					postUnixTime := postTime.Unix()
 					cutoffUnixTime := cutoffTime.Unix()
-					
-					fmt.Printf("        📅 Parallel call %d: Oldest post Unix: %d, Cutoff Unix: %d (diff: %d seconds)\n", 
+
+					fmt.Printf("        📅 Parallel call %d: Oldest post Unix: %d, Cutoff Unix: %d (diff: %d seconds)\n",
 						cursorIndex+1, postUnixTime, cutoffUnixTime, postUnixTime-cutoffUnixTime)
-					
+
 					if postUnixTime < cutoffUnixTime {
-						localHasOldPosts = true
-						fmt.Printf("        ⏰ Parallel call %d: Found posts before cutoff time (oldest: %d < cutoff: %d)\n", 
+						fmt.Printf("        ⏰ Parallel call %d: Found posts before cutoff time (oldest: %d < cutoff: %d)\n",
 							cursorIndex+1, postUnixTime, cutoffUnixTime)
 					}
 				}
 			}
 
-			// Thread-safe accumulation
+			// Thread-safe accumulation and boundary tracking
 			mu.Lock()
 			allPosts = append(allPosts, posts...)
-			if localHasOldPosts {
-				hasOldPosts = true
+
+			// Track the oldest post time across all goroutines
+			if localOldestTime != nil {
+				if oldestPostTime == nil || localOldestTime.Before(*oldestPostTime) {
+					oldestPostTime = localOldestTime
+				}
 			}
 			mu.Unlock()
 		}(i, cursor)
@@ -558,8 +625,16 @@ func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bsk
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	fmt.Printf("      🎯 Parallel batch complete - Total posts: %d, Has old posts: %t\n", len(allPosts), hasOldPosts)
-	return allPosts, hasOldPosts, nil
+	// Determine if we should stop based on the oldest post across all goroutines
+	shouldStop := false
+	if oldestPostTime != nil && oldestPostTime.Before(cutoffTime) {
+		shouldStop = true
+		fmt.Printf("      ⏰ Found posts before cutoff time across all goroutines (oldest: %s < cutoff: %s)\n",
+			oldestPostTime.Format("2006-01-02 15:04:05"), cutoffTime.Format("2006-01-02 15:04:05"))
+	}
+
+	fmt.Printf("      🎯 Parallel batch complete - Total posts: %d, Should stop: %t\n", len(allPosts), shouldStop)
+	return allPosts, shouldStop, nil
 }
 
 // addToCursor adds a number to a cursor string (handles empty string case)
@@ -581,25 +656,25 @@ func addToCursor(cursor string, add int) string {
 // deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
 func (m *MockLambdaClient) deduplicatePostsByURI(posts []state.Post) []state.Post {
 	uriToPost := make(map[string]state.Post)
-	
+
 	for _, post := range posts {
 		// Skip posts with empty URIs
 		if post.URI == "" {
 			continue
 		}
-		
+
 		// Calculate engagement score for this post
 		currentEngagement := post.Likes + post.Reposts + post.Replies
-		
+
 		// Check if we've seen this URI before
 		if existingPost, exists := uriToPost[post.URI]; exists {
 			// Calculate engagement score for existing post
 			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
-			
+
 			// Keep the post with higher engagement score
 			if currentEngagement > existingEngagement {
 				uriToPost[post.URI] = post
-				fmt.Printf("    🔍 Deduplication: Replacing post %s (engagement: %d) with better version (engagement: %d)\n", 
+				fmt.Printf("    🔍 Deduplication: Replacing post %s (engagement: %d) with better version (engagement: %d)\n",
 					post.URI, existingEngagement, currentEngagement)
 			}
 		} else {
@@ -607,13 +682,13 @@ func (m *MockLambdaClient) deduplicatePostsByURI(posts []state.Post) []state.Pos
 			uriToPost[post.URI] = post
 		}
 	}
-	
+
 	// Convert map values to slice
 	var deduplicatedPosts []state.Post
 	for _, post := range uriToPost {
 		deduplicatedPosts = append(deduplicatedPosts, post)
 	}
-	
+
 	fmt.Printf("    🔍 Deduplication removed %d duplicate posts\n", len(posts)-len(deduplicatedPosts))
 	return deduplicatedPosts
 }

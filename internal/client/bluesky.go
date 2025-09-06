@@ -133,19 +133,19 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			replies = int(*postView.ReplyCount)
 		}
 
-
-		// Construct proper AT Protocol URI if the API returns a different format
+		// Construct proper AT Protocol URI
 		uri := postView.Uri
 		if !strings.HasPrefix(postView.Uri, "at://") && postView.Author != nil {
 			// Try to construct AT Protocol URI from available data
 			// Format: at://did:plc:abc123/app.bsky.feed.post/xyz789
 			if postView.Author.Did != "" {
-				// Extract post ID from the URI if it's in a different format
-				postID := postView.Uri
-				if strings.Contains(postID, "post-") {
-					postID = strings.TrimPrefix(postID, "post-")
+				// Use the original URI as the record ID if it's not already an AT Protocol URI
+				// The API might return something like "post-123" or just "123"
+				recordID := postView.Uri
+				if strings.HasPrefix(recordID, "post-") {
+					recordID = strings.TrimPrefix(recordID, "post-")
 				}
-				uri = fmt.Sprintf("at://%s/app.bsky.feed.post/%s", postView.Author.Did, postID)
+				uri = fmt.Sprintf("at://%s/app.bsky.feed.post/%s", postView.Author.Did, recordID)
 			}
 		}
 
@@ -329,18 +329,19 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 			continue // Skip this post
 		}
 
-		// Construct proper AT Protocol URI if the API returns a different format
+		// Construct proper AT Protocol URI
 		uri := postView.Uri
 		if !strings.HasPrefix(postView.Uri, "at://") && postView.Author != nil {
 			// Try to construct AT Protocol URI from available data
 			// Format: at://did:plc:abc123/app.bsky.feed.post/xyz789
 			if postView.Author.Did != "" {
-				// Extract post ID from the URI if it's in a different format
-				postID := postView.Uri
-				if strings.Contains(postID, "post-") {
-					postID = strings.TrimPrefix(postID, "post-")
+				// Use the original URI as the record ID if it's not already an AT Protocol URI
+				// The API might return something like "post-123" or just "123"
+				recordID := postView.Uri
+				if strings.HasPrefix(recordID, "post-") {
+					recordID = strings.TrimPrefix(recordID, "post-")
 				}
-				uri = fmt.Sprintf("at://%s/app.bsky.feed.post/%s", postView.Author.Did, postID)
+				uri = fmt.Sprintf("at://%s/app.bsky.feed.post/%s", postView.Author.Did, recordID)
 			}
 		}
 
@@ -353,25 +354,25 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 			Replies:   replies,
 			CreatedAt: postView.IndexedAt,
 		}
-		
+
 		// Debug: Log URI format to understand what we're getting
 		if !strings.HasPrefix(uri, "at://") {
 			log.Printf("DEBUG: Non-standard URI format: %s for post by @%s (original: %s)", uri, postView.Author.Handle, postView.Uri)
 		}
 
-		// Check if we've seen this URI before
-		if existingPost, exists := uriToPost[postView.Uri]; exists {
+		// Check if we've seen this URI before (use the properly formatted URI)
+		if existingPost, exists := uriToPost[uri]; exists {
 			// Calculate engagement scores for comparison
 			currentEngagement := likes + reposts + replies
 			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
-			
+
 			// Keep the post with higher engagement score
 			if currentEngagement > existingEngagement {
-				uriToPost[postView.Uri] = post
+				uriToPost[uri] = post
 			}
 		} else {
 			// First time seeing this URI, add it
-			uriToPost[postView.Uri] = post
+			uriToPost[uri] = post
 		}
 	}
 
@@ -385,13 +386,14 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 	return posts, nil
 }
 
-func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int) error {
+func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, positivePercent, negativePercent float64) error {
 	ctx := context.Background()
 
 	// Convert client posts to formatter posts
 	formatterPosts := make([]formatter.Post, len(posts))
 	for i, post := range posts {
 		formatterPosts[i] = formatter.Post{
+			URI:             post.URI,
 			Author:          post.Author,
 			Likes:           post.Likes,
 			Reposts:         post.Reposts,
@@ -401,20 +403,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 		}
 	}
 
-	// Calculate sentiment percentages
-	positiveCount := 0
-	negativeCount := 0
-	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		}
-	}
-	totalPosts := len(posts)
-	positivePercent := float64(positiveCount) / float64(totalPosts) * 100
-	negativePercent := float64(negativeCount) / float64(totalPosts) * 100
+	// Use the pre-calculated sentiment data from all posts, not just the top 5
 
 	// Use shared formatter to generate the post content
 	summaryText := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, totalPosts, positivePercent, negativePercent)
@@ -428,14 +417,29 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	// Post to Bluesky
 	log.Printf("Posting to Bluesky: %s", summaryText)
 
-	// Create facets for clickable links
-	facets := createLinkFacets(summaryText, posts)
+	// Create facets for clickable links (user handles to posts)
+	facets := createUserHandleFacets(summaryText, posts)
+
+	// Create embed card for the first post if available (skip posts with invalid URIs)
+	// Note: Embed cards require a CID which we don't currently store, so we'll skip for now
+	var embed *bsky.FeedPost_Embed
+	// TODO: Add CID storage to enable embed cards
+	// if len(posts) > 0 {
+	// 	for _, post := range posts {
+	// 		if post.URI != "" && !strings.HasPrefix(post.URI, "at://post-") {
+	// 			log.Printf("🔍 EMBED DEBUG: Creating embed card for post with URI: %s", post.URI)
+	// 			embed = c.createEmbedCard(ctx, post)
+	// 			break
+	// 		}
+	// 	}
+	// }
 
 	// Create the post using the AT Protocol
 	postRecord := &bsky.FeedPost{
 		Text:      summaryText,
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Facets:    facets,
+		Embed:     embed,
 	}
 
 	// Post the record
@@ -451,6 +455,66 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 
 	log.Printf("Successfully posted to Bluesky!")
 	return nil
+}
+
+// createEmbedCard creates an embed card for a post
+func (c *BlueskyClient) createEmbedCard(ctx context.Context, post Post) *bsky.FeedPost_Embed {
+	if post.URI == "" {
+		return nil
+	}
+
+	// Create a record embed for the post
+	// This will show the post content as an embed card
+	return &bsky.FeedPost_Embed{
+		EmbedRecord: &bsky.EmbedRecord{
+			Record: &atproto.RepoStrongRef{
+				Uri: post.URI,
+				Cid: "", // We don't have the CID, but the URI should be sufficient
+			},
+		},
+	}
+}
+
+// createUserHandleFacets creates facets to link user handles to their posts
+func createUserHandleFacets(text string, posts []Post) []*bsky.RichtextFacet {
+	var facets []*bsky.RichtextFacet
+
+	// Create facets for each user handle linking to their post
+	for _, post := range posts {
+		if post.URI == "" {
+			continue
+		}
+
+		// Find the handle in the text and create a facet
+		handle := "@" + post.Author
+		startIndex := strings.Index(text, handle)
+		if startIndex == -1 {
+			continue
+		}
+
+		endIndex := startIndex + len(handle)
+
+		// Convert AT Protocol URI to web URL for clickable links
+		webURL := convertATURItoWebURL(post.URI)
+
+		facet := &bsky.RichtextFacet{
+			Index: &bsky.RichtextFacet_ByteSlice{
+				ByteStart: int64(startIndex),
+				ByteEnd:   int64(endIndex),
+			},
+			Features: []*bsky.RichtextFacet_Features_Elem{
+				{
+					RichtextFacet_Link: &bsky.RichtextFacet_Link{
+						Uri: webURL,
+					},
+				},
+			},
+		}
+
+		facets = append(facets, facet)
+	}
+
+	return facets
 }
 
 // convertATURItoWebURL converts an AT Protocol URI to a web-friendly URL
