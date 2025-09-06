@@ -189,30 +189,45 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 	}
 
 
-	// Store posts separately in DynamoDB
-	for i, post := range posts {
-		postItem := PostItem{
-			RunID:     runID,
-			Step:      "fetcher", // All posts are stored under the fetcher step
-			PostID:    fmt.Sprintf("%s#%d", runID, state.TotalPostsRetrieved+i),
-			Post:      post,
-			CreatedAt: time.Now(),
-			TTL:       time.Now().Add(7 * 24 * time.Hour).Unix(), // 7 days TTL
+	// Store posts using batch write for efficiency (up to 25 items per batch)
+	const batchSize = 25
+	for i := 0; i < len(posts); i += batchSize {
+		end := i + batchSize
+		if end > len(posts) {
+			end = len(posts)
+		}
+		
+		var writeRequests []types.WriteRequest
+		for j := i; j < end; j++ {
+			postItem := PostItem{
+				RunID:     runID,
+				Step:      "fetcher", // All posts are stored under the fetcher step
+				PostID:    fmt.Sprintf("%s#%d", runID, state.TotalPostsRetrieved+j),
+				Post:      posts[j],
+				CreatedAt: time.Now(),
+				TTL:       time.Now().Add(7 * 24 * time.Hour).Unix(), // 7 days TTL
+			}
+
+			item, err := attributevalue.MarshalMap(postItem)
+			if err != nil {
+				return fmt.Errorf("failed to marshal post item: %w", err)
+			}
+
+			writeRequests = append(writeRequests, types.WriteRequest{
+				PutRequest: &types.PutRequest{
+					Item: item,
+				},
+			})
 		}
 
-
-		item, err := attributevalue.MarshalMap(postItem)
-		if err != nil {
-			return fmt.Errorf("failed to marshal post item: %w", err)
-		}
-
-
-		_, err = sm.client.PutItem(ctx, &dynamodb.PutItemInput{
-			TableName: aws.String(sm.tableName),
-			Item:      item,
+		// Execute batch write
+		_, err = sm.client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
+			RequestItems: map[string][]types.WriteRequest{
+				sm.tableName: writeRequests,
+			},
 		})
 		if err != nil {
-			return fmt.Errorf("failed to store post item: %w", err)
+			return fmt.Errorf("failed to batch write posts: %w", err)
 		}
 	}
 
