@@ -530,17 +530,17 @@ func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bsk
 				oldestPost := posts[len(posts)-1]
 				postTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
 				if err == nil {
-					// Convert both times to UTC for accurate comparison
-					postTimeUTC := postTime.UTC()
-					cutoffTimeUTC := cutoffTime.UTC()
+					// Convert to Unix timestamps for clean comparison
+					postUnixTime := postTime.Unix()
+					cutoffUnixTime := cutoffTime.Unix()
 					
-					fmt.Printf("        📅 Parallel call %d: Oldest post timestamp: %s UTC, Cutoff time: %s UTC\n", 
-						cursorIndex+1, postTimeUTC.Format("2006-01-02 15:04:05"), cutoffTimeUTC.Format("2006-01-02 15:04:05"))
+					fmt.Printf("        📅 Parallel call %d: Oldest post Unix: %d, Cutoff Unix: %d (diff: %d seconds)\n", 
+						cursorIndex+1, postUnixTime, cutoffUnixTime, postUnixTime-cutoffUnixTime)
 					
-					if postTimeUTC.Before(cutoffTimeUTC) {
+					if postUnixTime < cutoffUnixTime {
 						localHasOldPosts = true
-						fmt.Printf("        ⏰ Parallel call %d: Found posts before cutoff time (oldest: %s UTC < cutoff: %s UTC)\n", 
-							cursorIndex+1, postTimeUTC.Format("2006-01-02 15:04:05"), cutoffTimeUTC.Format("2006-01-02 15:04:05"))
+						fmt.Printf("        ⏰ Parallel call %d: Found posts before cutoff time (oldest: %d < cutoff: %d)\n", 
+							cursorIndex+1, postUnixTime, cutoffUnixTime)
 					}
 				}
 			}
