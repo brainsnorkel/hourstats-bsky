@@ -490,7 +490,7 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 
 		fmt.Printf("    🔄 Starting iteration %d with cursor: %s (time-based: %t)\n", iteration, currentCursor, useTimeBasedSearch)
 
-		// Make 4 parallel API calls for this iteration
+		// Make 8 parallel API calls for this iteration
 		posts, shouldStop, err := m.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime, useTimeBasedSearch, timeBasedSearchStart)
 		if err != nil {
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
@@ -510,6 +510,25 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 		}
 
 		totalPosts += len(posts)
+		
+		// Debug: Find and log the highest engagement post in this iteration
+		if len(posts) > 0 {
+			highestEngagementPost := posts[0]
+			highestEngagement := posts[0].EngagementScore
+			for _, post := range posts {
+				if post.EngagementScore > highestEngagement {
+					highestEngagement = post.EngagementScore
+					highestEngagementPost = post
+				}
+			}
+			textPreview := highestEngagementPost.Text
+			if len(textPreview) > 50 {
+				textPreview = textPreview[:50] + "..."
+			}
+			fmt.Printf("    🏆 FETCHER: Highest engagement post in iteration %d: @%s (score: %.1f) - %s\n", 
+				iteration, highestEngagementPost.Author, highestEngagement, textPreview)
+		}
+		
 		fmt.Printf("    ✅ Iteration %d complete - Retrieved %d posts (Total: %d)\n", iteration, len(posts), totalPosts)
 
 		// Check if we've reached posts before our time window
@@ -551,8 +570,8 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 			// For time-based search, we don't use cursors - the API handles time filtering
 			fmt.Printf("    🕐 FETCHER: Time-based search - no cursor advancement needed\n")
 		} else {
-			// For cursor-based search, advance by 400 posts
-			currentCursor = fmt.Sprintf("%d", iteration*400)
+			// For cursor-based search, advance by 800 posts
+			currentCursor = fmt.Sprintf("%d", iteration*800)
 			fmt.Printf("    ➡️ Preparing next iteration with cursor: %s\n", currentCursor)
 		}
 	}
@@ -561,24 +580,28 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 	return totalPosts, nil
 }
 
-// fetchBatchInParallel makes 4 parallel API calls and returns combined results
+// fetchBatchInParallel makes 8 parallel API calls and returns combined results
 func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time, useTimeBasedSearch bool, timeBasedSearchStart time.Time) ([]bskyclient.Post, bool, error) {
 	var cursors []string
 	
 	if useTimeBasedSearch {
-		// For time-based search, we don't use cursors - make 4 calls with empty cursors
+		// For time-based search, we don't use cursors - make 8 calls with empty cursors
 		// The API will handle time filtering based on the search parameters
-		cursors = []string{"", "", "", ""}
-		fmt.Printf("      🕐 Making 4 parallel time-based API calls (no cursors)\n")
+		cursors = []string{"", "", "", "", "", "", "", ""}
+		fmt.Printf("      🕐 Making 8 parallel time-based API calls (no cursors)\n")
 	} else {
-		// Define cursors for 4 parallel calls (100 posts each = 400 total)
+		// Define cursors for 8 parallel calls (100 posts each = 800 total)
 		cursors = []string{
 			startCursor,
 			addToCursor(startCursor, 100),
 			addToCursor(startCursor, 200),
 			addToCursor(startCursor, 300),
+			addToCursor(startCursor, 400),
+			addToCursor(startCursor, 500),
+			addToCursor(startCursor, 600),
+			addToCursor(startCursor, 700),
 		}
-		fmt.Printf("      🚀 Making 4 parallel API calls with cursors: %v\n", cursors)
+		fmt.Printf("      🚀 Making 8 parallel API calls with cursors: %v\n", cursors)
 	}
 
 	var allPosts []bskyclient.Post
