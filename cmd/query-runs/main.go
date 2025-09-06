@@ -134,11 +134,15 @@ func analyzeRun(ctx context.Context, stateManager *state.StateManager, runID str
 		return
 	}
 
-	fmt.Printf("📝 Found %d posts in DynamoDB\n\n", len(posts))
+	fmt.Printf("📝 Found %d posts in DynamoDB\n", len(posts))
+
+	// Deduplicate posts by URI, keeping the one with highest engagement score
+	deduplicatedPosts := deduplicatePostsByURI(posts)
+	fmt.Printf("🔍 After deduplication: %d posts (removed %d duplicates)\n\n", len(deduplicatedPosts), len(posts)-len(deduplicatedPosts))
 
 	// Filter posts by cutoff time (same logic as processor)
-	filteredPosts := filterPostsByCutoffTime(posts, stats.CutoffTime)
-	fmt.Printf("⏰ After time filtering: %d posts (from %d original)\n\n", len(filteredPosts), len(posts))
+	filteredPosts := filterPostsByCutoffTime(deduplicatedPosts, stats.CutoffTime)
+	fmt.Printf("⏰ After time filtering: %d posts (from %d deduplicated)\n\n", len(filteredPosts), len(deduplicatedPosts))
 
 	if len(filteredPosts) == 0 {
 		fmt.Println("❌ No posts found within the analysis time period.")
@@ -312,4 +316,41 @@ func getTopPosts(posts []state.Post, n int) []state.Post {
 	}
 
 	return posts[:n]
+}
+
+// deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
+func deduplicatePostsByURI(posts []state.Post) []state.Post {
+	uriToPost := make(map[string]state.Post)
+	
+	for _, post := range posts {
+		// Skip posts with empty URIs
+		if post.URI == "" {
+			continue
+		}
+		
+		// Calculate engagement score for this post
+		currentEngagement := post.Likes + post.Reposts + post.Replies
+		
+		// Check if we've seen this URI before
+		if existingPost, exists := uriToPost[post.URI]; exists {
+			// Calculate engagement score for existing post
+			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
+			
+			// Keep the post with higher engagement score
+			if currentEngagement > existingEngagement {
+				uriToPost[post.URI] = post
+			}
+		} else {
+			// First time seeing this URI, add it
+			uriToPost[post.URI] = post
+		}
+	}
+	
+	// Convert map values to slice
+	var deduplicatedPosts []state.Post
+	for _, post := range uriToPost {
+		deduplicatedPosts = append(deduplicatedPosts, post)
+	}
+	
+	return deduplicatedPosts
 }

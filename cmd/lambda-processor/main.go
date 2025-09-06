@@ -105,9 +105,13 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	log.Printf("🔍 PROCESSOR DEBUG: Retrieved %d posts from DynamoDB for run %s", len(allPosts), event.RunID)
 	log.Printf("🔍 PROCESSOR DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
+	// Deduplicate posts by URI, keeping the one with highest engagement score
+	deduplicatedPosts := h.deduplicatePostsByURI(allPosts)
+	log.Printf("🔍 PROCESSOR DEBUG: After deduplication: %d posts (from %d original)", len(deduplicatedPosts), len(allPosts))
+
 	// Filter posts by cutoff time
-	filteredPosts := h.filterPostsByCutoffTime(allPosts, runState.CutoffTime)
-	log.Printf("🔍 PROCESSOR DEBUG: After time filtering: %d posts (from %d original)", len(filteredPosts), len(allPosts))
+	filteredPosts := h.filterPostsByCutoffTime(deduplicatedPosts, runState.CutoffTime)
+	log.Printf("🔍 PROCESSOR DEBUG: After time filtering: %d posts (from %d deduplicated)", len(filteredPosts), len(deduplicatedPosts))
 
 	if len(filteredPosts) == 0 {
 		log.Printf("No posts found for the time period, skipping analysis")
@@ -365,6 +369,46 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 
 	// Post the summary
 	return h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes)
+}
+
+// deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
+func (h *ProcessorHandler) deduplicatePostsByURI(posts []state.Post) []state.Post {
+	uriToPost := make(map[string]state.Post)
+	
+	for _, post := range posts {
+		// Skip posts with empty URIs
+		if post.URI == "" {
+			continue
+		}
+		
+		// Calculate engagement score for this post
+		currentEngagement := post.Likes + post.Reposts + post.Replies
+		
+		// Check if we've seen this URI before
+		if existingPost, exists := uriToPost[post.URI]; exists {
+			// Calculate engagement score for existing post
+			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
+			
+			// Keep the post with higher engagement score
+			if currentEngagement > existingEngagement {
+				uriToPost[post.URI] = post
+				log.Printf("🔍 PROCESSOR DEBUG: Replacing post %s (engagement: %d) with better version (engagement: %d)", 
+					post.URI, existingEngagement, currentEngagement)
+			}
+		} else {
+			// First time seeing this URI, add it
+			uriToPost[post.URI] = post
+		}
+	}
+	
+	// Convert map values to slice
+	var deduplicatedPosts []state.Post
+	for _, post := range uriToPost {
+		deduplicatedPosts = append(deduplicatedPosts, post)
+	}
+	
+	log.Printf("🔍 PROCESSOR DEBUG: Deduplication removed %d duplicate posts", len(posts)-len(deduplicatedPosts))
+	return deduplicatedPosts
 }
 
 func main() {

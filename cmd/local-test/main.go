@@ -197,57 +197,59 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		return fmt.Errorf("failed to get all posts: %w", err)
 	}
 
-	fmt.Printf("  📊 Processing %d posts...\n", len(allPosts))
+	// Deduplicate posts by URI, keeping the one with highest engagement score
+	deduplicatedPosts := m.deduplicatePostsByURI(allPosts)
+	fmt.Printf("  📊 Processing %d posts (deduplicated from %d original)...\n", len(deduplicatedPosts), len(allPosts))
 
-	if len(allPosts) == 0 {
+	if len(deduplicatedPosts) == 0 {
 		fmt.Println("  ❌ No posts to process")
 		return nil
 	}
 
 	// Analyze sentiment for all posts
 	sentimentAnalyzer := analyzer.New()
-	for i := range allPosts {
+	for i := range deduplicatedPosts {
 		// Convert to analyzer.Post format
 		analyzerPost := analyzer.Post{
-			Text:    allPosts[i].Text,
-			Likes:   allPosts[i].Likes,
-			Replies: allPosts[i].Replies,
-			Reposts: allPosts[i].Reposts,
+			Text:    deduplicatedPosts[i].Text,
+			Likes:   deduplicatedPosts[i].Likes,
+			Replies: deduplicatedPosts[i].Replies,
+			Reposts: deduplicatedPosts[i].Reposts,
 		}
 
 		analyzedPosts, err := sentimentAnalyzer.AnalyzePosts([]analyzer.Post{analyzerPost})
 		if err != nil {
 			fmt.Printf("    ⚠️ Failed to analyze sentiment for post %d: %v\n", i+1, err)
-			allPosts[i].Sentiment = "neutral"
+			deduplicatedPosts[i].Sentiment = "neutral"
 		} else if len(analyzedPosts) > 0 {
-			allPosts[i].Sentiment = analyzedPosts[0].Sentiment
+			deduplicatedPosts[i].Sentiment = analyzedPosts[0].Sentiment
 		} else {
-			allPosts[i].Sentiment = "neutral"
+			deduplicatedPosts[i].Sentiment = "neutral"
 		}
 	}
 
 	// Calculate engagement scores
-	for i := range allPosts {
-		allPosts[i].EngagementScore = float64(allPosts[i].Likes + allPosts[i].Reposts + allPosts[i].Replies)
+	for i := range deduplicatedPosts {
+		deduplicatedPosts[i].EngagementScore = float64(deduplicatedPosts[i].Likes + deduplicatedPosts[i].Reposts + deduplicatedPosts[i].Replies)
 	}
 
 	// Sort by engagement score (simple bubble sort for testing)
-	for i := 0; i < len(allPosts)-1; i++ {
-		for j := 0; j < len(allPosts)-i-1; j++ {
-			if allPosts[j].EngagementScore < allPosts[j+1].EngagementScore {
-				allPosts[j], allPosts[j+1] = allPosts[j+1], allPosts[j]
+	for i := 0; i < len(deduplicatedPosts)-1; i++ {
+		for j := 0; j < len(deduplicatedPosts)-i-1; j++ {
+			if deduplicatedPosts[j].EngagementScore < deduplicatedPosts[j+1].EngagementScore {
+				deduplicatedPosts[j], deduplicatedPosts[j+1] = deduplicatedPosts[j+1], deduplicatedPosts[j]
 			}
 		}
 	}
 
 	// Get top 5 posts
-	topPosts := allPosts
-	if len(allPosts) > 5 {
-		topPosts = allPosts[:5]
+	topPosts := deduplicatedPosts
+	if len(deduplicatedPosts) > 5 {
+		topPosts = deduplicatedPosts[:5]
 	}
 
 	// Calculate overall sentiment and percentages
-	overallSentiment, positivePercent, negativePercent := m.calculateOverallSentimentWithPercentages(allPosts)
+	overallSentiment, positivePercent, negativePercent := m.calculateOverallSentimentWithPercentages(deduplicatedPosts)
 
 	// Convert to formatter posts
 	formatterPosts := make([]formatter.Post, len(topPosts))
@@ -551,4 +553,44 @@ func addToCursor(cursor string, add int) string {
 	}
 
 	return fmt.Sprintf("%d", current+add)
+}
+
+// deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
+func (m *MockLambdaClient) deduplicatePostsByURI(posts []state.Post) []state.Post {
+	uriToPost := make(map[string]state.Post)
+	
+	for _, post := range posts {
+		// Skip posts with empty URIs
+		if post.URI == "" {
+			continue
+		}
+		
+		// Calculate engagement score for this post
+		currentEngagement := post.Likes + post.Reposts + post.Replies
+		
+		// Check if we've seen this URI before
+		if existingPost, exists := uriToPost[post.URI]; exists {
+			// Calculate engagement score for existing post
+			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
+			
+			// Keep the post with higher engagement score
+			if currentEngagement > existingEngagement {
+				uriToPost[post.URI] = post
+				fmt.Printf("    🔍 Deduplication: Replacing post %s (engagement: %d) with better version (engagement: %d)\n", 
+					post.URI, existingEngagement, currentEngagement)
+			}
+		} else {
+			// First time seeing this URI, add it
+			uriToPost[post.URI] = post
+		}
+	}
+	
+	// Convert map values to slice
+	var deduplicatedPosts []state.Post
+	for _, post := range uriToPost {
+		deduplicatedPosts = append(deduplicatedPosts, post)
+	}
+	
+	fmt.Printf("    🔍 Deduplication removed %d duplicate posts\n", len(posts)-len(deduplicatedPosts))
+	return deduplicatedPosts
 }
