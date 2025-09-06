@@ -79,15 +79,33 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			continue
 		}
 
-		// Log detailed error information for debugging
-		log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
+		// Check for cursor pagination limits (HTTP 400 InvalidRequest)
 		if strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "InvalidRequest") {
 			log.Printf("HTTP 400 InvalidRequest error details: %+v", err)
 			// Try to extract more details from the error
 			if httpErr, ok := err.(interface{ Response() interface{} }); ok {
 				log.Printf("HTTP Response details: %+v", httpErr.Response())
 			}
+			
+			// Check if this might be a cursor pagination limit
+			if cursor != "" {
+				// Try to parse cursor as number to detect if we've hit a limit
+				var cursorNum int
+				if _, parseErr := fmt.Sscanf(cursor, "%d", &cursorNum); parseErr == nil {
+					// If cursor is very high (>10000), likely hit pagination limit
+					if cursorNum > 10000 {
+						log.Printf("Likely hit cursor pagination limit at cursor %d, stopping gracefully", cursorNum)
+						return nil, "", false, fmt.Errorf("cursor pagination limit reached at %d", cursorNum)
+					}
+				}
+			}
+			
+			// For HTTP 400 errors, don't retry - likely a permanent issue
+			return nil, "", false, fmt.Errorf("API request failed with HTTP 400: %w", err)
 		}
+
+		// Log detailed error information for debugging
+		log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
 
 		// For other errors, fail immediately
 		return nil, "", false, fmt.Errorf("failed to search public posts: %w", err)
@@ -244,15 +262,33 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 				continue
 			}
 
-			// Log detailed error information for debugging
-			log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
+			// Check for cursor pagination limits (HTTP 400 InvalidRequest)
 			if strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "InvalidRequest") {
 				log.Printf("HTTP 400 InvalidRequest error details: %+v", err)
 				// Try to extract more details from the error
 				if httpErr, ok := err.(interface{ Response() interface{} }); ok {
 					log.Printf("HTTP Response details: %+v", httpErr.Response())
 				}
+				
+				// Check if this might be a cursor pagination limit
+				if cursor != "" {
+					// Try to parse cursor as number to detect if we've hit a limit
+					var cursorNum int
+					if _, parseErr := fmt.Sscanf(cursor, "%d", &cursorNum); parseErr == nil {
+						// If cursor is very high (>10000), likely hit pagination limit
+						if cursorNum > 10000 {
+							log.Printf("Likely hit cursor pagination limit at cursor %d, stopping gracefully", cursorNum)
+							return nil, fmt.Errorf("cursor pagination limit reached at %d", cursorNum)
+						}
+					}
+				}
+				
+				// For HTTP 400 errors, don't retry - likely a permanent issue
+				return nil, fmt.Errorf("API request failed with HTTP 400: %w", err)
 			}
+
+			// Log detailed error information for debugging
+			log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
 
 			// For other errors, fail immediately
 			return nil, fmt.Errorf("failed to search public posts: %w", err)

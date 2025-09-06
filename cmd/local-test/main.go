@@ -556,6 +556,11 @@ func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bsk
 
 			posts, _, _, err := client.GetTrendingPostsBatch(ctx, cursorValue, cutoffTime)
 			if err != nil {
+				// Check if this is a cursor pagination limit
+				if strings.Contains(err.Error(), "cursor pagination limit reached") {
+					fmt.Printf("        ⏰ Parallel call %d hit cursor limit: %v\n", cursorIndex+1, err)
+					return
+				}
 				fmt.Printf("        ❌ Parallel call %d failed: %v\n", cursorIndex+1, err)
 				return
 			}
