@@ -21,8 +21,8 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 	// Calculate net sentiment (positive - negative)
 	netSentiment := positivePercent - negativePercent
 
-	// Get descriptive word for sentiment
-	moodWord := getMoodWord(netSentiment)
+	// Get descriptive word for sentiment using 100-word scale
+	moodWord := getMoodWord100(netSentiment)
 
 	// Generate the post content with new format (mood word as hashtag)
 	content := fmt.Sprintf("Bluesky is #%s\n\n", moodWord)
@@ -36,7 +36,6 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 
 	return content
 }
-
 
 // getMoodWord maps sentiment percentage to a descriptive word
 func getMoodWord(netSentiment float64) string {
