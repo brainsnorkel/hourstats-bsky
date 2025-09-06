@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 	"time"
 
@@ -141,10 +140,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			if postView.Author.Did != "" {
 				// Use the original URI as the record ID if it's not already an AT Protocol URI
 				// The API might return something like "post-123" or just "123"
-				recordID := postView.Uri
-				if strings.HasPrefix(recordID, "post-") {
-					recordID = strings.TrimPrefix(recordID, "post-")
-				}
+				recordID := strings.TrimPrefix(postView.Uri, "post-")
 				uri = fmt.Sprintf("at://%s/app.bsky.feed.post/%s", postView.Author.Did, recordID)
 			}
 		}
@@ -337,10 +333,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 			if postView.Author.Did != "" {
 				// Use the original URI as the record ID if it's not already an AT Protocol URI
 				// The API might return something like "post-123" or just "123"
-				recordID := postView.Uri
-				if strings.HasPrefix(recordID, "post-") {
-					recordID = strings.TrimPrefix(recordID, "post-")
-				}
+				recordID := strings.TrimPrefix(postView.Uri, "post-")
 				uri = fmt.Sprintf("at://%s/app.bsky.feed.post/%s", postView.Author.Did, recordID)
 			}
 		}
@@ -458,22 +451,6 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 }
 
 // createEmbedCard creates an embed card for a post
-func (c *BlueskyClient) createEmbedCard(ctx context.Context, post Post) *bsky.FeedPost_Embed {
-	if post.URI == "" {
-		return nil
-	}
-
-	// Create a record embed for the post
-	// This will show the post content as an embed card
-	return &bsky.FeedPost_Embed{
-		EmbedRecord: &bsky.EmbedRecord{
-			Record: &atproto.RepoStrongRef{
-				Uri: post.URI,
-				Cid: "", // We don't have the CID, but the URI should be sufficient
-			},
-		},
-	}
-}
 
 // createUserHandleFacets creates facets to link user handles to their posts
 func createUserHandleFacets(text string, posts []Post) []*bsky.RichtextFacet {
@@ -552,45 +529,6 @@ func truncateText(text string, maxLength int) string {
 
 // createLinkFacets creates rich text facets for URLs in the text
 // Based on Bluesky rich text documentation: https://docs.bsky.app/docs/advanced-guides/post-richtext
-func createLinkFacets(text string, posts []Post) []*bsky.RichtextFacet {
-	var facets []*bsky.RichtextFacet
-
-	// Find @handle patterns and make them clickable links to the posts
-	// Match any handle format (bsky.social, custom domains, etc.)
-	handleRegex := regexp.MustCompile(`@([a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)`)
-	matches := handleRegex.FindAllStringSubmatchIndex(text, -1)
-
-	for i, match := range matches {
-		if i >= len(posts) || i >= 5 { // Safety check
-			break
-		}
-
-		start, end := match[0], match[1]
-
-		// Get the corresponding post URL
-		postIndex := i
-		if postIndex < len(posts) {
-			webURL := convertATURItoWebURL(posts[postIndex].URI)
-
-			facet := &bsky.RichtextFacet{
-				Index: &bsky.RichtextFacet_ByteSlice{
-					ByteStart: int64(start),
-					ByteEnd:   int64(end),
-				},
-				Features: []*bsky.RichtextFacet_Features_Elem{
-					{
-						RichtextFacet_Link: &bsky.RichtextFacet_Link{
-							Uri: webURL,
-						},
-					},
-				},
-			}
-			facets = append(facets, facet)
-		}
-	}
-
-	return facets
-}
 
 // hasAdultContentLabel checks if a post has adult content labels
 func (c *BlueskyClient) hasAdultContentLabel(labels []*atproto.LabelDefs_Label) bool {

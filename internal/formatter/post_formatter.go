@@ -2,7 +2,6 @@ package formatter
 
 import (
 	"fmt"
-	"strings"
 )
 
 // Post represents a post for formatting
@@ -74,23 +73,3 @@ func getSentimentSymbol(sentiment string) string {
 	}
 }
 
-// convertATURItoWebURL converts an AT Protocol URI to a web-friendly URL
-// Example: at://did:plc:abc123/app.bsky.feed.post/xyz789 -> https://bsky.app/profile/did:plc:abc123/post/xyz789
-func convertATURItoWebURL(uri string) string {
-	// Handle AT Protocol URIs
-	if strings.HasPrefix(uri, "at://") {
-		// Remove the at:// prefix
-		uri = strings.TrimPrefix(uri, "at://")
-
-		// Split by / to get the components
-		parts := strings.Split(uri, "/")
-		if len(parts) >= 3 {
-			did := parts[0]
-			postID := parts[2]
-			return fmt.Sprintf("https://bsky.app/profile/%s/post/%s", did, postID)
-		}
-	}
-
-	// If it's not a valid AT Protocol URI, return as-is
-	return uri
-}

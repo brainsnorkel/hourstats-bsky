@@ -417,45 +417,6 @@ func (h *ProcessorHandler) deduplicatePostsByURI(posts []state.Post) []state.Pos
 	return deduplicatedPosts
 }
 
-// deduplicatePostsByAuthor removes duplicate posts by author, keeping the one with highest engagement score
-func (h *ProcessorHandler) deduplicatePostsByAuthor(posts []state.Post) []state.Post {
-	authorToPost := make(map[string]state.Post)
-
-	for _, post := range posts {
-		// Skip posts with empty authors
-		if post.Author == "" {
-			continue
-		}
-
-		// Calculate engagement score for this post
-		currentEngagement := post.Likes + post.Reposts + post.Replies
-
-		// Check if we've seen this author before
-		if existingPost, exists := authorToPost[post.Author]; exists {
-			// Calculate engagement score for existing post
-			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
-
-			// Keep the post with higher engagement score
-			if currentEngagement > existingEngagement {
-				authorToPost[post.Author] = post
-				log.Printf("🔍 PROCESSOR DEBUG: Replacing post by author %s (engagement: %d) with better version (engagement: %d)",
-					post.Author, existingEngagement, currentEngagement)
-			}
-		} else {
-			// First time seeing this author, add it
-			authorToPost[post.Author] = post
-		}
-	}
-
-	// Convert map values to slice
-	var deduplicatedPosts []state.Post
-	for _, post := range authorToPost {
-		deduplicatedPosts = append(deduplicatedPosts, post)
-	}
-
-	log.Printf("🔍 PROCESSOR DEBUG: Author deduplication removed %d duplicate posts", len(posts)-len(deduplicatedPosts))
-	return deduplicatedPosts
-}
 
 // fixPostURIs fixes the URI format for posts retrieved from DynamoDB
 func (h *ProcessorHandler) fixPostURIs(posts []state.Post) []state.Post {
