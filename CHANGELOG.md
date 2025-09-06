@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2025-09-06] - Sentiment Calculation and Link Fixes
+
+### Fixed
+- **CRITICAL**: Fixed sentiment calculation to use all posts instead of just top 5 posts
+- Fixed clickable links by using web URLs in facets instead of AT Protocol URIs
+- Fixed PostTrendingSummary function signature across all components
+- Removed unused functions and imports to fix linter warnings
+
+### Changed
+- Updated post format to show "Bluesky mood +X%" with net sentiment calculation
+- Improved sentiment accuracy by calculating from all analyzed posts
+- Enhanced user experience with properly working clickable links
+
+### Technical
+- Updated internal/lambda/handler.go to calculate sentiment from all analyzed posts
+- Updated internal/scheduler/scheduler.go to calculate sentiment from all analyzed posts
+- Updated cmd/lambda-poster/main.go to fetch all posts and calculate sentiment percentages
+- Simplified strings.TrimPrefix usage to fix gosimple linter warnings
+- Removed unused functions: deduplicatePostsByAuthor, createLinkFacets, createEmbedCard, convertATURItoWebURL
+
 ## [2025-01-27] - Critical Bug Fix and Architecture Improvements
 
 ### Fixed
