@@ -210,10 +210,10 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 	// Define cursors for 5 parallel calls (100 posts each = 500 total)
 	cursors := []string{
 		startCursor,
-		fmt.Sprintf("%s", addToCursor(startCursor, 100)),
-		fmt.Sprintf("%s", addToCursor(startCursor, 200)),
-		fmt.Sprintf("%s", addToCursor(startCursor, 300)),
-		fmt.Sprintf("%s", addToCursor(startCursor, 400)),
+		addToCursor(startCursor, 100),
+		addToCursor(startCursor, 200),
+		addToCursor(startCursor, 300),
+		addToCursor(startCursor, 400),
 	}
 
 	log.Printf("🚀 FETCHER: Making 5 parallel API calls with cursors: %v", cursors)
