@@ -374,25 +374,25 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 // deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
 func (h *ProcessorHandler) deduplicatePostsByURI(posts []state.Post) []state.Post {
 	uriToPost := make(map[string]state.Post)
-	
+
 	for _, post := range posts {
 		// Skip posts with empty URIs
 		if post.URI == "" {
 			continue
 		}
-		
+
 		// Calculate engagement score for this post
 		currentEngagement := post.Likes + post.Reposts + post.Replies
-		
+
 		// Check if we've seen this URI before
 		if existingPost, exists := uriToPost[post.URI]; exists {
 			// Calculate engagement score for existing post
 			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
-			
+
 			// Keep the post with higher engagement score
 			if currentEngagement > existingEngagement {
 				uriToPost[post.URI] = post
-				log.Printf("🔍 PROCESSOR DEBUG: Replacing post %s (engagement: %d) with better version (engagement: %d)", 
+				log.Printf("🔍 PROCESSOR DEBUG: Replacing post %s (engagement: %d) with better version (engagement: %d)",
 					post.URI, existingEngagement, currentEngagement)
 			}
 		} else {
@@ -400,13 +400,13 @@ func (h *ProcessorHandler) deduplicatePostsByURI(posts []state.Post) []state.Pos
 			uriToPost[post.URI] = post
 		}
 	}
-	
+
 	// Convert map values to slice
 	var deduplicatedPosts []state.Post
 	for _, post := range uriToPost {
 		deduplicatedPosts = append(deduplicatedPosts, post)
 	}
-	
+
 	log.Printf("🔍 PROCESSOR DEBUG: Deduplication removed %d duplicate posts", len(posts)-len(deduplicatedPosts))
 	return deduplicatedPosts
 }

@@ -242,13 +242,16 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 
 			log.Printf("✅ FETCHER: Parallel call %d completed - Retrieved %d posts", cursorIndex+1, len(posts))
 
-			// Check if any posts are before cutoff time
+			// Check if we've reached posts before cutoff time
+			// Only set hasOldPosts if we have posts and the oldest post is before cutoff
 			localHasOldPosts := false
-			for _, post := range posts {
-				postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+			if len(posts) > 0 {
+				// Find the oldest post in this batch (posts are sorted by most recent first)
+				oldestPost := posts[len(posts)-1]
+				postTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
 				if err == nil && postTime.Before(cutoffTime) {
 					localHasOldPosts = true
-					break
+					log.Printf("🎯 FETCHER: Parallel call %d found posts before cutoff time (oldest: %s)", cursorIndex+1, postTime.Format("2006-01-02 15:04:05"))
 				}
 			}
 
