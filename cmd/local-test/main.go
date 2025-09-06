@@ -428,11 +428,20 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 	if liveMode {
 		maxIterations = 20 // Allow more iterations in live mode
 	}
+	
+	maxFetchTime := 5 * time.Minute // Maximum time to spend fetching
+	startTime := time.Now()
 
 	for {
 		iteration++
 		if iteration > maxIterations {
 			fmt.Printf("    ⚠️ Reached max iterations (%d), stopping\n", maxIterations)
+			break
+		}
+		
+		// Check if we've exceeded maximum fetch time
+		if time.Since(startTime) > maxFetchTime {
+			fmt.Printf("    ⏰ Exceeded maximum fetch time (%v), stopping\n", maxFetchTime)
 			break
 		}
 
@@ -512,13 +521,16 @@ func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bsk
 
 			fmt.Printf("        ✅ Parallel call %d completed - Retrieved %d posts\n", cursorIndex+1, len(posts))
 
-			// Check if any posts are before cutoff time
+			// Check if we've reached posts before cutoff time
+			// Only set hasOldPosts if we have posts and the oldest post is before cutoff
 			localHasOldPosts := false
-			for _, post := range posts {
-				postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+			if len(posts) > 0 {
+				// Find the oldest post in this batch (posts are sorted by most recent first)
+				oldestPost := posts[len(posts)-1]
+				postTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
 				if err == nil && postTime.Before(cutoffTime) {
 					localHasOldPosts = true
-					break
+					fmt.Printf("        ⏰ Parallel call %d: Found posts before cutoff time (oldest: %s)\n", cursorIndex+1, postTime.Format("2006-01-02 15:04:05"))
 				}
 			}
 
