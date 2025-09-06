@@ -173,7 +173,7 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 
 		log.Printf("🔄 FETCHER: Starting iteration %d with cursor: %s (time-based: %t)", iteration, currentCursor, useTimeBasedSearch)
 
-		// Make 4 parallel API calls for this iteration
+		// Make 8 parallel API calls for this iteration
 		posts, shouldStop, err := h.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime, useTimeBasedSearch, timeBasedSearchStart)
 		if err != nil {
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
@@ -193,6 +193,25 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 		}
 
 		totalPosts += len(posts)
+		
+		// Debug: Find and log the highest engagement post in this iteration
+		if len(posts) > 0 {
+			highestEngagementPost := posts[0]
+			highestEngagement := posts[0].EngagementScore
+			for _, post := range posts {
+				if post.EngagementScore > highestEngagement {
+					highestEngagement = post.EngagementScore
+					highestEngagementPost = post
+				}
+			}
+			textPreview := highestEngagementPost.Text
+			if len(textPreview) > 50 {
+				textPreview = textPreview[:50] + "..."
+			}
+			log.Printf("🏆 FETCHER: Highest engagement post in iteration %d: @%s (score: %.1f) - %s", 
+				iteration, highestEngagementPost.Author, highestEngagement, textPreview)
+		}
+		
 		log.Printf("✅ FETCHER: Iteration %d complete - Retrieved %d posts (Total: %d)", iteration, len(posts), totalPosts)
 
 		// Check if we've reached posts before our time window
@@ -234,8 +253,8 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 			// For time-based search, we don't use cursors - the API handles time filtering
 			log.Printf("🕐 FETCHER: Time-based search - no cursor advancement needed")
 		} else {
-			// For cursor-based search, advance by 400 posts
-			currentCursor = fmt.Sprintf("%d", iteration*400)
+			// For cursor-based search, advance by 800 posts
+			currentCursor = fmt.Sprintf("%d", iteration*800)
 			log.Printf("➡️ FETCHER: Preparing next iteration with cursor: %s", currentCursor)
 		}
 	}
@@ -244,24 +263,28 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	return totalPosts, nil
 }
 
-// fetchBatchInParallel makes 4 parallel API calls and returns combined results
+// fetchBatchInParallel makes 8 parallel API calls and returns combined results
 func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time, useTimeBasedSearch bool, timeBasedSearchStart time.Time) ([]bskyclient.Post, bool, error) {
 	var cursors []string
 	
 	if useTimeBasedSearch {
-		// For time-based search, we don't use cursors - make 4 calls with empty cursors
+		// For time-based search, we don't use cursors - make 8 calls with empty cursors
 		// The API will handle time filtering based on the search parameters
-		cursors = []string{"", "", "", ""}
-		log.Printf("🕐 FETCHER: Making 4 parallel time-based API calls (no cursors)")
+		cursors = []string{"", "", "", "", "", "", "", ""}
+		log.Printf("🕐 FETCHER: Making 8 parallel time-based API calls (no cursors)")
 	} else {
-		// Define cursors for 4 parallel calls (100 posts each = 400 total)
+		// Define cursors for 8 parallel calls (100 posts each = 800 total)
 		cursors = []string{
 			startCursor,
 			addToCursor(startCursor, 100),
 			addToCursor(startCursor, 200),
 			addToCursor(startCursor, 300),
+			addToCursor(startCursor, 400),
+			addToCursor(startCursor, 500),
+			addToCursor(startCursor, 600),
+			addToCursor(startCursor, 700),
 		}
-		log.Printf("🚀 FETCHER: Making 4 parallel API calls with cursors: %v", cursors)
+		log.Printf("🚀 FETCHER: Making 8 parallel API calls with cursors: %v", cursors)
 	}
 
 	var allPosts []bskyclient.Post
@@ -269,7 +292,7 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	// Launch 4 goroutines for parallel fetching with 1-second delays
+	// Launch 8 goroutines for parallel fetching with 1-second delays
 	for i, cursor := range cursors {
 		wg.Add(1)
 		go func(cursorIndex int, cursorValue string) {
@@ -375,16 +398,20 @@ func addToCursor(cursor string, add int) string {
 func (h *FetcherHandler) convertToStatePosts(posts []bskyclient.Post) []state.Post {
 	statePosts := make([]state.Post, len(posts))
 	for i, post := range posts {
+		// Calculate engagement score (same formula as in analyzer)
+		engagementScore := float64(post.Replies + post.Likes + post.Reposts)
+		
 		statePosts[i] = state.Post{
-			URI:       post.URI,
-			CID:       post.CID,
-			Text:      post.Text,
-			Author:    post.Author,
-			Likes:     post.Likes,
-			Reposts:   post.Reposts,
-			Replies:   post.Replies,
-			CreatedAt: post.CreatedAt,
-			Sentiment: post.Sentiment,
+			URI:             post.URI,
+			CID:             post.CID,
+			Text:            post.Text,
+			Author:          post.Author,
+			Likes:           post.Likes,
+			Reposts:         post.Reposts,
+			Replies:         post.Replies,
+			CreatedAt:       post.CreatedAt,
+			Sentiment:       post.Sentiment,
+			EngagementScore: engagementScore,
 		}
 	}
 	return statePosts
