@@ -89,6 +89,9 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 		}, err
 	}
 
+	// Debug: Log credential details (without exposing the password)
+	log.Printf("🔐 FETCHER: Retrieved credentials - Handle: %s, Password length: %d", handle, len(password))
+
 	// Create and authenticate Bluesky client
 	blueskyClient := bskyclient.New(handle, password)
 	if err := blueskyClient.Authenticate(); err != nil {
@@ -331,25 +334,32 @@ func (h *FetcherHandler) convertToStatePosts(posts []bskyclient.Post) []state.Po
 
 // getBlueskyCredentials retrieves credentials from SSM Parameter Store
 func (h *FetcherHandler) getBlueskyCredentials(ctx context.Context) (string, string, error) {
+	log.Printf("🔐 FETCHER: Attempting to retrieve credentials from SSM...")
+	
 	handleParam, err := h.ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
 		Name:           aws.String("/hourstats/bluesky/handle"),
 		WithDecryption: aws.Bool(false),
 	})
 	if err != nil {
+		log.Printf("❌ FETCHER: Failed to get handle parameter: %v", err)
 		return "", "", fmt.Errorf("failed to get handle parameter: %w", err)
 	}
+	log.Printf("✅ FETCHER: Successfully retrieved handle parameter")
 
 	passwordParam, err := h.ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
 		Name:           aws.String("/hourstats/bluesky/password"),
 		WithDecryption: aws.Bool(true),
 	})
 	if err != nil {
+		log.Printf("❌ FETCHER: Failed to get password parameter: %v", err)
 		return "", "", fmt.Errorf("failed to get password parameter: %w", err)
 	}
+	log.Printf("✅ FETCHER: Successfully retrieved password parameter")
 
 	handle := aws.ToString(handleParam.Parameter.Value)
 	password := aws.ToString(passwordParam.Parameter.Value)
 
+	log.Printf("🔐 FETCHER: Credentials retrieved - Handle: %s, Password length: %d", handle, len(password))
 	return handle, password, nil
 }
 
