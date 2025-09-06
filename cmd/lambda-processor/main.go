@@ -152,7 +152,7 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 
 	// Step 4: Post summary to Bluesky
 	log.Printf("Posting summary to Bluesky")
-	err = h.postSummary(ctx, runState, topPosts, overallSentiment, len(filteredPosts), positivePercent, negativePercent)
+	err = h.postSummary(runState, topPosts, overallSentiment, len(filteredPosts), positivePercent, negativePercent)
 	if err != nil {
 		log.Printf("Failed to post summary: %v", err)
 		return Response{
@@ -302,7 +302,7 @@ func (h *ProcessorHandler) filterPostsByCutoffTime(posts []state.Post, cutoffTim
 }
 
 // postSummary posts the summary to Bluesky
-func (h *ProcessorHandler) postSummary(ctx context.Context, runState *state.RunState, topPosts []state.Post, overallSentiment string, totalPosts int, positivePercent, negativePercent float64) error {
+func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []state.Post, overallSentiment string, totalPosts int, positivePercent, negativePercent float64) error {
 	// Check if we have data to post
 	if runState.TotalPostsRetrieved == 0 {
 		log.Printf("No posts retrieved, skipping post")
@@ -339,6 +339,7 @@ func (h *ProcessorHandler) postSummary(ctx context.Context, runState *state.RunS
 	formatterPosts := make([]formatter.Post, len(topPosts))
 	for i, post := range topPosts {
 		formatterPosts[i] = formatter.Post{
+			URI:             post.URI,
 			Author:          post.Author,
 			Likes:           post.Likes,
 			Reposts:         post.Reposts,

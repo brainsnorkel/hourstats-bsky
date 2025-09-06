@@ -2,10 +2,12 @@ package formatter
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Post represents a post for formatting
 type Post struct {
+	URI             string
 	Author          string
 	Likes           int
 	Reposts         int
@@ -28,7 +30,14 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 	for i, post := range topPosts {
 		engagementScore := int(post.Likes + post.Reposts + post.Replies)
 		sentimentSymbol := getSentimentSymbol(post.Sentiment)
-		content += fmt.Sprintf("%d. @%s (%d) %s\n", i+1, post.Author, engagementScore, sentimentSymbol)
+		
+		// Create clickable link to the original post
+		if post.URI != "" {
+			webURL := convertATURItoWebURL(post.URI)
+			content += fmt.Sprintf("%d. @%s (%d) %s %s\n", i+1, post.Author, engagementScore, sentimentSymbol, webURL)
+		} else {
+			content += fmt.Sprintf("%d. @%s (%d) %s\n", i+1, post.Author, engagementScore, sentimentSymbol)
+		}
 	}
 
 	return content
@@ -68,4 +77,25 @@ func getSentimentSymbol(sentiment string) string {
 	default:
 		return "x" // fallback to neutral
 	}
+}
+
+// convertATURItoWebURL converts an AT Protocol URI to a web-friendly URL
+// Example: at://did:plc:abc123/app.bsky.feed.post/xyz789 -> https://bsky.app/profile/did:plc:abc123/post/xyz789
+func convertATURItoWebURL(uri string) string {
+	// Handle AT Protocol URIs
+	if strings.HasPrefix(uri, "at://") {
+		// Remove the at:// prefix
+		uri = strings.TrimPrefix(uri, "at://")
+		
+		// Split by / to get the components
+		parts := strings.Split(uri, "/")
+		if len(parts) >= 3 {
+			did := parts[0]
+			postID := parts[2]
+			return fmt.Sprintf("https://bsky.app/profile/%s/post/%s", did, postID)
+		}
+	}
+	
+	// If it's not a valid AT Protocol URI, return as-is
+	return uri
 }

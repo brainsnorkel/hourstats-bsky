@@ -266,15 +266,9 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 
 	log.Printf("Retrieved %d total public posts from Bluesky search", len(allPosts))
 
-	// Deduplicate posts by URI to prevent same posts appearing multiple times
-	seenURIs := make(map[string]bool)
-	var posts []Post
+	// Deduplicate posts by URI, keeping the one with higher engagement score
+	uriToPost := make(map[string]Post)
 	for _, postView := range allPosts {
-		// Skip if we've already seen this post
-		if seenURIs[postView.Uri] {
-			continue
-		}
-		seenURIs[postView.Uri] = true
 
 		// Filter posts by creation time (client-side filtering)
 		postTime, err := time.Parse(time.RFC3339, postView.IndexedAt)
@@ -329,6 +323,26 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 			Replies:   replies,
 			CreatedAt: postView.IndexedAt,
 		}
+
+		// Check if we've seen this URI before
+		if existingPost, exists := uriToPost[postView.Uri]; exists {
+			// Calculate engagement scores for comparison
+			currentEngagement := likes + reposts + replies
+			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
+			
+			// Keep the post with higher engagement score
+			if currentEngagement > existingEngagement {
+				uriToPost[postView.Uri] = post
+			}
+		} else {
+			// First time seeing this URI, add it
+			uriToPost[postView.Uri] = post
+		}
+	}
+
+	// Convert map values to slice
+	var posts []Post
+	for _, post := range uriToPost {
 		posts = append(posts, post)
 	}
 

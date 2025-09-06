@@ -96,7 +96,7 @@ func main() {
 
 	// Step 2: Simulate fetcher chain
 	fmt.Println("\n🔄 Step 2: Running fetcher chain...")
-	err = mockClient.runFetcherChain(ctx, runID, testIntervalMinutes, liveMode)
+	err = mockClient.runFetcherChain(ctx, runID, liveMode)
 	if err != nil {
 		log.Fatalf("Failed to run fetcher chain: %v", err)
 	}
@@ -145,7 +145,7 @@ func (m *MockLambdaClient) createRunState(ctx context.Context, runID string, ana
 }
 
 // runFetcherChain simulates the new parallel fetcher execution
-func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, analysisIntervalMinutes int, liveMode bool) error {
+func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, liveMode bool) error {
 	// Get Bluesky credentials from environment or config
 	handle := os.Getenv("BLUESKY_HANDLE")
 	password := os.Getenv("BLUESKY_PASSWORD")
@@ -253,6 +253,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 	formatterPosts := make([]formatter.Post, len(topPosts))
 	for i, post := range topPosts {
 		formatterPosts[i] = formatter.Post{
+			URI:             post.URI,
 			Author:          post.Author,
 			Likes:           post.Likes,
 			Reposts:         post.Reposts,
@@ -383,24 +384,6 @@ func (m *MockLambdaClient) convertToStatePosts(posts []bskyclient.Post) []state.
 	return statePosts
 }
 
-func (m *MockLambdaClient) shouldContinueFetching(posts []bskyclient.Post, cutoffTime time.Time) bool {
-	if len(posts) == 0 {
-		return false
-	}
-
-	// Check if any post is older than cutoff time
-	for _, post := range posts {
-		postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
-		if err != nil {
-			continue
-		}
-		if postTime.Before(cutoffTime) {
-			return false
-		}
-	}
-
-	return true
-}
 
 func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []state.Post) (string, float64, float64) {
 	if len(posts) == 0 {

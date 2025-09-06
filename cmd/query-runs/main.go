@@ -168,6 +168,7 @@ func analyzeRun(ctx context.Context, stateManager *state.StateManager, runID str
 	formatterPosts := make([]formatter.Post, len(topPosts))
 	for i, post := range topPosts {
 		formatterPosts[i] = formatter.Post{
+			URI:             post.URI,
 			Author:          post.Author,
 			Likes:           post.Likes,
 			Reposts:         post.Reposts,
