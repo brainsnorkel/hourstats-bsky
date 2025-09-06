@@ -29,7 +29,7 @@ variable "function_name" {
 variable "schedule_expression" {
   description = "EventBridge schedule expression"
   type        = string
-  default     = "rate(60 minutes)"
+  default     = "rate(15 minutes)"
 }
 
 # Data sources
@@ -282,7 +282,7 @@ resource "aws_cloudwatch_event_target" "hourstats_target" {
   input = jsonencode({
     source                  = "aws.events"
     time                    = "$.time"
-    analysisIntervalMinutes = 60
+    analysisIntervalMinutes = 15
   })
 }
 
