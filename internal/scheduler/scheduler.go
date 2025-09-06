@@ -75,14 +75,29 @@ func (s *Scheduler) runAnalysis() error {
 	// Get top 5 posts
 	topPosts := s.GetTopPosts(analyzedPosts, 5)
 
-	// Calculate overall sentiment from top posts
-	overallSentiment := s.CalculateOverallSentiment(topPosts)
+	// Calculate overall sentiment from all analyzed posts
+	overallSentiment := s.CalculateOverallSentiment(analyzedPosts)
+	
+	// Calculate sentiment percentages from all analyzed posts
+	positiveCount := 0
+	negativeCount := 0
+	for _, post := range analyzedPosts {
+		switch post.Sentiment {
+		case "positive":
+			positiveCount++
+		case "negative":
+			negativeCount++
+		}
+	}
+	totalPosts := len(analyzedPosts)
+	positivePercent := float64(positiveCount) / float64(totalPosts) * 100
+	negativePercent := float64(negativeCount) / float64(totalPosts) * 100
 
 	// Convert back to client posts for posting
 	clientTopPosts := s.convertToClientPosts(topPosts)
 
 	// Post the results
-	if err := s.client.PostTrendingSummary(clientTopPosts, overallSentiment, s.config.Settings.AnalysisIntervalMinutes); err != nil {
+	if err := s.client.PostTrendingSummary(clientTopPosts, overallSentiment, s.config.Settings.AnalysisIntervalMinutes, totalPosts, positivePercent, negativePercent); err != nil {
 		return err
 	}
 
