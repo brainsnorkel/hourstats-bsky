@@ -47,6 +47,7 @@ type RunState struct {
 // Post represents a single post in the state
 type Post struct {
 	URI             string  `json:"uri" dynamodbav:"uri"`
+	CID             string  `json:"cid" dynamodbav:"cid"`
 	Text            string  `json:"text" dynamodbav:"text"`
 	Author          string  `json:"author" dynamodbav:"author"`
 	Likes           int     `json:"likes" dynamodbav:"likes"`

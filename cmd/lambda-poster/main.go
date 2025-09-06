@@ -266,6 +266,7 @@ func (h *PosterHandler) convertToClientPosts(posts []state.Post) []client.Post {
 	for i, post := range posts {
 		clientPosts[i] = client.Post{
 			URI:             post.URI,
+			CID:             post.CID,
 			Text:            post.Text,
 			Author:          post.Author,
 			Likes:           post.Likes,

@@ -16,6 +16,7 @@ import (
 
 type Post struct {
 	URI             string
+	CID             string
 	Text            string
 	Author          string
 	Likes           int
@@ -145,8 +146,12 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			}
 		}
 
+		// Extract CID from the postView
+		cid := postView.Cid
+
 		post := Post{
 			URI:       uri,
+			CID:       cid,
 			Text:      text,
 			Author:    author,
 			Likes:     likes,
@@ -154,6 +159,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			Replies:   replies,
 			CreatedAt: postTime.Format(time.RFC3339),
 		}
+
 
 		posts = append(posts, post)
 	}
@@ -338,8 +344,12 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 			}
 		}
 
+		// Extract CID from the postView
+		cid := postView.Cid
+
 		post := Post{
 			URI:       uri,
+			CID:       cid,
 			Text:      text,
 			Author:    postView.Author.Handle,
 			Likes:     likes,
@@ -352,6 +362,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		if !strings.HasPrefix(uri, "at://") {
 			log.Printf("DEBUG: Non-standard URI format: %s for post by @%s (original: %s)", uri, postView.Author.Handle, postView.Uri)
 		}
+
 
 		// Check if we've seen this URI before (use the properly formatted URI)
 		if existingPost, exists := uriToPost[uri]; exists {
@@ -387,6 +398,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	for i, post := range posts {
 		formatterPosts[i] = formatter.Post{
 			URI:             post.URI,
+			CID:             post.CID,
 			Author:          post.Author,
 			Likes:           post.Likes,
 			Reposts:         post.Reposts,

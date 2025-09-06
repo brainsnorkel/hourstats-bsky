@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2025-09-06] - CID Implementation for Embed Cards
+
+### Added
+- **CID Extraction**: Added Content Identifier (CID) extraction from Bluesky API responses
+- **CID Storage**: Added CID field to all Post structs across the application
+- **DynamoDB Schema**: Updated DynamoDB table schema to include CID attribute
+- **Embed Card Support**: Enabled CID storage to support future embed card functionality
+
+### Changed
+- Updated all Post structs in client, state, analyzer, and formatter packages to include CID field
+- Modified all conversion functions between different Post types to preserve CID data
+- Updated Terraform configuration to include CID attribute in DynamoDB table
+
+### Technical Details
+- CIDs are extracted from `postView.Cid` field in Bluesky API responses
+- CID data flows through: API → Client → State → Analyzer → Formatter → Storage
+- All components now properly handle and store CID information
+- Ready for embed card implementation (requires uncommenting embed card code)
+
 ## [2025-09-06] - Sentiment Calculation and Link Fixes
 
 ### Fixed
