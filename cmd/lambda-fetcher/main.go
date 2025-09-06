@@ -168,8 +168,8 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 
 		log.Printf("🔄 FETCHER: Starting iteration %d with cursor: %s", iteration, currentCursor)
 
-		// Make 5 parallel API calls for this iteration
-		posts, hasOldPosts, err := h.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
+		// Make 8 parallel API calls for this iteration
+		posts, shouldStop, err := h.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
 		if err != nil {
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
 		}
@@ -191,7 +191,7 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 		log.Printf("✅ FETCHER: Iteration %d complete - Retrieved %d posts (Total: %d)", iteration, len(posts), totalPosts)
 
 		// Check if we've reached posts before our time window
-		if hasOldPosts {
+		if shouldStop {
 			log.Printf("⏰ FETCHER: Found posts before time window, stopping at iteration %d", iteration)
 			break
 		}
@@ -222,7 +222,7 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 	log.Printf("🚀 FETCHER: Making 8 parallel API calls with cursors: %v", cursors)
 
 	var allPosts []bskyclient.Post
-	var hasOldPosts bool
+	var oldestPostTime *time.Time
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
@@ -242,14 +242,15 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 
 			log.Printf("✅ FETCHER: Parallel call %d completed - Retrieved %d posts", cursorIndex+1, len(posts))
 
-			// Check if we've reached posts before cutoff time
-			// Only set hasOldPosts if we have posts and the oldest post is before cutoff
-			localHasOldPosts := false
+			// Find the oldest post in this batch to track the true boundary
+			var localOldestTime *time.Time
 			if len(posts) > 0 {
 				// Find the oldest post in this batch (posts are sorted by most recent first)
 				oldestPost := posts[len(posts)-1]
 				postTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
 				if err == nil {
+					localOldestTime = &postTime
+					
 					// Convert to Unix timestamps for clean comparison
 					postUnixTime := postTime.Unix()
 					cutoffUnixTime := cutoffTime.Unix()
@@ -258,18 +259,21 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 						cursorIndex+1, postUnixTime, cutoffUnixTime, postUnixTime-cutoffUnixTime)
 					
 					if postUnixTime < cutoffUnixTime {
-						localHasOldPosts = true
 						log.Printf("🎯 FETCHER: Parallel call %d found posts before cutoff time (oldest: %d < cutoff: %d)", 
 							cursorIndex+1, postUnixTime, cutoffUnixTime)
 					}
 				}
 			}
 
-			// Thread-safe accumulation
+			// Thread-safe accumulation and boundary tracking
 			mu.Lock()
 			allPosts = append(allPosts, posts...)
-			if localHasOldPosts {
-				hasOldPosts = true
+			
+			// Track the oldest post time across all goroutines
+			if localOldestTime != nil {
+				if oldestPostTime == nil || localOldestTime.Before(*oldestPostTime) {
+					oldestPostTime = localOldestTime
+				}
 			}
 			mu.Unlock()
 		}(i, cursor)
@@ -278,8 +282,16 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	log.Printf("🎯 FETCHER: Parallel batch complete - Total posts: %d, Has old posts: %t", len(allPosts), hasOldPosts)
-	return allPosts, hasOldPosts, nil
+	// Determine if we should stop based on the oldest post across all goroutines
+	shouldStop := false
+	if oldestPostTime != nil && oldestPostTime.Before(cutoffTime) {
+		shouldStop = true
+		log.Printf("⏰ FETCHER: Found posts before cutoff time across all goroutines (oldest: %s < cutoff: %s)", 
+			oldestPostTime.Format("2006-01-02 15:04:05"), cutoffTime.Format("2006-01-02 15:04:05"))
+	}
+	
+	log.Printf("🎯 FETCHER: Parallel batch complete - Total posts: %d, Should stop: %t", len(allPosts), shouldStop)
+	return allPosts, shouldStop, nil
 }
 
 // addToCursor adds a number to a cursor string (handles empty string case)

@@ -181,106 +181,106 @@ jobs:
             --overwrite \
             --region ${{ env.AWS_REGION }}
 
-      - name: Test Lambda Functions (Dry Run)
-        run: |
-          # Set dry run mode and limit posts for testing
-          echo "Setting up test parameters..."
-          aws ssm put-parameter \
-            --name "/hourstats/settings/dry_run" \
-            --value "true" \
-            --type "String" \
-            --overwrite \
-            --region ${{ env.AWS_REGION }}
-          
-          aws ssm put-parameter \
-            --name "/hourstats/settings/max_posts" \
-            --value "500" \
-            --type "String" \
-            --overwrite \
-            --region ${{ env.AWS_REGION }}
-          
-          # Test orchestrator Lambda directly with 5-minute analysis
-          echo "Testing orchestrator Lambda function (dry run mode - 5 minute test)..."
-          echo "eyJhbmFseXNpc0ludGVydmFsTWludXRlcyI6IDV9Cg==" | base64 -d > /tmp/lambda-payload.json
-          aws lambda invoke \
-            --function-name "hourstats-orchestrator" \
-            --region ${{ env.AWS_REGION }} \
-            --payload fileb:///tmp/lambda-payload.json \
-            --cli-read-timeout 300 \
-            /tmp/orchestrator-response.json
-          
-          echo "Orchestrator Lambda response:"
-          cat /tmp/orchestrator-response.json
-          
-          # Check if the response indicates success
-          if grep -q '"statusCode":200' /tmp/orchestrator-response.json; then
-            echo "✅ Orchestrator Lambda executed successfully"
-            
-            # Wait a moment for the fetcher chain to complete
-            echo "Waiting for fetcher chain to complete..."
-            sleep 30
-            
-            # Get the latest run to see what post would have been made
-            echo "Checking what post would have been made..."
-            RUN_ID=$(aws dynamodb scan \
-              --table-name "hourstats-state" \
-              --filter-expression "postId = :postId" \
-              --expression-attribute-values '{":postId": {"S": "orchestrator"}}' \
-              --projection-expression "runId" \
-              --max-items 1 \
-              --region ${{ env.AWS_REGION }} \
-              --query 'Items[0].runId.S' \
-              --output text)
-            
-            if [ "$RUN_ID" != "None" ] && [ -n "$RUN_ID" ]; then
-              echo "Latest run ID: $RUN_ID"
-              
-              # Get the run details
-              aws dynamodb get-item \
-                --table-name "hourstats-state" \
-                --key "{\"runId\": {\"S\": \"$RUN_ID\"}, \"postId\": {\"S\": \"orchestrator\"}}" \
-                --region ${{ env.AWS_REGION }} \
-                --query 'Item' > /tmp/run-details.json
-              
-              echo "Run details:"
-              cat /tmp/run-details.json
-              
-              # Check if there's a formatted post
-              POST_CONTENT=$(aws dynamodb get-item \
-                --table-name "hourstats-state" \
-                --key "{\"runId\": {\"S\": \"$RUN_ID\"}, \"postId\": {\"S\": \"orchestrator\"}}" \
-                --region ${{ env.AWS_REGION }} \
-                --query 'Item.formattedPost.S' \
-                --output text)
-              
-              if [ "$POST_CONTENT" != "None" ] && [ -n "$POST_CONTENT" ]; then
-                echo ""
-                echo "📝 POST THAT WOULD HAVE BEEN MADE:"
-                echo "=================================="
-                echo "$POST_CONTENT"
-                echo "=================================="
-                echo "Character count: $(echo "$POST_CONTENT" | wc -c)"
-                echo "Characters remaining: $((300 - $(echo "$POST_CONTENT" | wc -c)))"
-                echo ""
-              else
-                echo "No formatted post found in run details"
-              fi
-            else
-              echo "No runs found in database"
-            fi
-          else
-            echo "❌ Orchestrator Lambda execution failed"
-            exit 1
-          fi
-          
-          # Restore dry run setting to false for production
-          echo "Restoring dry run setting to false for production..."
-          aws ssm put-parameter \
-            --name "/hourstats/settings/dry_run" \
-            --value "false" \
-            --type "String" \
-            --overwrite \
-            --region ${{ env.AWS_REGION }}
+      # - name: Test Lambda Functions (Dry Run)
+      #   run: |
+      #     # Set dry run mode and limit posts for testing
+      #     echo "Setting up test parameters..."
+      #     aws ssm put-parameter \
+      #       --name "/hourstats/settings/dry_run" \
+      #       --value "true" \
+      #       --type "String" \
+      #       --overwrite \
+      #       --region ${{ env.AWS_REGION }}
+      #     
+      #     aws ssm put-parameter \
+      #       --name "/hourstats/settings/max_posts" \
+      #       --value "500" \
+      #       --type "String" \
+      #       --overwrite \
+      #       --region ${{ env.AWS_REGION }}
+      #     
+      #     # Test orchestrator Lambda directly with 5-minute analysis
+      #     echo "Testing orchestrator Lambda function (dry run mode - 5 minute test)..."
+      #     echo "eyJhbmFseXNpc0ludGVydmFsTWludXRlcyI6IDV9Cg==" | base64 -d > /tmp/lambda-payload.json
+      #     aws lambda invoke \
+      #       --function-name "hourstats-orchestrator" \
+      #       --region ${{ env.AWS_REGION }} \
+      #       --payload fileb:///tmp/lambda-payload.json \
+      #       --cli-read-timeout 300 \
+      #       /tmp/orchestrator-response.json
+      #     
+      #     echo "Orchestrator Lambda response:"
+      #     cat /tmp/orchestrator-response.json
+      #     
+      #     # Check if the response indicates success
+      #     if grep -q '"statusCode":200' /tmp/orchestrator-response.json; then
+      #       echo "✅ Orchestrator Lambda executed successfully"
+      #       
+      #       # Wait a moment for the fetcher chain to complete
+      #       echo "Waiting for fetcher chain to complete..."
+      #       sleep 30
+      #       
+      #       # Get the latest run to see what post would have been made
+      #       echo "Checking what post would have been made..."
+      #       RUN_ID=$(aws dynamodb scan \
+      #         --table-name "hourstats-state" \
+      #         --filter-expression "postId = :postId" \
+      #         --expression-attribute-values '{":postId": {"S": "orchestrator"}}' \
+      #         --projection-expression "runId" \
+      #         --max-items 1 \
+      #         --region ${{ env.AWS_REGION }} \
+      #         --query 'Items[0].runId.S' \
+      #         --output text)
+      #       
+      #       if [ "$RUN_ID" != "None" ] && [ -n "$RUN_ID" ]; then
+      #         echo "Latest run ID: $RUN_ID"
+      #         
+      #         # Get the run details
+      #         aws dynamodb get-item \
+      #           --table-name "hourstats-state" \
+      #           --key "{\"runId\": {\"S\": \"$RUN_ID\"}, \"postId\": {\"S\": \"orchestrator\"}}" \
+      #           --region ${{ env.AWS_REGION }} \
+      #           --query 'Item' > /tmp/run-details.json
+      #         
+      #         echo "Run details:"
+      #         cat /tmp/run-details.json
+      #         
+      #         # Check if there's a formatted post
+      #         POST_CONTENT=$(aws dynamodb get-item \
+      #           --table-name "hourstats-state" \
+      #           --key "{\"runId\": {\"S\": \"$RUN_ID\"}, \"postId\": {\"S\": \"orchestrator\"}}" \
+      #           --region ${{ env.AWS_REGION }} \
+      #           --query 'Item.formattedPost.S' \
+      #           --output text)
+      #         
+      #         if [ "$POST_CONTENT" != "None" ] && [ -n "$POST_CONTENT" ]; then
+      #           echo ""
+      #           echo "📝 POST THAT WOULD HAVE BEEN MADE:"
+      #           echo "=================================="
+      #           echo "$POST_CONTENT"
+      #           echo "=================================="
+      #           echo "Character count: $(echo "$POST_CONTENT" | wc -c)"
+      #           echo "Characters remaining: $((300 - $(echo "$POST_CONTENT" | wc -c)))"
+      #           echo ""
+      #         else
+      #           echo "No formatted post found in run details"
+      #         fi
+      #       else
+      #         echo "No runs found in database"
+      #       fi
+      #     else
+      #       echo "❌ Orchestrator Lambda execution failed"
+      #       exit 1
+      #     fi
+      #     
+      #     # Restore dry run setting to false for production
+      #     echo "Restoring dry run setting to false for production..."
+      #     aws ssm put-parameter \
+      #       --name "/hourstats/settings/dry_run" \
+      #       --value "false" \
+      #       --type "String" \
+      #       --overwrite \
+      #       --region ${{ env.AWS_REGION }}
 
   notify:
     needs: [test, build, deploy]

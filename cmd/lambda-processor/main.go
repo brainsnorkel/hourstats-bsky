@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -102,6 +103,9 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 		}, err
 	}
 
+	// Fix URI format for posts retrieved from DynamoDB
+	allPosts = h.fixPostURIs(allPosts)
+
 	log.Printf("🔍 PROCESSOR DEBUG: Retrieved %d posts from DynamoDB for run %s", len(allPosts), event.RunID)
 	log.Printf("🔍 PROCESSOR DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
@@ -156,6 +160,8 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 
 	// Step 4: Post summary to Bluesky
 	log.Printf("Posting summary to Bluesky")
+	log.Printf("🔍 PROCESSOR DEBUG: Sentiment data - Overall: %s, Positive: %.1f%%, Negative: %.1f%%, Total posts: %d",
+		overallSentiment, positivePercent, negativePercent, len(filteredPosts))
 	err = h.postSummary(runState, topPosts, overallSentiment, len(filteredPosts), positivePercent, negativePercent)
 	if err != nil {
 		log.Printf("Failed to post summary: %v", err)
@@ -368,7 +374,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 	}
 
 	// Post the summary
-	return h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes)
+	return h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, positivePercent, negativePercent)
 }
 
 // deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
@@ -409,6 +415,62 @@ func (h *ProcessorHandler) deduplicatePostsByURI(posts []state.Post) []state.Pos
 
 	log.Printf("🔍 PROCESSOR DEBUG: Deduplication removed %d duplicate posts", len(posts)-len(deduplicatedPosts))
 	return deduplicatedPosts
+}
+
+// deduplicatePostsByAuthor removes duplicate posts by author, keeping the one with highest engagement score
+func (h *ProcessorHandler) deduplicatePostsByAuthor(posts []state.Post) []state.Post {
+	authorToPost := make(map[string]state.Post)
+
+	for _, post := range posts {
+		// Skip posts with empty authors
+		if post.Author == "" {
+			continue
+		}
+
+		// Calculate engagement score for this post
+		currentEngagement := post.Likes + post.Reposts + post.Replies
+
+		// Check if we've seen this author before
+		if existingPost, exists := authorToPost[post.Author]; exists {
+			// Calculate engagement score for existing post
+			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
+
+			// Keep the post with higher engagement score
+			if currentEngagement > existingEngagement {
+				authorToPost[post.Author] = post
+				log.Printf("🔍 PROCESSOR DEBUG: Replacing post by author %s (engagement: %d) with better version (engagement: %d)",
+					post.Author, existingEngagement, currentEngagement)
+			}
+		} else {
+			// First time seeing this author, add it
+			authorToPost[post.Author] = post
+		}
+	}
+
+	// Convert map values to slice
+	var deduplicatedPosts []state.Post
+	for _, post := range authorToPost {
+		deduplicatedPosts = append(deduplicatedPosts, post)
+	}
+
+	log.Printf("🔍 PROCESSOR DEBUG: Author deduplication removed %d duplicate posts", len(posts)-len(deduplicatedPosts))
+	return deduplicatedPosts
+}
+
+// fixPostURIs fixes the URI format for posts retrieved from DynamoDB
+func (h *ProcessorHandler) fixPostURIs(posts []state.Post) []state.Post {
+	fixedCount := 0
+	for i, post := range posts {
+		// If the URI is in the old format (at://post-XXX), we need to construct a proper AT Protocol URI
+		// However, we don't have the DID information stored, so we'll skip posts with invalid URIs
+		if strings.HasPrefix(post.URI, "at://post-") {
+			log.Printf("🔍 URI FIX: Skipping post with invalid URI format: %s", post.URI)
+			posts[i].URI = "" // Set to empty to indicate invalid URI
+			fixedCount++
+		}
+	}
+	log.Printf("🔍 URI FIX: Fixed %d posts with invalid URI format", fixedCount)
+	return posts
 }
 
 func main() {
