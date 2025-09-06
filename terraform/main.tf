@@ -29,7 +29,7 @@ variable "function_name" {
 variable "schedule_expression" {
   description = "EventBridge schedule expression"
   type        = string
-  default     = "rate(30 minutes)"
+  default     = "rate(60 minutes)"
 }
 
 # Data sources
@@ -277,6 +277,12 @@ resource "aws_cloudwatch_event_target" "hourstats_target" {
   rule      = aws_cloudwatch_event_rule.hourstats_schedule.name
   target_id = "HourStatsTarget"
   arn       = aws_lambda_function.hourstats_orchestrator.arn
+
+  input = jsonencode({
+    source                  = "aws.events"
+    time                    = "$.time"
+    analysisIntervalMinutes = 60
+  })
 }
 
 # Permission for EventBridge to invoke Orchestrator Lambda
