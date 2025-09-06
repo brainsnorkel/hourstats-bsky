@@ -66,6 +66,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 
 	for retries := 0; retries < 3; retries++ {
 		// Search for all public posts
+		log.Printf("Making API request with cursor: '%s'", cursor)
 		searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", nil, "", "")
 		if err == nil {
 			break
@@ -76,6 +77,16 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			log.Printf("API rate limit hit, waiting 5 seconds before retry %d/3", retries+1)
 			time.Sleep(5 * time.Second)
 			continue
+		}
+
+		// Log detailed error information for debugging
+		log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
+		if strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "InvalidRequest") {
+			log.Printf("HTTP 400 InvalidRequest error details: %+v", err)
+			// Try to extract more details from the error
+			if httpErr, ok := err.(interface{ Response() interface{} }); ok {
+				log.Printf("HTTP Response details: %+v", httpErr.Response())
+			}
 		}
 
 		// For other errors, fail immediately
@@ -220,6 +231,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 
 		for retries := 0; retries < 3; retries++ {
 			// Search for all public posts
+			log.Printf("Making API request with cursor: '%s'", cursor)
 			searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", nil, "", "")
 			if err == nil {
 				break
@@ -230,6 +242,16 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 				log.Printf("API rate limit hit, waiting 5 seconds before retry %d/3", retries+1)
 				time.Sleep(5 * time.Second)
 				continue
+			}
+
+			// Log detailed error information for debugging
+			log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
+			if strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "InvalidRequest") {
+				log.Printf("HTTP 400 InvalidRequest error details: %+v", err)
+				// Try to extract more details from the error
+				if httpErr, ok := err.(interface{ Response() interface{} }); ok {
+					log.Printf("HTTP Response details: %+v", httpErr.Response())
+				}
 			}
 
 			// For other errors, fail immediately
