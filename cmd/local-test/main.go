@@ -38,8 +38,13 @@ type MockProcessorEvent struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run cmd/local-test/main.go <test-interval-minutes>")
+		fmt.Println("Usage: go run cmd/local-test/main.go <test-interval-minutes> [live]")
 		fmt.Println("Example: go run cmd/local-test/main.go 5")
+		fmt.Println("Example: go run cmd/local-test/main.go 60 live")
+		fmt.Println("")
+		fmt.Println("Options:")
+		fmt.Println("  <test-interval-minutes>  Number of minutes to analyze (1-60)")
+		fmt.Println("  live                     Run in live mode: process all posts and post to Bluesky")
 		os.Exit(1)
 	}
 
@@ -54,7 +59,16 @@ func main() {
 		log.Fatalf("Test interval must be between 1 and 60 minutes")
 	}
 
-	fmt.Printf("🧪 Starting local test with %d minute interval...\n\n", testIntervalMinutes)
+	// Check for live mode
+	liveMode := len(os.Args) > 2 && os.Args[2] == "live"
+
+	if liveMode {
+		fmt.Printf("🚀 Starting LIVE test with %d minute interval...\n", testIntervalMinutes)
+		fmt.Println("⚠️  WARNING: This will post to Bluesky!")
+		fmt.Println("")
+	} else {
+		fmt.Printf("🧪 Starting local test with %d minute interval...\n\n", testIntervalMinutes)
+	}
 
 	ctx := context.Background()
 
@@ -81,7 +95,7 @@ func main() {
 
 	// Step 2: Simulate fetcher chain
 	fmt.Println("\n🔄 Step 2: Running fetcher chain...")
-	err = mockClient.runFetcherChain(ctx, runID, testIntervalMinutes)
+	err = mockClient.runFetcherChain(ctx, runID, testIntervalMinutes, liveMode)
 	if err != nil {
 		log.Fatalf("Failed to run fetcher chain: %v", err)
 	}
@@ -89,7 +103,7 @@ func main() {
 
 	// Step 3: Run processor
 	fmt.Println("\n⚙️ Step 3: Running processor...")
-	err = mockClient.runProcessor(ctx, runID, testIntervalMinutes)
+	err = mockClient.runProcessor(ctx, runID, testIntervalMinutes, liveMode)
 	if err != nil {
 		log.Fatalf("Failed to run processor: %v", err)
 	}
@@ -102,7 +116,11 @@ func main() {
 		log.Fatalf("Failed to show results: %v", err)
 	}
 
-	fmt.Println("\n🎉 Local test completed successfully!")
+	if liveMode {
+		fmt.Println("\n🎉 LIVE test completed successfully!")
+	} else {
+		fmt.Println("\n🎉 Local test completed successfully!")
+	}
 }
 
 // createRunState simulates the orchestrator creating a run state
@@ -126,7 +144,7 @@ func (m *MockLambdaClient) createRunState(ctx context.Context, runID string, ana
 }
 
 // runFetcherChain simulates the fetcher chain execution
-func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, analysisIntervalMinutes int) error {
+func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, analysisIntervalMinutes int, liveMode bool) error {
 	// Get Bluesky credentials from environment or config
 	handle := os.Getenv("BLUESKY_HANDLE")
 	password := os.Getenv("BLUESKY_PASSWORD")
@@ -156,6 +174,9 @@ func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, an
 	cursor := ""
 	fetchCount := 0
 	maxFetches := 3 // Limit fetches for testing
+	if liveMode {
+		maxFetches = 100 // Allow more fetches in live mode
+	}
 
 	for fetchCount < maxFetches {
 		fetchCount++
@@ -210,7 +231,7 @@ func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, an
 }
 
 // runProcessor simulates the processor execution
-func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analysisIntervalMinutes int) error {
+func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analysisIntervalMinutes int, liveMode bool) error {
 	// Get all posts for this run
 	allPosts, err := m.stateManager.GetAllPosts(ctx, runID)
 	if err != nil {
@@ -305,6 +326,41 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 	err = m.stateManager.SetAnalysisComplete(ctx, runID, overallSentiment, topPosts)
 	if err != nil {
 		return fmt.Errorf("failed to set top posts: %w", err)
+	}
+
+	// Post to Bluesky if in live mode
+	if liveMode {
+		fmt.Println("  🚀 Posting to Bluesky...")
+		
+		// Get Bluesky credentials
+		handle := os.Getenv("BLUESKY_HANDLE")
+		password := os.Getenv("BLUESKY_PASSWORD")
+
+		if handle == "" || password == "" {
+			// Try to load from config file
+			cfg, err := config.LoadConfig()
+			if err != nil {
+				return fmt.Errorf("no Bluesky credentials found for live posting: %w", err)
+			}
+			handle = cfg.Bluesky.Handle
+			password = cfg.Bluesky.Password
+		}
+
+		// Create Bluesky client
+		blueskyClient := client.New(handle, password)
+		if err := blueskyClient.Authenticate(); err != nil {
+			return fmt.Errorf("failed to authenticate with Bluesky for posting: %w", err)
+		}
+
+		// Post to Bluesky
+		err = blueskyClient.PostText(ctx, postContent)
+		if err != nil {
+			return fmt.Errorf("failed to post to Bluesky: %w", err)
+		}
+
+		fmt.Printf("  ✅ Successfully posted to Bluesky: @%s\n", handle)
+	} else {
+		fmt.Println("  📝 Post content generated (not posted - test mode)")
 	}
 
 	// Update run state to processor step

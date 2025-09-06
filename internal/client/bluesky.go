@@ -525,3 +525,37 @@ func (c *BlueskyClient) hasAdultContentLabel(labels []*atproto.LabelDefs_Label) 
 
 	return false
 }
+
+// PostText posts a simple text message to Bluesky
+func (c *BlueskyClient) PostText(ctx context.Context, text string) error {
+	if c.client == nil {
+		return fmt.Errorf("client not authenticated")
+	}
+
+	// Create a simple text post
+	postRecord := &bsky.FeedPost{
+		Text:      text,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	// Post the record using the AT Protocol
+	_, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+		Repo:       c.handle, // Use the handle from the client
+		Collection: "app.bsky.feed.post",
+		Record:     &util.LexiconTypeDecoder{Val: postRecord},
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to post to Bluesky: %w", err)
+	}
+
+	log.Printf("Successfully posted to Bluesky: %s", text[:min(50, len(text))])
+	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
