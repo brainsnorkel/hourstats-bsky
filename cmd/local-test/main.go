@@ -232,10 +232,14 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 	for i := range deduplicatedPosts {
 		// Convert to analyzer.Post format
 		analyzerPost := analyzer.Post{
+			URI:     deduplicatedPosts[i].URI,
+			CID:     deduplicatedPosts[i].CID,
 			Text:    deduplicatedPosts[i].Text,
+			Author:  deduplicatedPosts[i].Author,
 			Likes:   deduplicatedPosts[i].Likes,
 			Replies: deduplicatedPosts[i].Replies,
 			Reposts: deduplicatedPosts[i].Reposts,
+			CreatedAt: deduplicatedPosts[i].CreatedAt,
 		}
 
 		analyzedPosts, err := sentimentAnalyzer.AnalyzePosts([]analyzer.Post{analyzerPost})
@@ -277,6 +281,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 	for i, post := range topPosts {
 		formatterPosts[i] = formatter.Post{
 			URI:             post.URI,
+			CID:             post.CID,
 			Author:          post.Author,
 			Likes:           post.Likes,
 			Reposts:         post.Reposts,
@@ -340,6 +345,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		for i, post := range topPosts {
 			clientPosts[i] = bskyclient.Post{
 				URI:             post.URI,
+				CID:             post.CID,
 				Author:          post.Author,
 				Likes:           post.Likes,
 				Reposts:         post.Reposts,

@@ -426,18 +426,18 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	facets := createUserHandleFacets(summaryText, posts)
 
 	// Create embed card for the first post if available (skip posts with invalid URIs)
-	// Note: Embed cards require a CID which we don't currently store, so we'll skip for now
 	var embed *bsky.FeedPost_Embed
-	// TODO: Add CID storage to enable embed cards
-	// if len(posts) > 0 {
-	// 	for _, post := range posts {
-	// 		if post.URI != "" && !strings.HasPrefix(post.URI, "at://post-") {
-	// 			log.Printf("🔍 EMBED DEBUG: Creating embed card for post with URI: %s", post.URI)
-	// 			embed = c.createEmbedCard(ctx, post)
-	// 			break
-	// 		}
-	// 	}
-	// }
+	if len(posts) > 0 {
+		for _, post := range posts {
+			if post.URI != "" && post.CID != "" && !strings.HasPrefix(post.URI, "at://post-") {
+				log.Printf("Creating embed card for post: %s", post.URI)
+				embed = c.createEmbedCard(ctx, post)
+				if embed != nil {
+					break
+				}
+			}
+		}
+	}
 
 	// Create the post using the AT Protocol
 	postRecord := &bsky.FeedPost{
@@ -463,6 +463,23 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 }
 
 // createEmbedCard creates an embed card for a post
+func (c *BlueskyClient) createEmbedCard(ctx context.Context, post Post) *bsky.FeedPost_Embed {
+	if post.URI == "" || post.CID == "" {
+		log.Printf("Cannot create embed card: missing URI (%s) or CID (%s)", post.URI, post.CID)
+		return nil
+	}
+	
+	log.Printf("Creating embed card for post: URI=%s, CID=%s", post.URI, post.CID)
+	
+	return &bsky.FeedPost_Embed{
+		EmbedRecord: &bsky.EmbedRecord{
+			Record: &atproto.RepoStrongRef{
+				Uri: post.URI,
+				Cid: post.CID,
+			},
+		},
+	}
+}
 
 // createUserHandleFacets creates facets to link user handles to their posts
 func createUserHandleFacets(text string, posts []Post) []*bsky.RichtextFacet {

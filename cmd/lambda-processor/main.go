@@ -335,6 +335,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 	for i, post := range topPosts {
 		clientPosts[i] = client.Post{
 			URI:             post.URI,
+			CID:             post.CID,
 			Text:            post.Text,
 			Author:          post.Author,
 			Likes:           post.Likes,
@@ -351,6 +352,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 	for i, post := range topPosts {
 		formatterPosts[i] = formatter.Post{
 			URI:             post.URI,
+			CID:             post.CID,
 			Author:          post.Author,
 			Likes:           post.Likes,
 			Reposts:         post.Reposts,

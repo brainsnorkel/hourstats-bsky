@@ -263,7 +263,7 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 	}
 
 	var posts []Post
-	for _, item := range result.Items {
+	for i, item := range result.Items {
 		var postItem PostItem
 		err := attributevalue.UnmarshalMap(item, &postItem)
 		if err != nil {
@@ -272,6 +272,10 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 		}
 		// Only include posts that have a postId with # (filter out run state items)
 		if strings.Contains(postItem.PostID, "#") {
+			// Debug: Log CID retrieval
+			if i < 3 {
+				log.Printf("🔍 STATE DEBUG: Retrieved post %d - URI: %s, CID: %s", i+1, postItem.Post.URI, postItem.Post.CID)
+			}
 			posts = append(posts, postItem.Post)
 		}
 	}
