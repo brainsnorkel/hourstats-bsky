@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
-
 // RunState represents the state of a single analysis run
 type RunState struct {
 	RunID                   string    `json:"runId" dynamodbav:"runId"`
@@ -189,7 +188,6 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 		}
 	}
 
-
 	// Store posts using batch write for efficiency (up to 25 items per batch)
 	const batchSize = 25
 	for i := 0; i < len(posts); i += batchSize {
@@ -197,7 +195,7 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 		if end > len(posts) {
 			end = len(posts)
 		}
-		
+
 		var writeRequests []types.WriteRequest
 		for j := i; j < end; j++ {
 			postItem := PostItem{
@@ -237,7 +235,6 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 	state.Step = "fetcher"
 	state.Status = "fetching"
 
-
 	err = sm.UpdateRun(ctx, state)
 	if err != nil {
 		return err
@@ -263,7 +260,7 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 	}
 
 	var posts []Post
-	for i, item := range result.Items {
+	for _, item := range result.Items {
 		var postItem PostItem
 		err := attributevalue.UnmarshalMap(item, &postItem)
 		if err != nil {
@@ -272,10 +269,6 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 		}
 		// Only include posts that have a postId with # (filter out run state items)
 		if strings.Contains(postItem.PostID, "#") {
-			// Debug: Log CID retrieval
-			if i < 3 {
-				log.Printf("🔍 STATE DEBUG: Retrieved post %d - URI: %s, CID: %s", i+1, postItem.Post.URI, postItem.Post.CID)
-			}
 			posts = append(posts, postItem.Post)
 		}
 	}

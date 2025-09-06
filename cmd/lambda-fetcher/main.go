@@ -250,16 +250,16 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 				postTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
 				if err == nil {
 					localOldestTime = &postTime
-					
+
 					// Convert to Unix timestamps for clean comparison
 					postUnixTime := postTime.Unix()
 					cutoffUnixTime := cutoffTime.Unix()
-					
-					log.Printf("🎯 FETCHER: Parallel call %d - Oldest post Unix: %d, Cutoff Unix: %d (diff: %d seconds)", 
+
+					log.Printf("🎯 FETCHER: Parallel call %d - Oldest post Unix: %d, Cutoff Unix: %d (diff: %d seconds)",
 						cursorIndex+1, postUnixTime, cutoffUnixTime, postUnixTime-cutoffUnixTime)
-					
+
 					if postUnixTime < cutoffUnixTime {
-						log.Printf("🎯 FETCHER: Parallel call %d found posts before cutoff time (oldest: %d < cutoff: %d)", 
+						log.Printf("🎯 FETCHER: Parallel call %d found posts before cutoff time (oldest: %d < cutoff: %d)",
 							cursorIndex+1, postUnixTime, cutoffUnixTime)
 					}
 				}
@@ -268,7 +268,7 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 			// Thread-safe accumulation and boundary tracking
 			mu.Lock()
 			allPosts = append(allPosts, posts...)
-			
+
 			// Track the oldest post time across all goroutines
 			if localOldestTime != nil {
 				if oldestPostTime == nil || localOldestTime.Before(*oldestPostTime) {
@@ -286,10 +286,10 @@ func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyc
 	shouldStop := false
 	if oldestPostTime != nil && oldestPostTime.Before(cutoffTime) {
 		shouldStop = true
-		log.Printf("⏰ FETCHER: Found posts before cutoff time across all goroutines (oldest: %s < cutoff: %s)", 
+		log.Printf("⏰ FETCHER: Found posts before cutoff time across all goroutines (oldest: %s < cutoff: %s)",
 			oldestPostTime.Format("2006-01-02 15:04:05"), cutoffTime.Format("2006-01-02 15:04:05"))
 	}
-	
+
 	log.Printf("🎯 FETCHER: Parallel batch complete - Total posts: %d, Should stop: %t", len(allPosts), shouldStop)
 	return allPosts, shouldStop, nil
 }
@@ -314,10 +314,6 @@ func addToCursor(cursor string, add int) string {
 func (h *FetcherHandler) convertToStatePosts(posts []bskyclient.Post) []state.Post {
 	statePosts := make([]state.Post, len(posts))
 	for i, post := range posts {
-		// Debug: Log CID extraction in fetcher
-		if i < 3 {
-			log.Printf("🔍 FETCHER DEBUG: Converting post %d - URI: %s, CID: %s", i+1, post.URI, post.CID)
-		}
 		statePosts[i] = state.Post{
 			URI:       post.URI,
 			CID:       post.CID,
