@@ -11,6 +11,7 @@ on:
       - 'internal/scheduler/**'
       - 'internal/config/**'
       - 'internal/state/**'
+      - 'internal/formatter/**'
       - 'terraform/**'
       - '.github/workflows/deploy-lambda.yml'
   pull_request:
@@ -19,6 +20,7 @@ on:
       - 'cmd/lambda*/**'
       - 'internal/lambda/**'
       - 'internal/state/**'
+      - 'internal/formatter/**'
       - 'terraform/**'
 
 env:
