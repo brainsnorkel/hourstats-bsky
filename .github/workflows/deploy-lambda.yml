@@ -201,10 +201,11 @@ jobs:
           
           # Test orchestrator Lambda directly
           echo "Testing orchestrator Lambda function (dry run mode)..."
+          echo '{"analysisIntervalMinutes": 60}' > /tmp/lambda-payload.json
           aws lambda invoke \
             --function-name "hourstats-orchestrator" \
             --region ${{ env.AWS_REGION }} \
-            --payload '{"analysisIntervalMinutes": 60}' \
+            --payload file:///tmp/lambda-payload.json \
             --cli-read-timeout 300 \
             /tmp/orchestrator-response.json
           
