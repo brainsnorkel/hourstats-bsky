@@ -72,12 +72,14 @@ jobs:
         run: |
           # Build individual Lambda functions
           for dir in cmd/lambda-*; do
-            echo "Building $dir..."
-            cd "$dir"
-            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
-            zip "${dir##*/}.zip" bootstrap
-            mv "${dir##*/}.zip" ../../terraform/
-            cd ../..
+            if [ -d "$dir" ]; then
+              echo "Building $dir..."
+              cd "$dir"
+              GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap .
+              zip "${dir##*/}.zip" bootstrap
+              mv "${dir##*/}.zip" ../../terraform/
+              cd ../..
+            fi
           done
           
           # Also build the original single Lambda for backward compatibility
