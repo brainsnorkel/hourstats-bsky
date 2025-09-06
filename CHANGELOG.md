@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2025-09-06] - Adult Content Filtering & DynamoDB Permissions Fix
+
+### Fixed
+- **DynamoDB Permissions**: Fixed missing `dynamodb:BatchWriteItem` permission causing CloudWatch errors
+- **Adult Content Filtering**: Added comprehensive adult content filtering based on Bluesky moderation labels
+- **Content Safety**: Posts with labels (porn, sexual, nudity, graphic-media) are now properly filtered out
+
+### Changed
+- Updated IAM policy to include `dynamodb:BatchWriteItem` permission for Lambda functions
+- Enhanced both `GetTrendingPostsBatch` and `GetTrendingPosts` functions with adult content filtering
+- Improved content safety by filtering out inappropriate content before analysis
+
+### Technical Details
+- Added `hasAdultContentLabel` function to check moderation labels
+- Filtering occurs at the API response level before post processing
+- Logs filtered posts for monitoring and debugging
+- Maintains performance while ensuring content safety
+
 ## [2025-09-06] - Embed Cards Implementation
 
 ### Added
