@@ -6,10 +6,11 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
-	"github.com/christophergentle/hourstats-bsky/internal/client"
+	bskyclient "github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/config"
 	"github.com/christophergentle/hourstats-bsky/internal/formatter"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
@@ -143,7 +144,7 @@ func (m *MockLambdaClient) createRunState(ctx context.Context, runID string, ana
 	return nil
 }
 
-// runFetcherChain simulates the fetcher chain execution
+// runFetcherChain simulates the new parallel fetcher execution
 func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, analysisIntervalMinutes int, liveMode bool) error {
 	// Get Bluesky credentials from environment or config
 	handle := os.Getenv("BLUESKY_HANDLE")
@@ -160,7 +161,7 @@ func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, an
 	}
 
 	// Create Bluesky client
-	blueskyClient := client.New(handle, password)
+	blueskyClient := bskyclient.New(handle, password)
 	if err := blueskyClient.Authenticate(); err != nil {
 		return fmt.Errorf("failed to authenticate with Bluesky: %w", err)
 	}
@@ -171,62 +172,20 @@ func (m *MockLambdaClient) runFetcherChain(ctx context.Context, runID string, an
 		return fmt.Errorf("failed to get run state: %w", err)
 	}
 
-	cursor := ""
-	fetchCount := 0
-	maxFetches := 3 // Limit fetches for testing
-	if liveMode {
-		maxFetches = 100 // Allow more fetches in live mode
-	}
+	fmt.Println("  🚀 Starting parallel fetch with internal loops...")
 
-	for fetchCount < maxFetches {
-		fetchCount++
-		fmt.Printf("  🔄 Fetch batch %d (cursor: %s)...\n", fetchCount, cursor)
-
-		// Fetch posts
-		posts, nextCursor, hasMorePosts, err := blueskyClient.GetTrendingPostsBatch(ctx, cursor, runState.CutoffTime)
-		if err != nil {
-			return fmt.Errorf("failed to fetch posts: %w", err)
-		}
-
-		fmt.Printf("    📥 Retrieved %d posts\n", len(posts))
-
-		if len(posts) == 0 {
-			fmt.Println("    🛑 No posts retrieved, stopping fetch")
-			break
-		}
-
-		// Convert to state posts
-		statePosts := m.convertToStatePosts(posts)
-
-		// Add posts to state
-		if err := m.stateManager.AddPosts(ctx, runID, statePosts); err != nil {
-			return fmt.Errorf("failed to add posts: %w", err)
-		}
-
-		// Update cursor
-		if err := m.stateManager.UpdateCursor(ctx, runID, nextCursor, hasMorePosts); err != nil {
-			return fmt.Errorf("failed to update cursor: %w", err)
-		}
-
-		// Check if we should continue (simulate the completion logic)
-		shouldContinue := m.shouldContinueFetching(posts, runState.CutoffTime)
-		if !shouldContinue || !hasMorePosts {
-			fmt.Printf("    🛑 Stopping fetch (shouldContinue: %t, hasMore: %t)\n", shouldContinue, hasMorePosts)
-			break
-		}
-
-		cursor = nextCursor
-	}
-
-	// Update run state to completed
-	runState.Status = "completed"
-	runState.UpdatedAt = time.Now()
-	err = m.stateManager.UpdateRun(ctx, runState)
+	// Run parallel fetch with internal loops (same as new fetcher)
+	totalPosts, err := m.fetchAllPostsInParallel(ctx, blueskyClient, runState.CutoffTime, runID, liveMode)
 	if err != nil {
-		return fmt.Errorf("failed to update run state: %w", err)
+		return fmt.Errorf("failed to fetch posts in parallel: %w", err)
 	}
 
-	fmt.Printf("  ✅ Fetcher chain completed, %d batches fetched\n", fetchCount)
+	// Update state to indicate fetching is complete
+	if err := m.stateManager.UpdateCursor(ctx, runID, "", false); err != nil {
+		return fmt.Errorf("failed to update cursor: %w", err)
+	}
+
+	fmt.Printf("  ✅ Parallel fetcher completed - Total posts: %d\n", totalPosts)
 	return nil
 }
 
@@ -331,7 +290,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 	// Post to Bluesky if in live mode
 	if liveMode {
 		fmt.Println("  🚀 Posting to Bluesky...")
-		
+
 		// Get Bluesky credentials
 		handle := os.Getenv("BLUESKY_HANDLE")
 		password := os.Getenv("BLUESKY_PASSWORD")
@@ -347,7 +306,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		}
 
 		// Create Bluesky client
-		blueskyClient := client.New(handle, password)
+		blueskyClient := bskyclient.New(handle, password)
 		if err := blueskyClient.Authenticate(); err != nil {
 			return fmt.Errorf("failed to authenticate with Bluesky for posting: %w", err)
 		}
@@ -406,7 +365,7 @@ func (m *MockLambdaClient) showResults(ctx context.Context, runID string) error 
 
 // Helper methods
 
-func (m *MockLambdaClient) convertToStatePosts(posts []client.Post) []state.Post {
+func (m *MockLambdaClient) convertToStatePosts(posts []bskyclient.Post) []state.Post {
 	statePosts := make([]state.Post, len(posts))
 	for i, post := range posts {
 		statePosts[i] = state.Post{
@@ -424,7 +383,7 @@ func (m *MockLambdaClient) convertToStatePosts(posts []client.Post) []state.Post
 	return statePosts
 }
 
-func (m *MockLambdaClient) shouldContinueFetching(posts []client.Post, cutoffTime time.Time) bool {
+func (m *MockLambdaClient) shouldContinueFetching(posts []bskyclient.Post, cutoffTime time.Time) bool {
 	if len(posts) == 0 {
 		return false
 	}
@@ -442,7 +401,6 @@ func (m *MockLambdaClient) shouldContinueFetching(posts []client.Post, cutoffTim
 
 	return true
 }
-
 
 func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []state.Post) (string, float64, float64) {
 	if len(posts) == 0 {
@@ -474,4 +432,137 @@ func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []stat
 		return "negative", positivePercent, negativePercent
 	}
 	return "neutral", positivePercent, negativePercent
+}
+
+// fetchAllPostsInParallel fetches all posts using parallel API calls and internal loops
+func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *bskyclient.BlueskyClient, cutoffTime time.Time, runID string, liveMode bool) (int, error) {
+	var totalPosts int
+	currentCursor := ""
+	iteration := 0
+	maxIterations := 3 // Limit iterations for testing
+	if liveMode {
+		maxIterations = 20 // Allow more iterations in live mode
+	}
+
+	for {
+		iteration++
+		if iteration > maxIterations {
+			fmt.Printf("    ⚠️ Reached max iterations (%d), stopping\n", maxIterations)
+			break
+		}
+
+		fmt.Printf("    🔄 Starting iteration %d with cursor: %s\n", iteration, currentCursor)
+
+		// Make 5 parallel API calls for this iteration
+		posts, hasOldPosts, err := m.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
+		if err != nil {
+			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
+		}
+
+		if len(posts) == 0 {
+			fmt.Printf("    📭 No posts retrieved in iteration %d, stopping\n", iteration)
+			break
+		}
+
+		// Convert to state posts and store
+		statePosts := m.convertToStatePosts(posts)
+		fmt.Printf("    💾 Storing %d posts from iteration %d\n", len(statePosts), iteration)
+
+		if err := m.stateManager.AddPosts(ctx, runID, statePosts); err != nil {
+			return totalPosts, fmt.Errorf("failed to add posts: %w", err)
+		}
+
+		totalPosts += len(posts)
+		fmt.Printf("    ✅ Iteration %d complete - Retrieved %d posts (Total: %d)\n", iteration, len(posts), totalPosts)
+
+		// Check if we've reached posts before our time window
+		if hasOldPosts {
+			fmt.Printf("    ⏰ Found posts before time window, stopping at iteration %d\n", iteration)
+			break
+		}
+
+		// Prepare for next iteration (500 posts ahead)
+		currentCursor = fmt.Sprintf("%d", iteration*500)
+		fmt.Printf("    ➡️ Preparing next iteration with cursor: %s\n", currentCursor)
+	}
+
+	fmt.Printf("    🏁 Parallel fetch complete - Total posts: %d across %d iterations\n", totalPosts, iteration)
+	return totalPosts, nil
+}
+
+// fetchBatchInParallel makes 5 parallel API calls and returns combined results
+func (m *MockLambdaClient) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time) ([]bskyclient.Post, bool, error) {
+	// Define cursors for 5 parallel calls (100 posts each = 500 total)
+	cursors := []string{
+		startCursor,
+		fmt.Sprintf("%s", addToCursor(startCursor, 100)),
+		fmt.Sprintf("%s", addToCursor(startCursor, 200)),
+		fmt.Sprintf("%s", addToCursor(startCursor, 300)),
+		fmt.Sprintf("%s", addToCursor(startCursor, 400)),
+	}
+
+	fmt.Printf("      🚀 Making 5 parallel API calls with cursors: %v\n", cursors)
+
+	var allPosts []bskyclient.Post
+	var hasOldPosts bool
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	// Launch 5 goroutines for parallel fetching
+	for i, cursor := range cursors {
+		wg.Add(1)
+		go func(cursorIndex int, cursorValue string) {
+			defer wg.Done()
+
+			fmt.Printf("        📡 Starting parallel call %d with cursor: %s\n", cursorIndex+1, cursorValue)
+
+			posts, _, _, err := client.GetTrendingPostsBatch(ctx, cursorValue, cutoffTime)
+			if err != nil {
+				fmt.Printf("        ❌ Parallel call %d failed: %v\n", cursorIndex+1, err)
+				return
+			}
+
+			fmt.Printf("        ✅ Parallel call %d completed - Retrieved %d posts\n", cursorIndex+1, len(posts))
+
+			// Check if any posts are before cutoff time
+			localHasOldPosts := false
+			for _, post := range posts {
+				postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+				if err == nil && postTime.Before(cutoffTime) {
+					localHasOldPosts = true
+					break
+				}
+			}
+
+			// Thread-safe accumulation
+			mu.Lock()
+			allPosts = append(allPosts, posts...)
+			if localHasOldPosts {
+				hasOldPosts = true
+			}
+			mu.Unlock()
+		}(i, cursor)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	fmt.Printf("      🎯 Parallel batch complete - Total posts: %d, Has old posts: %t\n", len(allPosts), hasOldPosts)
+	return allPosts, hasOldPosts, nil
+}
+
+// addToCursor adds a number to a cursor string (handles empty string case)
+func addToCursor(cursor string, add int) string {
+	if cursor == "" {
+		return fmt.Sprintf("%d", add)
+	}
+
+	// Parse current cursor as number and add
+	var current int
+	if _, err := fmt.Sscanf(cursor, "%d", &current); err != nil {
+		// If parsing fails, return the addition value
+		return fmt.Sprintf("%d", add)
+	}
+
+	return fmt.Sprintf("%d", current+add)
 }

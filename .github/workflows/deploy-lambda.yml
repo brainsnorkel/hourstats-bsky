@@ -194,18 +194,18 @@ jobs:
           
           aws ssm put-parameter \
             --name "/hourstats/settings/max_posts" \
-            --value "300" \
+            --value "500" \
             --type "String" \
             --overwrite \
             --region ${{ env.AWS_REGION }}
           
-          # Test orchestrator Lambda directly
-          echo "Testing orchestrator Lambda function (dry run mode)..."
-          echo '{"analysisIntervalMinutes": 60}' | base64 -w 0 > /tmp/lambda-payload.b64
+          # Test orchestrator Lambda directly with 5-minute analysis
+          echo "Testing orchestrator Lambda function (dry run mode - 5 minute test)..."
+          echo "eyJhbmFseXNpc0ludGVydmFsTWludXRlcyI6IDV9Cg==" | base64 -d > /tmp/lambda-payload.json
           aws lambda invoke \
             --function-name "hourstats-orchestrator" \
             --region ${{ env.AWS_REGION }} \
-            --payload fileb:///tmp/lambda-payload.b64 \
+            --payload fileb:///tmp/lambda-payload.json \
             --cli-read-timeout 300 \
             /tmp/orchestrator-response.json
           
