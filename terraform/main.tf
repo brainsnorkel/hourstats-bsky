@@ -200,7 +200,7 @@ resource "aws_lambda_function" "hourstats_orchestrator" {
   source_code_hash = filebase64sha256("lambda-orchestrator.zip")
   runtime         = "provided.al2023"
   timeout         = 900  # 15 minutes
-  memory_size     = 256
+  memory_size     = 128
 
   environment {
     variables = {
@@ -223,7 +223,7 @@ resource "aws_lambda_function" "hourstats_fetcher" {
   source_code_hash = filebase64sha256("lambda-fetcher.zip")
   runtime         = "provided.al2023"
   timeout         = 900  # 15 minutes
-  memory_size     = 256
+  memory_size     = 128
 
   environment {
     variables = {
@@ -246,7 +246,7 @@ resource "aws_lambda_function" "hourstats_processor" {
   source_code_hash = filebase64sha256("lambda-processor.zip")
   runtime         = "provided.al2023"
   timeout         = 300  # 5 minutes
-  memory_size     = 256
+  memory_size     = 128
 
   environment {
     variables = {

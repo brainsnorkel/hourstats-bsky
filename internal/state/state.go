@@ -14,14 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
-// getMapKeys returns the keys of a map for debugging
-func getMapKeys(m map[string]types.AttributeValue) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
 
 // RunState represents the state of a single analysis run
 type RunState struct {
