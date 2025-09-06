@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2025-01-27] - Critical Bug Fix and Architecture Improvements
 
 ### Fixed
+- **CRITICAL**: Fixed GitHub Actions deployment failure caused by missing golangci-lint installation
+- Fixed undefined `deduplicatePostsByURI` function error in query-runs utility
+- Added missing deduplication function to query-runs/main.go for consistency with other components
+
+## [2025-01-27] - Critical Bug Fix and Architecture Improvements
+
+### Fixed
 - **CRITICAL**: Fixed fetcher cursor bug where subsequent fetchers would restart from beginning instead of continuing
 - Added cursor parameter to FetcherEvent to support proper pagination continuation
 - Fetcher now correctly passes cursor to next fetcher in the chain
