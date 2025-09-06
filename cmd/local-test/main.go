@@ -408,6 +408,7 @@ func (m *MockLambdaClient) convertToStatePosts(posts []bskyclient.Post) []state.
 	for i, post := range posts {
 		statePosts[i] = state.Post{
 			URI:             post.URI, // Use the real URI from the client
+			CID:             post.CID,
 			Author:          post.Author,
 			Text:            post.Text,
 			Likes:           post.Likes,

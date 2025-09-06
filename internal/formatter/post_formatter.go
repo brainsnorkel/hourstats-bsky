@@ -7,6 +7,7 @@ import (
 // Post represents a post for formatting
 type Post struct {
 	URI             string
+	CID             string
 	Author          string
 	Likes           int
 	Reposts         int

@@ -316,6 +316,7 @@ func (h *FetcherHandler) convertToStatePosts(posts []bskyclient.Post) []state.Po
 	for i, post := range posts {
 		statePosts[i] = state.Post{
 			URI:       post.URI,
+			CID:       post.CID,
 			Text:      post.Text,
 			Author:    post.Author,
 			Likes:     post.Likes,

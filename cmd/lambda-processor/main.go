@@ -190,6 +190,7 @@ func (h *ProcessorHandler) analyzePosts(posts []state.Post) ([]state.Post, strin
 	for i, post := range posts {
 		analyzerPosts[i] = analyzer.Post{
 			URI:       post.URI,
+			CID:       post.CID,
 			Text:      post.Text,
 			Author:    post.Author,
 			Likes:     post.Likes,
@@ -213,6 +214,7 @@ func (h *ProcessorHandler) analyzePosts(posts []state.Post) ([]state.Post, strin
 	for i, analyzed := range analyzedPosts {
 		statePosts[i] = state.Post{
 			URI:             analyzed.URI,
+			CID:             analyzed.CID,
 			Text:            analyzed.Text,
 			Author:          analyzed.Author,
 			Likes:           analyzed.Likes,
@@ -416,7 +418,6 @@ func (h *ProcessorHandler) deduplicatePostsByURI(posts []state.Post) []state.Pos
 	log.Printf("🔍 PROCESSOR DEBUG: Deduplication removed %d duplicate posts", len(posts)-len(deduplicatedPosts))
 	return deduplicatedPosts
 }
-
 
 // fixPostURIs fixes the URI format for posts retrieved from DynamoDB
 func (h *ProcessorHandler) fixPostURIs(posts []state.Post) []state.Post {

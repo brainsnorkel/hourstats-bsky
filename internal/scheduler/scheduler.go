@@ -77,7 +77,7 @@ func (s *Scheduler) runAnalysis() error {
 
 	// Calculate overall sentiment from all analyzed posts
 	overallSentiment := s.CalculateOverallSentiment(analyzedPosts)
-	
+
 	// Calculate sentiment percentages from all analyzed posts
 	positiveCount := 0
 	negativeCount := 0

@@ -18,6 +18,7 @@ type AnalyzedPost struct {
 // Post represents a social media post for analysis
 type Post struct {
 	URI       string
+	CID       string
 	Text      string
 	Author    string
 	Likes     int
