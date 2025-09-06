@@ -196,7 +196,6 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 		}
 	}
 
-	log.Printf("🔍 STATE DEBUG: Adding %d new posts to run %s", len(posts), runID)
 
 	// Store posts separately in DynamoDB
 	for i, post := range posts {
@@ -209,24 +208,20 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 			TTL:       time.Now().Add(7 * 24 * time.Hour).Unix(), // 7 days TTL
 		}
 
-		log.Printf("🔍 STATE DEBUG: Creating PostItem - RunID: %s, Step: %s, PostID: %s", postItem.RunID, postItem.Step, postItem.PostID)
 
 		item, err := attributevalue.MarshalMap(postItem)
 		if err != nil {
 			return fmt.Errorf("failed to marshal post item: %w", err)
 		}
 
-		log.Printf("🔍 STATE DEBUG: Marshaled item keys: %v", getMapKeys(item))
 
 		_, err = sm.client.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: aws.String(sm.tableName),
 			Item:      item,
 		})
 		if err != nil {
-			log.Printf("🔍 STATE DEBUG: PutItem failed for PostID %s: %v", postItem.PostID, err)
 			return fmt.Errorf("failed to store post item: %w", err)
 		}
-		log.Printf("🔍 STATE DEBUG: Successfully stored PostID %s in table %s", postItem.PostID, sm.tableName)
 	}
 
 	// Update the run state with new totals
@@ -234,21 +229,16 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 	state.Step = "fetcher"
 	state.Status = "fetching"
 
-	log.Printf("🔍 STATE DEBUG: After adding posts - total posts: %d", state.TotalPostsRetrieved)
 
 	err = sm.UpdateRun(ctx, state)
 	if err != nil {
-		log.Printf("🔍 STATE DEBUG: Failed to update run state: %v", err)
 		return err
 	}
-
-	log.Printf("🔍 STATE DEBUG: Successfully stored %d posts separately and updated run state", len(posts))
 	return nil
 }
 
 // GetAllPosts retrieves all posts for a run
 func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, error) {
-	log.Printf("🔍 STATE DEBUG: Retrieving all posts for run %s", runID)
 
 	// Query all posts for this run using the posts-index GSI
 	result, err := sm.client.Query(ctx, &dynamodb.QueryInput{
@@ -278,7 +268,6 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 		}
 	}
 
-	log.Printf("🔍 STATE DEBUG: Retrieved %d posts for run %s", len(posts), runID)
 	return posts, nil
 }
 
