@@ -471,6 +471,9 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 	}
 	useTimeBasedSearch := false
 	timeBasedSearchStart := cutoffTime
+	
+	// Track URIs to detect duplicates per iteration
+	seenURIs := make(map[string]bool)
 
 	maxFetchTime := 5 * time.Minute // Maximum time to spend fetching
 	startTime := time.Now()
@@ -500,6 +503,19 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 			fmt.Printf("    📭 No posts retrieved in iteration %d, stopping\n", iteration)
 			break
 		}
+
+		// Count duplicates in this iteration
+		iterationDuplicates := 0
+		for _, post := range posts {
+			if seenURIs[post.URI] {
+				iterationDuplicates++
+			} else {
+				seenURIs[post.URI] = true
+			}
+		}
+		
+		fmt.Printf("    🔄 Iteration %d - Fetched %d posts, %d duplicates (Total unique URIs: %d)\n", 
+			iteration, len(posts), iterationDuplicates, len(seenURIs))
 
 		// Convert to state posts and store
 		statePosts := m.convertToStatePosts(posts)
