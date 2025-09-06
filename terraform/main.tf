@@ -145,10 +145,6 @@ resource "aws_dynamodb_table" "hourstats_state" {
     type = "S"
   }
 
-  attribute {
-    name = "step"
-    type = "S"
-  }
 
   attribute {
     name = "status"
