@@ -37,26 +37,6 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 	return content
 }
 
-// formatTimePeriod formats the analysis interval as a human-readable time period
-func formatTimePeriod(analysisIntervalMinutes int) string {
-	if analysisIntervalMinutes < 60 {
-		return fmt.Sprintf("%d minutes", analysisIntervalMinutes)
-	} else {
-		hours := analysisIntervalMinutes / 60
-		minutes := analysisIntervalMinutes % 60
-		if minutes == 0 {
-			if hours == 1 {
-				return "1 hour"
-			}
-			return fmt.Sprintf("%d hours", hours)
-		} else {
-			if hours == 1 {
-				return fmt.Sprintf("1 hour %d minutes", minutes)
-			}
-			return fmt.Sprintf("%d hours %d minutes", hours, minutes)
-		}
-	}
-}
 
 // getMoodWord maps sentiment percentage to a descriptive word
 func getMoodWord(netSentiment float64) string {

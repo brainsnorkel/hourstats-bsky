@@ -256,10 +256,8 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 
 // fetchBatchInParallel makes 10 parallel API calls and returns combined results
 func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time) ([]bskyclient.Post, bool, error) {
-	var cursors []string
-
 	// Define cursors for 10 parallel calls (100 posts each = 1000 total)
-	cursors = []string{
+	cursors := []string{
 		startCursor,
 		addToCursor(startCursor, 100),
 		addToCursor(startCursor, 200),
