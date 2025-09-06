@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2025-09-06] - Cursor Limit Detection & Production Optimization
+
+### Added
+- **Cursor Pagination Limit Detection**: Enhanced system to detect and handle Bluesky API pagination limits gracefully
+- **Graceful Error Handling**: HTTP 400 InvalidRequest errors at high cursor values (>10,000) now stop gracefully instead of failing
+- **Production Schedule Update**: Changed from 60-minute to 15-minute intervals for more frequent updates
+
+### Fixed
+- **Cursor Pagination Failures**: System no longer fails when hitting Bluesky API pagination boundaries
+- **Error Recovery**: Improved error handling to continue with available data when hitting limits
+- **Production Frequency**: More frequent updates every 15 minutes instead of hourly
+
+### Changed
+- **Error Detection Logic**: Added intelligent cursor limit detection based on cursor value thresholds
+- **Parallel Fetching**: Enhanced parallel API calls to handle cursor limits gracefully
+- **Production Schedule**: EventBridge now triggers every 15 minutes with 15-minute analysis intervals
+- **Lambda Deployment**: All Lambda functions redeployed with improved error handling
+
+### Technical Details
+- Cursor limit detection triggers when cursor values exceed 10,000
+- System logs cursor pagination limits and continues with collected data
+- Enhanced debugging shows detailed error information for HTTP 400 responses
+- Production schedule: `rate(15 minutes)` with `analysisIntervalMinutes: 15`
+
 ## [2025-09-06] - Adult Content Filtering & DynamoDB Permissions Fix
 
 ### Fixed
