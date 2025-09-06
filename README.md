@@ -64,7 +64,8 @@ Bluesky mood +16% from 1,041 posts in 1 minutes
 - [x] DynamoDB state management with efficient batch operations
 - [x] Direct Lambda invocation (no Step Functions)
 - [x] EventBridge scheduling for automated execution
-- [ ] Embed cards for top posts (requires CID storage)
+- [x] CID extraction and storage for embed cards
+- [x] Embed cards for top posts (rich post display with full content preview)
 
 ## Tech Stack
 

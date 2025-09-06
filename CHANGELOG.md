@@ -7,24 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2025-09-06] - CID Implementation for Embed Cards
+## [2025-09-06] - Embed Cards Implementation
 
 ### Added
+- **Embed Cards**: Implemented rich embed cards for top posts in Bluesky summaries
 - **CID Extraction**: Added Content Identifier (CID) extraction from Bluesky API responses
 - **CID Storage**: Added CID field to all Post structs across the application
-- **DynamoDB Schema**: Updated DynamoDB table schema to include CID attribute
-- **Embed Card Support**: Enabled CID storage to support future embed card functionality
+- **Embed Card Function**: Created `createEmbedCard` function for generating embed cards
+- **Rich Post Display**: Posts now display as embedded cards with full content preview
 
 ### Changed
 - Updated all Post structs in client, state, analyzer, and formatter packages to include CID field
 - Modified all conversion functions between different Post types to preserve CID data
-- Updated Terraform configuration to include CID attribute in DynamoDB table
+- Enabled embed card creation in PostTrendingSummary function
+- Updated local-test to properly handle CID data through the entire pipeline
 
 ### Technical Details
 - CIDs are extracted from `postView.Cid` field in Bluesky API responses
-- CID data flows through: API → Client → State → Analyzer → Formatter → Storage
-- All components now properly handle and store CID information
-- Ready for embed card implementation (requires uncommenting embed card code)
+- CID data flows through: API → Client → State → Analyzer → Formatter → Storage → Embed Cards
+- Embed cards use `atproto.RepoStrongRef` with URI and CID for proper display
+- DynamoDB automatically stores CID data in nested Post objects (no schema change needed)
+- Embed cards are created for the first valid post with both URI and CID
 
 ## [2025-09-06] - Sentiment Calculation and Link Fixes
 

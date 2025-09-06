@@ -156,11 +156,6 @@ resource "aws_dynamodb_table" "hourstats_state" {
     type = "S"
   }
 
-  attribute {
-    name = "cid"
-    type = "S"
-  }
-
   # Global Secondary Index for querying by status
   global_secondary_index {
     name            = "status-index"

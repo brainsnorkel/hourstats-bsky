@@ -314,6 +314,10 @@ func addToCursor(cursor string, add int) string {
 func (h *FetcherHandler) convertToStatePosts(posts []bskyclient.Post) []state.Post {
 	statePosts := make([]state.Post, len(posts))
 	for i, post := range posts {
+		// Debug: Log CID extraction in fetcher
+		if i < 3 {
+			log.Printf("🔍 FETCHER DEBUG: Converting post %d - URI: %s, CID: %s", i+1, post.URI, post.CID)
+		}
 		statePosts[i] = state.Post{
 			URI:       post.URI,
 			CID:       post.CID,
