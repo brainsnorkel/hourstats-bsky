@@ -81,7 +81,8 @@ resource "aws_iam_policy" "lambda_policy" {
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:Query",
-          "dynamodb:UpdateItem"
+          "dynamodb:UpdateItem",
+          "dynamodb:BatchWriteItem"
         ]
         Resource = aws_dynamodb_table.hourstats_state.arn
       },

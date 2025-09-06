@@ -65,9 +65,8 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 	var err error
 
 	for retries := 0; retries < 3; retries++ {
-		// Use Bluesky's official moderation labeler to get labels
-		subscribedLabelers := []string{"did:plc:ar7c4by46qjd4h4ww4t5xvwa"}
-		searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", subscribedLabelers, "", "")
+		// Search for all public posts
+		searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", nil, "", "")
 		if err == nil {
 			break
 		}
@@ -101,6 +100,12 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		// Only include posts from the analysis interval
 		if postTime.Before(cutoffTime) {
 			filteredCount++
+			continue
+		}
+
+		// Filter out adult content based on moderation labels
+		if c.hasAdultContentLabel(postView.Labels) {
+			log.Printf("Filtering out post with adult content: %s", postView.Uri)
 			continue
 		}
 
@@ -214,9 +219,8 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		var err error
 
 		for retries := 0; retries < 3; retries++ {
-			// Use Bluesky's official moderation labeler to get labels
-			subscribedLabelers := []string{"did:plc:ar7c4by46qjd4h4ww4t5xvwa"}
-			searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", subscribedLabelers, "", "")
+			// Search for all public posts
+			searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", nil, "", "")
 			if err == nil {
 				break
 			}
