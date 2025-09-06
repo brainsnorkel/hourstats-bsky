@@ -64,7 +64,6 @@ func formatTimePeriod(analysisIntervalMinutes int) string {
 	}
 }
 
-
 // getSentimentSymbol returns the symbol for sentiment (+ for positive, - for negative, x for neutral)
 func getSentimentSymbol(sentiment string) string {
 	switch sentiment {
