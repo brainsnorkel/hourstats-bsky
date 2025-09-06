@@ -16,7 +16,7 @@ Bluesky HourStats is an automated bot that:
 
 The bot posts summaries in this format:
 ```
-For 30 minutes Bluesky was passionate
+Bluesky mood +16% from 1,041 posts in 1 minutes
 
 1. @username.bsky.social (15) +
 2. @anotheruser.bsky.social (12) -
@@ -26,12 +26,15 @@ For 30 minutes Bluesky was passionate
 ```
 
 **Features:**
+- **Bluesky mood**: Net sentiment percentage calculated from all posts (positive% - negative%)
+- **Post count**: Total number of posts analyzed in the time period
 - **Time period**: Configurable (minutes or hours)
-- **Sentiment**: Emotion-based analysis (passionate, excited, steady, etc.)
-- **Top 5 posts**: Ranked by total engagement score
+- **Top 5 posts**: Ranked by total engagement score with clickable links
 - **Engagement scores**: Total score in parentheses (likes + reposts + replies)
 - **Sentiment indicators**: + for positive, - for negative, x for neutral
+- **Clickable links**: User handles link to their posts via Bluesky facets
 - **Adult content filtering**: Uses Bluesky's official moderation labels
+- **Deduplication**: Removes duplicate posts, keeping highest engagement version
 
 
 ## Project Status
@@ -50,14 +53,18 @@ For 30 minutes Bluesky was passionate
 - [x] Configurable analysis intervals (minutes)
 - [x] Smart posting (skips when no posts found)
 - [x] Clickable handle links with proper Bluesky rich text facets
+- [x] Post deduplication (keeps highest engagement version)
+- [x] Parallel post fetching (8 concurrent API calls)
+- [x] Accurate sentiment calculation from all posts (not just top 5)
 - [x] Dry-run mode for safe testing
 - [x] Secure configuration management
-- [x] Local testing environment
+- [x] Local testing environment with live posting capability
 - [x] Comprehensive logging and debugging
-- [x] AWS serverless deployment with multi-Lambda architecture
-- [x] DynamoDB state management for large-scale data processing
-- [x] AWS Step Functions orchestration for workflow management
+- [x] AWS serverless deployment with orchestrated Lambda architecture
+- [x] DynamoDB state management with efficient batch operations
+- [x] Direct Lambda invocation (no Step Functions)
 - [x] EventBridge scheduling for automated execution
+- [ ] Embed cards for top posts (requires CID storage)
 
 ## Tech Stack
 
