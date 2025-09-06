@@ -134,8 +134,23 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		}
 
 
+		// Construct proper AT Protocol URI if the API returns a different format
+		uri := postView.Uri
+		if !strings.HasPrefix(postView.Uri, "at://") && postView.Author != nil {
+			// Try to construct AT Protocol URI from available data
+			// Format: at://did:plc:abc123/app.bsky.feed.post/xyz789
+			if postView.Author.Did != "" {
+				// Extract post ID from the URI if it's in a different format
+				postID := postView.Uri
+				if strings.Contains(postID, "post-") {
+					postID = strings.TrimPrefix(postID, "post-")
+				}
+				uri = fmt.Sprintf("at://%s/app.bsky.feed.post/%s", postView.Author.Did, postID)
+			}
+		}
+
 		post := Post{
-			URI:       postView.Uri,
+			URI:       uri,
 			Text:      text,
 			Author:    author,
 			Likes:     likes,
@@ -314,14 +329,34 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 			continue // Skip this post
 		}
 
+		// Construct proper AT Protocol URI if the API returns a different format
+		uri := postView.Uri
+		if !strings.HasPrefix(postView.Uri, "at://") && postView.Author != nil {
+			// Try to construct AT Protocol URI from available data
+			// Format: at://did:plc:abc123/app.bsky.feed.post/xyz789
+			if postView.Author.Did != "" {
+				// Extract post ID from the URI if it's in a different format
+				postID := postView.Uri
+				if strings.Contains(postID, "post-") {
+					postID = strings.TrimPrefix(postID, "post-")
+				}
+				uri = fmt.Sprintf("at://%s/app.bsky.feed.post/%s", postView.Author.Did, postID)
+			}
+		}
+
 		post := Post{
-			URI:       postView.Uri,
+			URI:       uri,
 			Text:      text,
 			Author:    postView.Author.Handle,
 			Likes:     likes,
 			Reposts:   reposts,
 			Replies:   replies,
 			CreatedAt: postView.IndexedAt,
+		}
+		
+		// Debug: Log URI format to understand what we're getting
+		if !strings.HasPrefix(uri, "at://") {
+			log.Printf("DEBUG: Non-standard URI format: %s for post by @%s (original: %s)", uri, postView.Author.Handle, postView.Uri)
 		}
 
 		// Check if we've seen this URI before
