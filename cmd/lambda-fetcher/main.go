@@ -163,6 +163,9 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	maxIterations := 20 // Safety limit to prevent infinite loops
 	useTimeBasedSearch := false
 	timeBasedSearchStart := cutoffTime
+	
+	// Track URIs to detect duplicates per iteration
+	seenURIs := make(map[string]bool)
 
 	for {
 		iteration++
@@ -183,6 +186,19 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 			log.Printf("📭 FETCHER: No posts retrieved in iteration %d, stopping", iteration)
 			break
 		}
+
+		// Count duplicates in this iteration
+		iterationDuplicates := 0
+		for _, post := range posts {
+			if seenURIs[post.URI] {
+				iterationDuplicates++
+			} else {
+				seenURIs[post.URI] = true
+			}
+		}
+		
+		log.Printf("🔄 FETCHER: Iteration %d - Fetched %d posts, %d duplicates (Total unique URIs: %d)", 
+			iteration, len(posts), iterationDuplicates, len(seenURIs))
 
 		// Convert to state posts and store
 		statePosts := h.convertToStatePosts(posts)
