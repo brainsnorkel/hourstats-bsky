@@ -171,7 +171,7 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 
 		log.Printf("🔄 FETCHER: Starting iteration %d with cursor: %s", iteration, currentCursor)
 
-		// Make 8 parallel API calls for this iteration
+		// Make 4 parallel API calls for this iteration
 		posts, shouldStop, err := h.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
 		if err != nil {
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
@@ -199,8 +199,8 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 			break
 		}
 
-		// Prepare for next iteration (800 posts ahead)
-		currentCursor = fmt.Sprintf("%d", iteration*800)
+		// Prepare for next iteration (400 posts ahead)
+		currentCursor = fmt.Sprintf("%d", iteration*400)
 		log.Printf("➡️ FETCHER: Preparing next iteration with cursor: %s", currentCursor)
 	}
 
@@ -208,33 +208,31 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	return totalPosts, nil
 }
 
-// fetchBatchInParallel makes 8 parallel API calls and returns combined results
+// fetchBatchInParallel makes 4 parallel API calls and returns combined results
 func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time) ([]bskyclient.Post, bool, error) {
-	// Define cursors for 8 parallel calls (100 posts each = 800 total)
+	// Define cursors for 4 parallel calls (100 posts each = 400 total)
 	cursors := []string{
 		startCursor,
 		addToCursor(startCursor, 100),
 		addToCursor(startCursor, 200),
 		addToCursor(startCursor, 300),
-		addToCursor(startCursor, 400),
-		addToCursor(startCursor, 500),
-		addToCursor(startCursor, 600),
-		addToCursor(startCursor, 700),
 	}
 
-	log.Printf("🚀 FETCHER: Making 8 parallel API calls with cursors: %v", cursors)
+	log.Printf("🚀 FETCHER: Making 4 parallel API calls with cursors: %v", cursors)
 
 	var allPosts []bskyclient.Post
 	var oldestPostTime *time.Time
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	// Launch 8 goroutines for parallel fetching
+	// Launch 4 goroutines for parallel fetching with 1-second delays
 	for i, cursor := range cursors {
 		wg.Add(1)
 		go func(cursorIndex int, cursorValue string) {
 			defer wg.Done()
 
+			// Add 1-second delay between goroutine starts to reduce API load
+			time.Sleep(time.Duration(cursorIndex) * time.Second)
 			log.Printf("📡 FETCHER: Starting parallel call %d with cursor: %s", cursorIndex+1, cursorValue)
 
 			posts, _, _, err := client.GetTrendingPostsBatch(ctx, cursorValue, cutoffTime)
