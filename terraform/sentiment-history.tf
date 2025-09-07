@@ -31,65 +31,7 @@ resource "aws_dynamodb_table" "sentiment_history" {
   }
 }
 
-# S3 bucket for sparkline images
-resource "aws_s3_bucket" "sparkline_images" {
-  bucket = "hourstats-sparkline-images"
-
-  tags = {
-    Name        = "HourStats Sparkline Images"
-    Environment = "production"
-  }
-}
-
-# S3 bucket versioning
-resource "aws_s3_bucket_versioning" "sparkline_images" {
-  bucket = aws_s3_bucket.sparkline_images.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-# S3 bucket lifecycle configuration
-resource "aws_s3_bucket_lifecycle_configuration" "sparkline_images" {
-  bucket = aws_s3_bucket.sparkline_images.id
-
-  rule {
-    id     = "delete_old_images"
-    status = "Enabled"
-
-    expiration {
-      days = 30
-    }
-  }
-}
-
-# S3 bucket public access block
-resource "aws_s3_bucket_public_access_block" "sparkline_images" {
-  bucket = aws_s3_bucket.sparkline_images.id
-
-  block_public_acls       = false
-  block_public_policy     = false
-  ignore_public_acls      = false
-  restrict_public_buckets = false
-}
-
-# S3 bucket policy for public read access to images
-resource "aws_s3_bucket_policy" "sparkline_images" {
-  bucket = aws_s3_bucket.sparkline_images.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "PublicReadGetObject"
-        Effect    = "Allow"
-        Principal = "*"
-        Action    = "s3:GetObject"
-        Resource  = "${aws_s3_bucket.sparkline_images.arn}/*"
-      }
-    ]
-  })
-}
+# Note: S3 bucket removed - using embedded images via Bluesky blob service instead
 
 # IAM policy for Lambda functions to access sentiment history
 resource "aws_iam_policy" "sentiment_history_access" {
@@ -116,34 +58,4 @@ resource "aws_iam_policy" "sentiment_history_access" {
   })
 }
 
-# IAM policy for Lambda functions to access S3
-resource "aws_iam_policy" "s3_sparkline_access" {
-  name        = "HourStatsS3SparklineAccess"
-  description = "Policy for HourStats Lambda functions to access S3 for sparkline images"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject"
-        ]
-        Resource = [
-          "${aws_s3_bucket.sparkline_images.arn}/*"
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:ListBucket"
-        ]
-        Resource = [
-          aws_s3_bucket.sparkline_images.arn
-        ]
-      }
-    ]
-  })
-}
+# Note: S3 access policy removed - using embedded images via Bluesky blob service instead

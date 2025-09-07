@@ -135,11 +135,7 @@ resource "aws_iam_role_policy_attachment" "sentiment_history_policy" {
   policy_arn = aws_iam_policy.sentiment_history_access.arn
 }
 
-# Attach S3 sparkline policy to role
-resource "aws_iam_role_policy_attachment" "s3_sparkline_policy" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = aws_iam_policy.s3_sparkline_access.arn
-}
+# Note: S3 sparkline policy attachment removed - using embedded images instead
 
 # DynamoDB Table for Multi-Lambda State Management
 resource "aws_dynamodb_table" "hourstats_state" {
@@ -288,7 +284,6 @@ resource "aws_lambda_function" "hourstats_sparkline_poster" {
     variables = {
       DYNAMODB_TABLE = aws_dynamodb_table.hourstats_state.name
       SENTIMENT_HISTORY_TABLE = aws_dynamodb_table.sentiment_history.name
-      S3_BUCKET = aws_s3_bucket.sparkline_images.bucket
     }
   }
 

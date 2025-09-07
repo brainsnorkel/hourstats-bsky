@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -10,7 +9,6 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
@@ -35,7 +33,6 @@ type Response struct {
 type SparklinePosterHandler struct {
 	sentimentHistoryManager *state.SentimentHistoryManager
 	sparklineGenerator      *sparkline.SparklineGenerator
-	s3Client                *s3.Client
 	ssmClient               *ssm.Client
 }
 
@@ -56,13 +53,11 @@ func NewSparklinePosterHandler(ctx context.Context) (*SparklinePosterHandler, er
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	s3Client := s3.NewFromConfig(cfg)
 	ssmClient := ssm.NewFromConfig(cfg)
 
 	return &SparklinePosterHandler{
 		sentimentHistoryManager: sentimentHistoryManager,
 		sparklineGenerator:      sparklineGenerator,
-		s3Client:                s3Client,
 		ssmClient:               ssmClient,
 	}, nil
 }
@@ -117,16 +112,6 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 		}, err
 	}
 
-	// Upload image to S3
-	imageURL, err := h.uploadImageToS3(ctx, imageData, event.RunID)
-	if err != nil {
-		log.Printf("Failed to upload image to S3: %v", err)
-		return Response{
-			StatusCode: 500,
-			Body:       "Failed to upload image: " + err.Error(),
-		}, err
-	}
-
 	// Get Bluesky credentials
 	handle, password, err := h.getBlueskyCredentials(ctx)
 	if err != nil {
@@ -147,10 +132,11 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 		}, err
 	}
 
-	// Post sparkline to Bluesky
+	// Post sparkline with embedded image to Bluesky
 	postText := "📊 Sentiment for the last 48 hours"
-	if err := h.postSparklineToBluesky(ctx, blueskyClient, postText, imageURL); err != nil {
-		log.Printf("Failed to post sparkline to Bluesky: %v", err)
+	altText := "48-hour sentiment trend chart showing community mood over time"
+	if err := blueskyClient.PostWithImage(ctx, postText, imageData, altText); err != nil {
+		log.Printf("Failed to post sparkline with embedded image: %v", err)
 		return Response{
 			StatusCode: 500,
 			Body:       "Failed to post sparkline: " + err.Error(),
@@ -211,25 +197,6 @@ func (h *SparklinePosterHandler) getBlueskyCredentials(ctx context.Context) (str
 	return handle, password, nil
 }
 
-// uploadImageToS3 uploads the sparkline image to S3
-func (h *SparklinePosterHandler) uploadImageToS3(ctx context.Context, imageData []byte, runID string) (string, error) {
-	bucketName := "hourstats-sparkline-images"
-	key := fmt.Sprintf("sparklines/%s-%d.png", runID, time.Now().Unix())
-
-	_, err := h.s3Client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(bucketName),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(imageData),
-		ContentType: aws.String("image/png"),
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to upload to S3: %w", err)
-	}
-
-	// Return public URL
-	imageURL := fmt.Sprintf("https://%s.s3.amazonaws.com/%s", bucketName, key)
-	return imageURL, nil
-}
 
 // postInsufficientDataMessage posts a message about insufficient data
 func (h *SparklinePosterHandler) postInsufficientDataMessage(ctx context.Context, dataPointCount int) (Response, error) {
@@ -284,14 +251,6 @@ func (h *SparklinePosterHandler) postInsufficientDataMessage(ctx context.Context
 	}, nil
 }
 
-// postSparklineToBluesky posts the sparkline to Bluesky
-func (h *SparklinePosterHandler) postSparklineToBluesky(ctx context.Context, client *client.BlueskyClient, text, imageURL string) error {
-	// For now, we'll post a text-only version with the image URL
-	// In a full implementation, we'd need to implement image embedding in the Bluesky client
-	postText := fmt.Sprintf("%s\n\n📈 View chart: %s", text, imageURL)
-	
-	return client.PostWithFacets(ctx, postText, nil)
-}
 
 func main() {
 	ctx := context.Background()
