@@ -189,6 +189,13 @@ func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEv
 		}, err
 	}
 
+	// Trigger sparkline poster (async)
+	go func() {
+		if err := h.triggerSparklinePoster(ctx, event.RunID, event.AnalysisIntervalMinutes); err != nil {
+			log.Printf("Failed to trigger sparkline poster: %v", err)
+		}
+	}()
+
 	// Mark posting as complete
 	if err := h.stateManager.SetPostingComplete(ctx, event.RunID); err != nil {
 		log.Printf("Failed to mark posting complete: %v", err)
@@ -267,6 +274,19 @@ func (h *PosterHandler) convertToClientPosts(posts []state.Post) []client.Post {
 		}
 	}
 	return clientPosts
+}
+
+// triggerSparklinePoster triggers the sparkline poster Lambda function
+func (h *PosterHandler) triggerSparklinePoster(ctx context.Context, runID string, analysisIntervalMinutes int) error {
+	// For now, we'll just log that we would trigger the sparkline poster
+	// In a full implementation, we'd invoke the sparkline poster Lambda function
+	log.Printf("Would trigger sparkline poster for run: %s", runID)
+	
+	// TODO: Implement actual Lambda invocation
+	// This would use the AWS Lambda client to invoke the sparkline-poster function
+	// with the appropriate payload
+	
+	return nil
 }
 
 func main() {

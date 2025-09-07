@@ -23,10 +23,14 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.6 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.6 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.3 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.30.2 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.8.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.11.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.6 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.6 // indirect
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.87.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.29.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.34.2 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.38.2 // indirect
@@ -36,9 +40,11 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/fogleman/gg v1.3.0 // indirect
 	github.com/go-logr/logr v1.4.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/google/uuid v1.4.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.5 // indirect
@@ -86,6 +92,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
 	golang.org/x/crypto v0.21.0 // indirect
+	golang.org/x/image v0.0.0-20180708004352-c73c2afc3b81 // indirect
 	golang.org/x/sys v0.22.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect

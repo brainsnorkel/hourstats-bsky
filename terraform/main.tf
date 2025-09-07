@@ -129,6 +129,18 @@ resource "aws_iam_role_policy_attachment" "lambda_policy" {
   policy_arn = aws_iam_policy.lambda_policy.arn
 }
 
+# Attach sentiment history policy to role
+resource "aws_iam_role_policy_attachment" "sentiment_history_policy" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.sentiment_history_access.arn
+}
+
+# Attach S3 sparkline policy to role
+resource "aws_iam_role_policy_attachment" "s3_sparkline_policy" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.s3_sparkline_access.arn
+}
+
 # DynamoDB Table for Multi-Lambda State Management
 resource "aws_dynamodb_table" "hourstats_state" {
   name           = "hourstats-state"
@@ -257,6 +269,31 @@ resource "aws_lambda_function" "hourstats_processor" {
 
   tags = {
     Name        = "${var.function_name}-processor"
+    Environment = "production"
+  }
+}
+
+# Sparkline Poster Lambda Function
+resource "aws_lambda_function" "hourstats_sparkline_poster" {
+  filename         = "lambda-sparkline-poster.zip"
+  function_name    = "hourstats-sparkline-poster"
+  role            = aws_iam_role.lambda_role.arn
+  handler         = "bootstrap"
+  source_code_hash = filebase64sha256("lambda-sparkline-poster.zip")
+  runtime         = "provided.al2023"
+  timeout         = 300  # 5 minutes
+  memory_size     = 256  # More memory for image generation
+
+  environment {
+    variables = {
+      DYNAMODB_TABLE = aws_dynamodb_table.hourstats_state.name
+      SENTIMENT_HISTORY_TABLE = aws_dynamodb_table.sentiment_history.name
+      S3_BUCKET = aws_s3_bucket.sparkline_images.bucket
+    }
+  }
+
+  tags = {
+    Name        = "${var.function_name}-sparkline-poster"
     Environment = "production"
   }
 }
