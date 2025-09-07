@@ -450,7 +450,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 	return posts, nil
 }
 
-func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, positivePercent, negativePercent float64) error {
+func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentimentPercentage float64) error {
 	ctx := context.Background()
 
 	// Convert client posts to formatter posts
@@ -471,7 +471,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	// Use the pre-calculated sentiment data from all posts, not just the top 5
 
 	// Use shared formatter to generate the post content
-	summaryText := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, totalPosts, positivePercent, negativePercent)
+	summaryText := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, totalPosts, netSentimentPercentage)
 
 	// Check if we need to truncate, but try to keep all 5 posts
 	if len([]rune(summaryText)) > 300 {

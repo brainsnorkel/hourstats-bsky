@@ -1,6 +1,6 @@
-# Testing Guide for TrendJournal
+# Testing Guide for HourStats Bluesky Bot
 
-This document describes how to test the TrendJournal bot locally and in different environments.
+This document describes how to test the HourStats Bluesky bot locally and in different environments. The bot uses a multi-Lambda serverless architecture with comprehensive testing at multiple levels.
 
 ## Prerequisites
 
@@ -20,18 +20,39 @@ make test
 Run tests for a specific package:
 ```bash
 go test ./internal/analyzer/
-go test ./internal/client/
-go test ./internal/scheduler/
+go test ./cmd/lambda-orchestrator/
 ```
 
 Run tests with verbose output:
 ```bash
 go test ./internal/analyzer/ -v
+go test ./cmd/lambda-orchestrator/ -v
 ```
+
+### Lambda Function Tests
+
+Test individual Lambda functions:
+```bash
+make test-lambdas
+```
+
+This will test each Lambda function individually:
+- `lambda-orchestrator` - Workflow orchestration
+- `lambda-fetcher` - Post collection
+- `lambda-analyzer` - Sentiment analysis
+- `lambda-aggregator` - Data aggregation
+- `lambda-poster` - Post publishing
 
 ### Integration Tests
 
-The current implementation includes basic integration testing through the main application flow.
+Test the complete Step Functions workflow:
+```bash
+# Test with dry-run mode (recommended)
+make test-multi-lambda
+
+# Test with real execution (requires AWS credentials)
+make test-workflow
+```
 
 ## Local Testing
 
@@ -73,22 +94,50 @@ The analyzer package includes comprehensive tests for:
 - Neutral sentiment detection
 - Topic extraction from hashtags and keywords
 - Engagement score calculation
+- 100-word sentiment scale implementation
 
-### Client Tests
+### Lambda Function Tests
 
-The client package tests:
-- Authentication with Bluesky
-- Timeline fetching
-- Post data extraction
+Each Lambda function has specific test scenarios:
+
+#### Orchestrator Lambda
+- Event structure validation
+- Run ID generation
+- Response structure validation
+- DynamoDB state management
+
+#### Fetcher Lambda
+- Bluesky API authentication
+- Post collection and filtering
+- Cursor-based pagination
+- Adult content filtering
+- Time-based filtering
+
+#### Analyzer Lambda
+- Sentiment analysis on collected posts
+- Engagement score calculation
+- Post ranking logic
+- Data validation
+
+#### Aggregator Lambda
+- Post ranking by engagement
+- Community sentiment calculation
+- Top posts selection
+- Data aggregation
+
+#### Poster Lambda
+- Post formatting
+- Bluesky API posting
+- Rich text facets
 - Error handling
 
-### Scheduler Tests
+### Workflow Integration Tests
 
-The scheduler package tests:
-- Hourly execution
-- Post conversion between types
-- Top post selection
+- End-to-end Step Functions execution
+- DynamoDB state persistence
+- Lambda function coordination
 - Error handling and recovery
+- Dry-run mode validation
 
 ## Manual Testing
 
@@ -236,10 +285,26 @@ Track key metrics:
 3. Test individual components separately
 4. Check the Bluesky API documentation
 
-## Future Testing Improvements
+## Current Test Coverage
 
+### ✅ Implemented
+- Unit tests for sentiment analysis
+- Unit tests for orchestrator Lambda
+- Integration tests for Step Functions workflow
+- Local testing with dry-run mode
+- AWS Lambda function testing
+- End-to-end workflow testing
+
+### 🔄 In Progress
+- Performance benchmarks for large datasets
+- Edge case testing (empty timelines, malformed data)
+- Load testing for parallel fetchers
+
+### 📋 Future Improvements
 - [ ] Add more comprehensive integration tests
 - [ ] Add performance benchmarks
 - [ ] Add end-to-end testing with mock data
 - [ ] Add automated testing for different sentiment scenarios
 - [ ] Add testing for edge cases (empty timelines, malformed data)
+- [ ] Add chaos engineering tests for AWS service failures
+- [ ] Add monitoring and alerting tests

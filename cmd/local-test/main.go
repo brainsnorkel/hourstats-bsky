@@ -229,6 +229,8 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 
 	// Analyze sentiment for all posts
 	sentimentAnalyzer := analyzer.New()
+	var allAnalyzedPosts []analyzer.AnalyzedPost
+
 	for i := range deduplicatedPosts {
 		// Convert to analyzer.Post format
 		analyzerPost := analyzer.Post{
@@ -248,6 +250,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 			deduplicatedPosts[i].Sentiment = "neutral"
 		} else if len(analyzedPosts) > 0 {
 			deduplicatedPosts[i].Sentiment = analyzedPosts[0].Sentiment
+			allAnalyzedPosts = append(allAnalyzedPosts, analyzedPosts[0])
 		} else {
 			deduplicatedPosts[i].Sentiment = "neutral"
 		}
@@ -273,8 +276,8 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		topPosts = deduplicatedPosts[:5]
 	}
 
-	// Calculate overall sentiment and percentages
-	overallSentiment, positivePercent, negativePercent := m.calculateOverallSentimentWithPercentages(deduplicatedPosts)
+	// Calculate overall sentiment using compound scores
+	overallSentiment, netSentimentPercentage := m.calculateOverallSentimentWithCompoundScores(allAnalyzedPosts)
 
 	// Convert to formatter posts
 	formatterPosts := make([]formatter.Post, len(topPosts))
@@ -292,7 +295,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 	}
 
 	// Generate post content
-	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, len(allPosts), positivePercent, negativePercent)
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, len(allPosts), netSentimentPercentage)
 
 	// Calculate character count
 	charCount := len(postContent)
@@ -356,7 +359,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		}
 
 		// Post to Bluesky with facets and embed cards
-		err = blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, analysisIntervalMinutes, len(deduplicatedPosts), positivePercent, negativePercent)
+		err = blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, analysisIntervalMinutes, len(deduplicatedPosts), netSentimentPercentage)
 		if err != nil {
 			return fmt.Errorf("failed to post to Bluesky: %w", err)
 		}
@@ -428,36 +431,33 @@ func (m *MockLambdaClient) convertToStatePosts(posts []bskyclient.Post) []state.
 	return statePosts
 }
 
-func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []state.Post) (string, float64, float64) {
+
+func (m *MockLambdaClient) calculateOverallSentimentWithCompoundScores(posts []analyzer.AnalyzedPost) (string, float64) {
 	if len(posts) == 0 {
-		return "neutral", 0, 0
+		return "neutral", 0.0
 	}
 
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
-
+	var totalCompoundScore float64
 	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		default:
-			neutralCount++
-		}
+		totalCompoundScore += post.SentimentScore // This is already the compound score
 	}
 
-	total := len(posts)
-	positivePercent := float64(positiveCount) / float64(total) * 100
-	negativePercent := float64(negativeCount) / float64(total) * 100
+	averageCompoundScore := totalCompoundScore / float64(len(posts))
 
-	if positiveCount > total/2 {
-		return "positive", positivePercent, negativePercent
-	} else if negativeCount > total/2 {
-		return "negative", positivePercent, negativePercent
+	// Map compound score to category for backward compatibility
+	var sentimentCategory string
+	if averageCompoundScore >= 0.3 {
+		sentimentCategory = "positive"
+	} else if averageCompoundScore <= -0.3 {
+		sentimentCategory = "negative"
+	} else {
+		sentimentCategory = "neutral"
 	}
-	return "neutral", positivePercent, negativePercent
+
+	// Scale to percentage range for 100-word system
+	netSentimentPercentage := averageCompoundScore * 100.0
+
+	return sentimentCategory, netSentimentPercentage
 }
 
 // fetchAllPostsInParallel fetches all posts using parallel API calls and internal loops

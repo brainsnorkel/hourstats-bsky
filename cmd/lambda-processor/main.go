@@ -127,7 +127,7 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 
 	// Step 1: Analyze posts for sentiment and calculate engagement scores
 	log.Printf("Analyzing %d posts", len(filteredPosts))
-	analyzedPosts, overallSentiment, positivePercent, negativePercent, err := h.analyzePosts(filteredPosts)
+	analyzedPosts, overallSentiment, netSentimentPercentage, err := h.analyzePosts(filteredPosts)
 	if err != nil {
 		log.Printf("Failed to analyze posts: %v", err)
 		return Response{
@@ -160,8 +160,8 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 
 	// Step 4: Post summary to Bluesky
 	log.Printf("Posting summary to Bluesky")
-	log.Printf("🔍 PROCESSOR DEBUG: Sentiment data - Overall: %s, Positive: %.1f%%, Negative: %.1f%%, Total posts: %d",
-		overallSentiment, positivePercent, negativePercent, len(filteredPosts))
+	log.Printf("🔍 PROCESSOR DEBUG: Sentiment data - Overall: %s, Net sentiment: %.1f%%, Total posts: %d",
+		overallSentiment, netSentimentPercentage, len(filteredPosts))
 
 	// Authenticate before posting
 	if err := h.blueskyClient.Authenticate(); err != nil {
@@ -173,7 +173,7 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	}
 	log.Printf("✅ Successfully authenticated with Bluesky")
 
-	err = h.postSummary(runState, topPosts, overallSentiment, len(filteredPosts), positivePercent, negativePercent)
+	err = h.postSummary(runState, topPosts, overallSentiment, len(filteredPosts), netSentimentPercentage)
 	if err != nil {
 		log.Printf("Failed to post summary: %v", err)
 		return Response{
@@ -193,7 +193,7 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 }
 
 // analyzePosts analyzes sentiment and calculates engagement scores
-func (h *ProcessorHandler) analyzePosts(posts []state.Post) ([]state.Post, string, float64, float64, error) {
+func (h *ProcessorHandler) analyzePosts(posts []state.Post) ([]state.Post, string, float64, error) {
 	log.Printf("Analyzing %d posts", len(posts))
 
 	// Convert state posts to analyzer posts
@@ -214,11 +214,11 @@ func (h *ProcessorHandler) analyzePosts(posts []state.Post) ([]state.Post, strin
 	// Analyze posts
 	analyzedPosts, err := h.sentimentAnalyzer.AnalyzePosts(analyzerPosts)
 	if err != nil {
-		return nil, "", 0, 0, fmt.Errorf("failed to analyze posts: %w", err)
+		return nil, "", 0.0, fmt.Errorf("failed to analyze posts: %w", err)
 	}
 
-	// Calculate overall sentiment and percentages
-	overallSentiment, positivePercent, negativePercent := h.calculateOverallSentimentWithPercentages(analyzedPosts)
+	// Calculate overall sentiment using compound scores
+	overallSentiment, netSentimentPercentage := h.calculateOverallSentimentWithCompoundScores(analyzedPosts)
 
 	// Convert back to state posts with analysis results
 	statePosts := make([]state.Post, len(analyzedPosts))
@@ -243,49 +243,40 @@ func (h *ProcessorHandler) analyzePosts(posts []state.Post) ([]state.Post, strin
 		}
 	}
 
-	return statePosts, overallSentiment, positivePercent, negativePercent, nil
+	return statePosts, overallSentiment, netSentimentPercentage, nil
 }
 
-// calculateOverallSentimentWithPercentages calculates the overall sentiment and returns percentages
-func (h *ProcessorHandler) calculateOverallSentimentWithPercentages(posts []analyzer.AnalyzedPost) (string, float64, float64) {
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
+func (h *ProcessorHandler) calculateOverallSentimentWithCompoundScores(posts []analyzer.AnalyzedPost) (string, float64) {
+	if len(posts) == 0 {
+		return "neutral", 0.0
+	}
 
+	var totalCompoundScore float64
 	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		case "neutral":
-			neutralCount++
-		}
+		totalCompoundScore += post.SentimentScore // This is already the compound score
 	}
 
-	total := len(posts)
-	if total == 0 {
-		return "neutral", 0, 0
+	averageCompoundScore := totalCompoundScore / float64(len(posts))
+
+	// Map compound score to category for backward compatibility
+	var sentimentCategory string
+	if averageCompoundScore >= 0.3 {
+		sentimentCategory = "positive"
+	} else if averageCompoundScore <= -0.3 {
+		sentimentCategory = "negative"
+	} else {
+		sentimentCategory = "neutral"
 	}
 
-	positivePercent := float64(positiveCount) / float64(total) * 100
-	negativePercent := float64(negativeCount) / float64(total) * 100
-	neutralPercent := float64(neutralCount) / float64(total) * 100
+	// Scale to percentage range for 100-word system
+	netSentimentPercentage := averageCompoundScore * 100.0
 
-	log.Printf("🔍 PROCESSOR DEBUG: Sentiment counts - Positive: %d (%.1f%%), Negative: %d (%.1f%%), Neutral: %d (%.1f%%)",
-		positiveCount, positivePercent, negativeCount, negativePercent, neutralCount, neutralPercent)
+	log.Printf("🔍 PROCESSOR DEBUG: Average compound score: %.3f, Net sentiment: %.1f%%, Sentiment: %s",
+		averageCompoundScore, netSentimentPercentage, sentimentCategory)
 
-	// Determine dominant sentiment
-	if positivePercent > negativePercent && positivePercent > neutralPercent {
-		log.Printf("🔍 PROCESSOR DEBUG: Overall sentiment determined as: positive")
-		return "positive", positivePercent, negativePercent
-	} else if negativePercent > positivePercent && negativePercent > neutralPercent {
-		log.Printf("🔍 PROCESSOR DEBUG: Overall sentiment determined as: negative")
-		return "negative", positivePercent, negativePercent
-	}
-	log.Printf("🔍 PROCESSOR DEBUG: Overall sentiment determined as: neutral")
-	return "neutral", positivePercent, negativePercent
+	return sentimentCategory, netSentimentPercentage
 }
+
 
 // getTopPosts gets the top N posts by engagement score
 func (h *ProcessorHandler) getTopPosts(posts []state.Post, n int) []state.Post {
@@ -324,7 +315,7 @@ func (h *ProcessorHandler) filterPostsByCutoffTime(posts []state.Post, cutoffTim
 }
 
 // postSummary posts the summary to Bluesky
-func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []state.Post, overallSentiment string, totalPosts int, positivePercent, negativePercent float64) error {
+func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []state.Post, overallSentiment string, totalPosts int, netSentimentPercentage float64) error {
 	// Check if we have data to post
 	if runState.TotalPostsRetrieved == 0 {
 		log.Printf("No posts retrieved, skipping post")
@@ -373,7 +364,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 		}
 	}
 
-	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, positivePercent, negativePercent)
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
 	characterCount := len(postContent)
 	blueskyLimit := 300
 	remainingChars := blueskyLimit - characterCount
@@ -389,7 +380,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 	}
 
 	// Post the summary
-	return h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, positivePercent, negativePercent)
+	return h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
 }
 
 // deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
