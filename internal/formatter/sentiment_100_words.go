@@ -92,13 +92,13 @@ var sentimentWords100 = []string{
 	"cheerful", "upbeat", "bright", "sunny", "optimistic",
 
 	// +30% to +40%: Moderate positive (happy to delighted)
-	"happy", "joyful", "glad", "delighted", "pleased",
+	"happy", "joyful", "glad", "delighted", "merry",
 
 	// +40% to +50%: Moderate-high positive (excited to elated)
 	"excited", "enthusiastic", "eager", "thrilled", "elated",
 
 	// +50% to +60%: High positive (ecstatic to rapturous)
-	"ecstatic", "overjoyed", "blissful", "rapturous", "exultant",
+	"ecstatic", "overjoyed", "joyous", "rapturous", "exultant",
 
 	// +60% to +70%: Very high positive (exhilarated to lively)
 	"exhilarated", "exuberant", "vibrant", "energetic", "lively",
