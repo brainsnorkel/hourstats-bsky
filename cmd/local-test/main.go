@@ -431,37 +431,6 @@ func (m *MockLambdaClient) convertToStatePosts(posts []bskyclient.Post) []state.
 	return statePosts
 }
 
-func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []state.Post) (string, float64, float64) {
-	if len(posts) == 0 {
-		return "neutral", 0, 0
-	}
-
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
-
-	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		default:
-			neutralCount++
-		}
-	}
-
-	total := len(posts)
-	positivePercent := float64(positiveCount) / float64(total) * 100
-	negativePercent := float64(negativeCount) / float64(total) * 100
-
-	if positiveCount > total/2 {
-		return "positive", positivePercent, negativePercent
-	} else if negativeCount > total/2 {
-		return "negative", positivePercent, negativePercent
-	}
-	return "neutral", positivePercent, negativePercent
-}
 
 func (m *MockLambdaClient) calculateOverallSentimentWithCompoundScores(posts []analyzer.AnalyzedPost) (string, float64) {
 	if len(posts) == 0 {

@@ -294,39 +294,6 @@ func calculateOverallSentimentWithCompoundScores(posts []analyzer.AnalyzedPost) 
 	return sentimentCategory, netSentimentPercentage
 }
 
-func calculateOverallSentimentWithPercentages(posts []analyzer.AnalyzedPost) (string, float64, float64) {
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
-
-	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		case "neutral":
-			neutralCount++
-		}
-	}
-
-	total := len(posts)
-	if total == 0 {
-		return "neutral", 0, 0
-	}
-
-	positivePercent := float64(positiveCount) / float64(total) * 100
-	negativePercent := float64(negativeCount) / float64(total) * 100
-	neutralPercent := float64(neutralCount) / float64(total) * 100
-
-	// Determine dominant sentiment
-	if positivePercent > negativePercent && positivePercent > neutralPercent {
-		return "positive", positivePercent, negativePercent
-	} else if negativePercent > positivePercent && negativePercent > neutralPercent {
-		return "negative", positivePercent, negativePercent
-	}
-	return "neutral", positivePercent, negativePercent
-}
 
 func getTopPosts(posts []state.Post, n int) []state.Post {
 	if len(posts) <= n {

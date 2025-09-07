@@ -277,46 +277,6 @@ func (h *ProcessorHandler) calculateOverallSentimentWithCompoundScores(posts []a
 	return sentimentCategory, netSentimentPercentage
 }
 
-// calculateOverallSentimentWithPercentages calculates the overall sentiment and returns percentages
-func (h *ProcessorHandler) calculateOverallSentimentWithPercentages(posts []analyzer.AnalyzedPost) (string, float64, float64) {
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
-
-	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		case "neutral":
-			neutralCount++
-		}
-	}
-
-	total := len(posts)
-	if total == 0 {
-		return "neutral", 0, 0
-	}
-
-	positivePercent := float64(positiveCount) / float64(total) * 100
-	negativePercent := float64(negativeCount) / float64(total) * 100
-	neutralPercent := float64(neutralCount) / float64(total) * 100
-
-	log.Printf("🔍 PROCESSOR DEBUG: Sentiment counts - Positive: %d (%.1f%%), Negative: %d (%.1f%%), Neutral: %d (%.1f%%)",
-		positiveCount, positivePercent, negativeCount, negativePercent, neutralCount, neutralPercent)
-
-	// Determine dominant sentiment
-	if positivePercent > negativePercent && positivePercent > neutralPercent {
-		log.Printf("🔍 PROCESSOR DEBUG: Overall sentiment determined as: positive")
-		return "positive", positivePercent, negativePercent
-	} else if negativePercent > positivePercent && negativePercent > neutralPercent {
-		log.Printf("🔍 PROCESSOR DEBUG: Overall sentiment determined as: negative")
-		return "negative", positivePercent, negativePercent
-	}
-	log.Printf("🔍 PROCESSOR DEBUG: Overall sentiment determined as: neutral")
-	return "neutral", positivePercent, negativePercent
-}
 
 // getTopPosts gets the top N posts by engagement score
 func (h *ProcessorHandler) getTopPosts(posts []state.Post, n int) []state.Post {
