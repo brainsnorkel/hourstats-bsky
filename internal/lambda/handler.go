@@ -192,39 +192,3 @@ func (h *HourStatsAnalyzer) calculateOverallSentiment(posts []analyzer.AnalyzedP
 	return sentimentCategory, netSentimentPercentage
 }
 
-// getEmotionFromSentiment selects an appropriate emotion based on sentiment and count
-func (h *HourStatsAnalyzer) getEmotionFromSentiment(sentiment string, count, total int) string {
-	percentage := float64(count) / float64(total) * 100
-
-	// Define emotions based on sentiment and intensity
-	positiveEmotions := []string{"passionate", "excited", "thrilled", "enthusiastic", "optimistic", "hopeful", "cheerful", "upbeat", "vibrant", "energetic"}
-	negativeEmotions := []string{"concerned", "worried", "frustrated", "disappointed", "anxious", "troubled", "uneasy", "pessimistic", "gloomy", "melancholy"}
-	neutralEmotions := []string{"steady", "calm", "balanced", "composed", "stable", "measured", "collected", "serene", "tranquil", "peaceful"}
-
-	var emotions []string
-	switch sentiment {
-	case "positive":
-		emotions = positiveEmotions
-	case "negative":
-		emotions = negativeEmotions
-	case "neutral":
-		emotions = neutralEmotions
-	default:
-		return "neutral"
-	}
-
-	// Select emotion based on percentage dominance
-	var selectedEmotion string
-	if percentage >= 80 {
-		selectedEmotion = emotions[0] // Strong emotion
-	} else if percentage >= 60 {
-		selectedEmotion = emotions[1] // Moderate emotion
-	} else if percentage >= 40 {
-		selectedEmotion = emotions[2] // Mild emotion
-	} else {
-		selectedEmotion = emotions[3] // Very mild emotion
-	}
-
-	log.Printf("Selected emotion '%s' for %s sentiment (%d/%d posts, %.1f%%)", selectedEmotion, sentiment, count, total, percentage)
-	return selectedEmotion
-}

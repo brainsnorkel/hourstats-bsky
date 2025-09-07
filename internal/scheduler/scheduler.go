@@ -156,38 +156,6 @@ func (s *Scheduler) CalculateOverallSentiment(posts []analyzer.AnalyzedPost) (st
 	return sentimentCategory, netSentimentPercentage
 }
 
-func (s *Scheduler) getEmotionFromSentiment(sentiment string, count int, total int) string {
-	emotions := map[string][]string{
-		"positive": {"passionate", "enthusiastic", "optimistic", "confident", "inspired", "excited", "hopeful", "energetic", "upbeat", "cheerful"},
-		"negative": {"anxious", "pessimistic", "uncertain", "confused", "overwhelmed", "worried", "frustrated", "disappointed", "concerned", "troubled"},
-		"neutral":  {"contemplative", "analytical", "curious", "observant", "reflective", "thoughtful", "measured", "balanced", "calm", "steady"},
-	}
-
-	// Calculate the percentage of posts with this sentiment
-	percentage := float64(count) / float64(total) * 100
-
-	// Select emotion based on intensity (percentage of posts)
-	emotionList, exists := emotions[sentiment]
-	if !exists || len(emotionList) == 0 {
-		return "neutral"
-	}
-
-	// Choose emotion based on how dominant the sentiment is
-	var selectedEmotion string
-	if percentage >= 80 {
-		// Very dominant sentiment - use strong emotions
-		selectedEmotion = emotionList[0]
-	} else if percentage >= 60 {
-		// Moderately dominant - use middle emotions
-		selectedEmotion = emotionList[len(emotionList)/2]
-	} else {
-		// Less dominant - use milder emotions
-		selectedEmotion = emotionList[len(emotionList)-1]
-	}
-
-	log.Printf("Selected emotion '%s' for %s sentiment (%d/%d posts, %.1f%%)", selectedEmotion, sentiment, count, total, percentage)
-	return selectedEmotion
-}
 
 func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []analyzer.AnalyzedPost {
 	// Sort by engagement score (replies + likes + reposts + sentiment boost)
