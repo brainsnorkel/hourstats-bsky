@@ -47,7 +47,7 @@ func main() {
 	// Generate sparklines with different configurations
 	for i, config := range configs {
 		fmt.Printf("\n🎨 Generating %s...\n", config.name)
-		
+
 		generator := sparkline.NewSparklineGenerator(config.config)
 		imageData, err := generator.GenerateSentimentSparkline(dataPoints)
 		if err != nil {
@@ -80,11 +80,11 @@ func generateDemoData() []state.SentimentDataPoint {
 
 	// Create a realistic 48-hour sentiment pattern that shows different trends
 	patterns := []struct {
-		startHour int
-		endHour   int
-		description string
+		startHour     int
+		endHour       int
+		description   string
 		baseSentiment float64
-		trend string
+		trend         string
 	}{
 		{0, 8, "Night/Early Morning (Low Activity)", -15, "gradual_improvement"},
 		{8, 16, "Morning/Afternoon (High Activity)", 20, "peak_then_decline"},
@@ -121,7 +121,7 @@ func generateDemoData() []state.SentimentDataPoint {
 			}
 
 			// Add realistic noise
-			noise := float64((hour%7-3) * 3)
+			noise := float64((hour%7 - 3) * 3)
 			sentiment += noise
 
 			// Clamp to range
@@ -150,8 +150,8 @@ func generateDemoData() []state.SentimentDataPoint {
 			}
 
 			dataPoint := state.SentimentDataPoint{
-				RunID:               fmt.Sprintf("demo-run-%d", hour),
-				Timestamp:           timestamp,
+				RunID:                fmt.Sprintf("demo-run-%d", hour),
+				Timestamp:            timestamp,
 				AverageCompoundScore: sentiment / 100.0,
 				NetSentimentPercent:  sentiment,
 				SentimentCategory:    category,

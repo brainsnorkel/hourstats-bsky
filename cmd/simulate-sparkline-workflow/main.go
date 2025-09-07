@@ -144,7 +144,7 @@ func generateWorkflowTestData() []state.SentimentDataPoint {
 		}
 
 		// Add some realistic noise
-		noise := float64((i%5-2) * 4)
+		noise := float64((i%5 - 2) * 4)
 		sentiment += noise
 
 		// Clamp to reasonable range
@@ -173,8 +173,8 @@ func generateWorkflowTestData() []state.SentimentDataPoint {
 		}
 
 		dataPoint := state.SentimentDataPoint{
-			RunID:               fmt.Sprintf("workflow-run-%d", i),
-			Timestamp:           timestamp,
+			RunID:                fmt.Sprintf("workflow-run-%d", i),
+			Timestamp:            timestamp,
 			AverageCompoundScore: sentiment / 100.0,
 			NetSentimentPercent:  sentiment,
 			SentimentCategory:    category,

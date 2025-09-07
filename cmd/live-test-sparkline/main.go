@@ -197,7 +197,7 @@ func generateTestData() []state.SentimentDataPoint {
 		}
 
 		// Add some random variation
-		variation := float64((i%3-1) * 5) // -5, 0, or +5
+		variation := float64((i%3 - 1) * 5) // -5, 0, or +5
 		sentiment := baseSentiment + variation
 
 		// Clamp to reasonable range
@@ -218,8 +218,8 @@ func generateTestData() []state.SentimentDataPoint {
 		}
 
 		dataPoint := state.SentimentDataPoint{
-			RunID:               fmt.Sprintf("test-run-%d", i),
-			Timestamp:           timestamp,
+			RunID:                fmt.Sprintf("test-run-%d", i),
+			Timestamp:            timestamp,
 			AverageCompoundScore: sentiment / 100.0,
 			NetSentimentPercent:  sentiment,
 			SentimentCategory:    category,
@@ -269,7 +269,7 @@ func generateRealisticData() []state.SentimentDataPoint {
 			}
 
 			// Add some realistic noise
-			noise := float64((hour%5-2) * 3)
+			noise := float64((hour%5 - 2) * 3)
 			sentiment += noise
 
 			// Clamp to range
@@ -290,8 +290,8 @@ func generateRealisticData() []state.SentimentDataPoint {
 			}
 
 			dataPoint := state.SentimentDataPoint{
-				RunID:               fmt.Sprintf("realistic-run-%d", hour),
-				Timestamp:           timestamp,
+				RunID:                fmt.Sprintf("realistic-run-%d", hour),
+				Timestamp:            timestamp,
 				AverageCompoundScore: sentiment / 100.0,
 				NetSentimentPercent:  sentiment,
 				SentimentCategory:    category,
@@ -325,8 +325,8 @@ func generateExtremeData() []state.SentimentDataPoint {
 		}
 
 		dataPoint := state.SentimentDataPoint{
-			RunID:               fmt.Sprintf("extreme-run-%d", i),
-			Timestamp:           timestamp,
+			RunID:                fmt.Sprintf("extreme-run-%d", i),
+			Timestamp:            timestamp,
 			AverageCompoundScore: value / 100.0,
 			NetSentimentPercent:  value,
 			SentimentCategory:    category,
@@ -349,8 +349,8 @@ func generateLargeDataset() []state.SentimentDataPoint {
 		timestamp := now.Add(-time.Duration(minutesAgo) * time.Minute)
 
 		// Create a sine wave pattern with noise
-		sineValue := math.Sin(float64(i) * math.Pi / 24) * 50
-		noise := float64((i%7-3) * 10)
+		sineValue := math.Sin(float64(i)*math.Pi/24) * 50
+		noise := float64((i%7 - 3) * 10)
 		sentiment := sineValue + noise
 
 		// Clamp to range
@@ -370,8 +370,8 @@ func generateLargeDataset() []state.SentimentDataPoint {
 		}
 
 		dataPoint := state.SentimentDataPoint{
-			RunID:               fmt.Sprintf("large-run-%d", i),
-			Timestamp:           timestamp,
+			RunID:                fmt.Sprintf("large-run-%d", i),
+			Timestamp:            timestamp,
 			AverageCompoundScore: sentiment / 100.0,
 			NetSentimentPercent:  sentiment,
 			SentimentCategory:    category,

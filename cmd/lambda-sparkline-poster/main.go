@@ -102,11 +102,9 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 
 	if len(dataPoints) < 2 {
 		log.Printf("Insufficient sentiment data for sparkline (got %d points, need at least 2)", len(dataPoints))
-		return Response{
-			StatusCode: 200,
-			Body:       "Insufficient data for sparkline",
-			Posted:     false,
-		}, nil
+		
+		// Post a message about insufficient data instead of failing silently
+		return h.postInsufficientDataMessage(ctx, len(dataPoints))
 	}
 
 	// Generate sparkline image
@@ -233,12 +231,65 @@ func (h *SparklinePosterHandler) uploadImageToS3(ctx context.Context, imageData 
 	return imageURL, nil
 }
 
+// postInsufficientDataMessage posts a message about insufficient data
+func (h *SparklinePosterHandler) postInsufficientDataMessage(ctx context.Context, dataPointCount int) (Response, error) {
+	// Get Bluesky credentials
+	handle, password, err := h.getBlueskyCredentials(ctx)
+	if err != nil {
+		log.Printf("Failed to get Bluesky credentials: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to get credentials: " + err.Error(),
+		}, err
+	}
+
+	// Create Bluesky client
+	blueskyClient := client.New(handle, password)
+	if err := blueskyClient.Authenticate(); err != nil {
+		log.Printf("Failed to authenticate with Bluesky: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to authenticate: " + err.Error(),
+		}, err
+	}
+
+	// Create appropriate message based on data availability
+	var message string
+	if dataPointCount == 0 {
+		message = "📊 Building sentiment history...\n\n" +
+			"⏳ Sparkline charts will be available after collecting 48 hours of data.\n" +
+			"📈 First chart expected in ~24-48 hours.\n\n" +
+			"💡 In the meantime, check out the hourly sentiment summaries above!"
+	} else {
+		message = fmt.Sprintf("📊 Building sentiment history...\n\n"+
+			"⏳ Sparkline charts will be available after collecting 48 hours of data.\n"+
+			"📈 Currently have %d data points, need 2+ for charts.\n\n"+
+			"💡 In the meantime, check out the hourly sentiment summaries above!", dataPointCount)
+	}
+
+	// Post the message
+	if err := blueskyClient.PostWithFacets(ctx, message, nil); err != nil {
+		log.Printf("Failed to post insufficient data message: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to post message: " + err.Error(),
+		}, err
+	}
+
+	log.Printf("Posted insufficient data message (data points: %d)", dataPointCount)
+	return Response{
+		StatusCode: 200,
+		Body:       "Insufficient data message posted",
+		Posted:     true,
+	}, nil
+}
+
 // postSparklineToBluesky posts the sparkline to Bluesky
 func (h *SparklinePosterHandler) postSparklineToBluesky(ctx context.Context, client *client.BlueskyClient, text, imageURL string) error {
 	// For now, we'll post a text-only version with the image URL
 	// In a full implementation, we'd need to implement image embedding in the Bluesky client
 	postText := fmt.Sprintf("%s\n\n📈 View chart: %s", text, imageURL)
-
+	
 	return client.PostWithFacets(ctx, postText, nil)
 }
 
