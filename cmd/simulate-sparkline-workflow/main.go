@@ -187,28 +187,3 @@ func generateWorkflowTestData() []state.SentimentDataPoint {
 	return dataPoints
 }
 
-// Additional utility function to show what the actual Lambda workflow would look like
-func showLambdaWorkflow() {
-	fmt.Println("\n🔧 Actual Lambda Workflow:")
-	fmt.Println("=========================")
-	fmt.Println("1. 📊 Analyzer Lambda:")
-	fmt.Println("   - Analyzes posts and calculates sentiment")
-	fmt.Println("   - Stores sentiment data point in DynamoDB")
-	fmt.Println("   - Continues with normal analysis workflow")
-	fmt.Println("")
-	fmt.Println("2. 📝 Poster Lambda:")
-	fmt.Println("   - Posts main sentiment summary")
-	fmt.Println("   - Triggers sparkline poster Lambda (async)")
-	fmt.Println("")
-	fmt.Println("3. 📈 Sparkline Poster Lambda:")
-	fmt.Println("   - Queries 48 hours of sentiment data from DynamoDB")
-	fmt.Println("   - Generates sparkline PNG image")
-	fmt.Println("   - Uploads image to S3")
-	fmt.Println("   - Posts sparkline to Bluesky with image URL")
-	fmt.Println("")
-	fmt.Println("4. 🗄️ Infrastructure:")
-	fmt.Println("   - DynamoDB table: hourstats-sentiment-history")
-	fmt.Println("   - S3 bucket: hourstats-sparkline-images")
-	fmt.Println("   - TTL: 7 days for sentiment data")
-	fmt.Println("   - Public read access for images")
-}

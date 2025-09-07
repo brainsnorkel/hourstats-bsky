@@ -281,7 +281,7 @@ func (h *PosterHandler) triggerSparklinePoster(ctx context.Context, runID string
 	// For now, we'll just log that we would trigger the sparkline poster
 	// In a full implementation, we'd invoke the sparkline poster Lambda function
 	log.Printf("Would trigger sparkline poster for run: %s", runID)
-	
+
 	// TODO: Implement actual Lambda invocation
 	// This would use the AWS Lambda client to invoke the sparkline-poster function
 	// with the appropriate payload:
@@ -290,16 +290,16 @@ func (h *PosterHandler) triggerSparklinePoster(ctx context.Context, runID string
 	//     "analysisIntervalMinutes": analysisIntervalMinutes,
 	//     "status": "completed",
 	// }
-	// 
+	//
 	// _, err := lambdaClient.Invoke(ctx, &lambda.InvokeInput{
 	//     FunctionName: aws.String("hourstats-sparkline-poster"),
 	//     Payload:      payloadBytes,
 	// })
-	
+
 	// For now, we'll simulate a delay to allow sentiment data to be stored
 	// In production, this would be handled by the actual Lambda invocation
 	time.Sleep(5 * time.Second)
-	
+
 	return nil
 }
 

@@ -30,7 +30,7 @@ func getMoodWord100(netSentiment float64) string {
 func normalCurveMapping(x float64) int {
 	// Use a more balanced approach to ensure better distribution
 	// Apply curve compression only in the middle range, keep extremes more linear
-	
+
 	if x < 0.3 {
 		// Low values: more linear mapping to preserve extreme negative words
 		return int(x * 100 * 1.2) // Slight expansion

@@ -97,7 +97,7 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 
 	if len(dataPoints) < 2 {
 		log.Printf("Insufficient sentiment data for sparkline (got %d points, need at least 2)", len(dataPoints))
-		
+
 		// Post a message about insufficient data instead of failing silently
 		return h.postInsufficientDataMessage(ctx, len(dataPoints))
 	}
@@ -197,7 +197,6 @@ func (h *SparklinePosterHandler) getBlueskyCredentials(ctx context.Context) (str
 	return handle, password, nil
 }
 
-
 // postInsufficientDataMessage posts a message about insufficient data
 func (h *SparklinePosterHandler) postInsufficientDataMessage(ctx context.Context, dataPointCount int) (Response, error) {
 	// Get Bluesky credentials
@@ -250,7 +249,6 @@ func (h *SparklinePosterHandler) postInsufficientDataMessage(ctx context.Context
 		Posted:     true,
 	}, nil
 }
-
 
 func main() {
 	ctx := context.Background()

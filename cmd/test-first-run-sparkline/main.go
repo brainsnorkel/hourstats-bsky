@@ -15,29 +15,29 @@ func main() {
 
 	// Simulate the first run scenario
 	fmt.Println("\n📊 Scenario: First run with no historical data")
-	
+
 	// Create a mock sentiment history manager that returns empty data
 	mockHistoryManager := &MockSentimentHistoryManager{}
-	
+
 	// Create sparkline generator
 	generator := sparkline.NewSparklineGenerator(nil)
-	
+
 	// Test the sparkline poster logic
 	result := testSparklinePosterLogic(mockHistoryManager, generator)
-	
+
 	fmt.Printf("\n🎯 Result: %s\n", result)
-	
+
 	// Test with some historical data
 	fmt.Println("\n📊 Scenario: Second run with some historical data")
-	
+
 	mockHistoryManagerWithData := &MockSentimentHistoryManager{
 		hasData: true,
 	}
-	
+
 	result2 := testSparklinePosterLogic(mockHistoryManagerWithData, generator)
-	
+
 	fmt.Printf("\n🎯 Result: %s\n", result2)
-	
+
 	// Show the recommended solution
 	fmt.Println("\n💡 Recommended Solution:")
 	showRecommendedSolution()
@@ -45,27 +45,27 @@ func main() {
 
 func testSparklinePosterLogic(historyManager *MockSentimentHistoryManager, generator *sparkline.SparklineGenerator) string {
 	ctx := context.Background()
-	
+
 	// Simulate the sparkline poster logic
 	fmt.Println("  📈 Getting 48 hours of sentiment data...")
 	dataPoints, err := historyManager.GetSentimentHistory(ctx, 48*time.Hour)
 	if err != nil {
 		return fmt.Sprintf("❌ Failed to get sentiment history: %v", err)
 	}
-	
+
 	fmt.Printf("  📊 Retrieved %d data points\n", len(dataPoints))
-	
+
 	if len(dataPoints) < 2 {
 		return fmt.Sprintf("⚠️  Insufficient sentiment data for sparkline (got %d points, need at least 2)", len(dataPoints))
 	}
-	
+
 	// Generate sparkline image
 	fmt.Println("  🎨 Generating sparkline image...")
 	imageData, err := generator.GenerateSentimentSparkline(dataPoints)
 	if err != nil {
 		return fmt.Sprintf("❌ Failed to generate sparkline: %v", err)
 	}
-	
+
 	return fmt.Sprintf("✅ Generated sparkline successfully (%d bytes)", len(imageData))
 }
 
@@ -79,27 +79,27 @@ func (m *MockSentimentHistoryManager) GetSentimentHistory(ctx context.Context, d
 		// Simulate empty data on first run
 		return []state.SentimentDataPoint{}, nil
 	}
-	
+
 	// Simulate some historical data
 	now := time.Now()
 	var dataPoints []state.SentimentDataPoint
-	
+
 	for i := 0; i < 5; i++ {
 		hoursAgo := 48 - (i * 12)
 		timestamp := now.Add(-time.Duration(hoursAgo) * time.Hour)
-		
+
 		dataPoint := state.SentimentDataPoint{
-			RunID:               fmt.Sprintf("mock-run-%d", i),
-			Timestamp:           timestamp,
+			RunID:                fmt.Sprintf("mock-run-%d", i),
+			Timestamp:            timestamp,
 			AverageCompoundScore: float64(i-2) * 0.2,
 			NetSentimentPercent:  float64(i-2) * 20,
 			SentimentCategory:    "neutral",
 			TotalPosts:           100 + i*10,
 		}
-		
+
 		dataPoints = append(dataPoints, dataPoint)
 	}
-	
+
 	return dataPoints, nil
 }
 
