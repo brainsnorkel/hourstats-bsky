@@ -3,14 +3,17 @@ package formatter
 import "math"
 
 // getMoodWord100 maps sentiment percentage to one of 100 descriptive words
-// providing much more nuanced emotional expression than the current 18-word system
+// using a normal curve distribution for more realistic sentiment mapping
 func getMoodWord100(netSentiment float64) string {
 	// Clamp sentiment to -100 to +100 range
 	sentiment := math.Max(-100, math.Min(100, netSentiment))
 
-	// Convert to 0-100 scale for array indexing
-	// -100% becomes 0, 0% becomes 50, +100% becomes 100
-	index := int((sentiment + 100) / 2)
+	// Convert to 0-1 range for normal distribution calculation
+	// -100% becomes 0, 0% becomes 0.5, +100% becomes 1
+	normalizedSentiment := (sentiment + 100) / 200
+
+	// Apply normal curve mapping with power 2.5
+	index := normalCurveMapping(normalizedSentiment)
 
 	// Ensure index is within bounds
 	if index < 0 {
@@ -20,6 +23,24 @@ func getMoodWord100(netSentiment float64) string {
 	}
 
 	return sentimentWords100[index]
+}
+
+// normalCurveMapping converts a linear 0-1 input to a normal curve distribution
+// This concentrates more values in the middle (0.3-0.7 range) and fewer at extremes
+func normalCurveMapping(x float64) int {
+	// Use a power function to create the curve
+	// Higher powers create more concentration in the middle
+	power := 2.5 // Adjust this to control curve steepness
+
+	if x < 0.5 {
+		// Left side: compress toward middle
+		compressed := math.Pow(2*x, power) / 2
+		return int(compressed * 100)
+	} else {
+		// Right side: compress toward middle
+		compressed := 1 - math.Pow(2*(1-x), power)/2
+		return int(compressed * 100)
+	}
 }
 
 // 100 carefully selected words representing the full emotional spectrum

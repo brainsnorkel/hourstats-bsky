@@ -79,30 +79,16 @@ func (h *HourStatsAnalyzer) RunAnalysis(ctx context.Context) (*AnalysisResult, e
 	// Get top 5 posts
 	topPosts := h.getTopPosts(analyzedPosts, h.config.Settings.TopPostsCount)
 
-	// Calculate overall sentiment from all analyzed posts
-	overallSentiment := h.calculateOverallSentiment(analyzedPosts)
-	
-	// Calculate sentiment percentages from all analyzed posts
-	positiveCount := 0
-	negativeCount := 0
-	for _, post := range analyzedPosts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		}
-	}
+	// Calculate overall sentiment from all analyzed posts using compound scores
+	overallSentiment, netSentimentPercentage := h.calculateOverallSentiment(analyzedPosts)
 	totalPosts := len(analyzedPosts)
-	positivePercent := float64(positiveCount) / float64(totalPosts) * 100
-	negativePercent := float64(negativeCount) / float64(totalPosts) * 100
 
 	// Convert back to client posts for posting
 	clientTopPosts := h.convertToClientPosts(topPosts)
 
 	// Post the results (skip if dry run)
 	if !h.config.Settings.DryRun {
-		if err := h.client.PostTrendingSummary(clientTopPosts, overallSentiment, h.config.Settings.AnalysisIntervalMinutes, totalPosts, positivePercent, negativePercent); err != nil {
+		if err := h.client.PostTrendingSummary(clientTopPosts, overallSentiment, h.config.Settings.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage); err != nil {
 			return &AnalysisResult{
 				Success:      false,
 				ErrorMessage: "Failed to post trending summary: " + err.Error(),
@@ -175,71 +161,34 @@ func (h *HourStatsAnalyzer) getTopPosts(posts []analyzer.AnalyzedPost, count int
 }
 
 // calculateOverallSentiment calculates the overall sentiment from top posts
-func (h *HourStatsAnalyzer) calculateOverallSentiment(posts []analyzer.AnalyzedPost) string {
+func (h *HourStatsAnalyzer) calculateOverallSentiment(posts []analyzer.AnalyzedPost) (string, float64) {
 	if len(posts) == 0 {
-		return "neutral"
+		return "neutral", 0.0
 	}
 
-	// Count sentiment categories
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
-
+	var totalCompoundScore float64
 	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		case "neutral":
-			neutralCount++
-		}
+		totalCompoundScore += post.SentimentScore // This is already the compound score
 	}
 
-	// Determine dominant sentiment
-	total := len(posts)
-	if positiveCount > negativeCount && positiveCount > neutralCount {
-		return h.getEmotionFromSentiment("positive", positiveCount, total)
-	} else if negativeCount > positiveCount && negativeCount > neutralCount {
-		return h.getEmotionFromSentiment("negative", negativeCount, total)
+	averageCompoundScore := totalCompoundScore / float64(len(posts))
+
+	// Map compound score to category for backward compatibility
+	var sentimentCategory string
+	if averageCompoundScore >= 0.3 {
+		sentimentCategory = "positive"
+	} else if averageCompoundScore <= -0.3 {
+		sentimentCategory = "negative"
 	} else {
-		return h.getEmotionFromSentiment("neutral", neutralCount, total)
+		sentimentCategory = "neutral"
 	}
+
+	// Scale to percentage range for 100-word system
+	netSentimentPercentage := averageCompoundScore * 100.0
+
+	log.Printf("Sentiment analysis: Average compound score: %.3f, Net sentiment: %.1f%%, Category: %s",
+		averageCompoundScore, netSentimentPercentage, sentimentCategory)
+
+	return sentimentCategory, netSentimentPercentage
 }
 
-// getEmotionFromSentiment selects an appropriate emotion based on sentiment and count
-func (h *HourStatsAnalyzer) getEmotionFromSentiment(sentiment string, count, total int) string {
-	percentage := float64(count) / float64(total) * 100
-
-	// Define emotions based on sentiment and intensity
-	positiveEmotions := []string{"passionate", "excited", "thrilled", "enthusiastic", "optimistic", "hopeful", "cheerful", "upbeat", "vibrant", "energetic"}
-	negativeEmotions := []string{"concerned", "worried", "frustrated", "disappointed", "anxious", "troubled", "uneasy", "pessimistic", "gloomy", "melancholy"}
-	neutralEmotions := []string{"steady", "calm", "balanced", "composed", "stable", "measured", "collected", "serene", "tranquil", "peaceful"}
-
-	var emotions []string
-	switch sentiment {
-	case "positive":
-		emotions = positiveEmotions
-	case "negative":
-		emotions = negativeEmotions
-	case "neutral":
-		emotions = neutralEmotions
-	default:
-		return "neutral"
-	}
-
-	// Select emotion based on percentage dominance
-	var selectedEmotion string
-	if percentage >= 80 {
-		selectedEmotion = emotions[0] // Strong emotion
-	} else if percentage >= 60 {
-		selectedEmotion = emotions[1] // Moderate emotion
-	} else if percentage >= 40 {
-		selectedEmotion = emotions[2] // Mild emotion
-	} else {
-		selectedEmotion = emotions[3] // Very mild emotion
-	}
-
-	log.Printf("Selected emotion '%s' for %s sentiment (%d/%d posts, %.1f%%)", selectedEmotion, sentiment, count, total, percentage)
-	return selectedEmotion
-}

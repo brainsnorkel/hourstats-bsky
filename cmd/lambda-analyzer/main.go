@@ -83,7 +83,7 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 	log.Printf("🔍 ANALYZER DEBUG: Using cutoff time from DynamoDB: %s", runState.CutoffTime.Format("2006-01-02 15:04:05 UTC"))
 	filteredPosts := h.filterPostsByCutoffTime(allPosts, runState.CutoffTime)
 	log.Printf("🔍 ANALYZER DEBUG: After time filtering: %d posts (from %d original)", len(filteredPosts), len(allPosts))
-	analyzedPosts, overallSentiment, err := h.analyzePosts(filteredPosts)
+	analyzedPosts, overallSentiment, netSentimentPercentage, err := h.analyzePosts(filteredPosts)
 	if err != nil {
 		log.Printf("Failed to analyze posts: %v", err)
 		return Response{
@@ -94,6 +94,7 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 
 	// Update state with analysis results
 	runState.OverallSentiment = overallSentiment
+	runState.NetSentimentPercentage = netSentimentPercentage
 	runState.Step = "analyzer"
 	runState.Status = "analyzed"
 
@@ -114,7 +115,7 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 }
 
 // analyzePosts analyzes sentiment and calculates engagement scores
-func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string, error) {
+func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string, float64, error) {
 	log.Printf("Analyzing %d posts", len(posts))
 
 	// Convert state posts to analyzer posts
@@ -134,11 +135,11 @@ func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string
 	// Analyze posts
 	analyzedPosts, err := h.sentimentAnalyzer.AnalyzePosts(analyzerPosts)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to analyze posts: %w", err)
+		return nil, "", 0.0, fmt.Errorf("failed to analyze posts: %w", err)
 	}
 
-	// Calculate overall sentiment
-	overallSentiment := h.calculateOverallSentiment(analyzedPosts)
+	// Calculate overall sentiment using compound scores
+	overallSentiment, netSentimentPercentage := h.calculateOverallSentiment(analyzedPosts)
 
 	// Convert back to state posts with analysis results
 	statePosts := make([]state.Post, len(analyzedPosts))
@@ -162,48 +163,39 @@ func (h *AnalyzerHandler) analyzePosts(posts []state.Post) ([]state.Post, string
 		}
 	}
 
-	return statePosts, overallSentiment, nil
+	return statePosts, overallSentiment, netSentimentPercentage, nil
 }
 
-// calculateOverallSentiment calculates the overall sentiment from analyzed posts
-func (h *AnalyzerHandler) calculateOverallSentiment(posts []analyzer.AnalyzedPost) string {
-	positiveCount := 0
-	negativeCount := 0
-	neutralCount := 0
+// calculateOverallSentiment calculates the overall sentiment from analyzed posts using compound scores
+func (h *AnalyzerHandler) calculateOverallSentiment(posts []analyzer.AnalyzedPost) (string, float64) {
+	if len(posts) == 0 {
+		return "neutral", 0.0
+	}
 
+	var totalCompoundScore float64
 	for _, post := range posts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		case "neutral":
-			neutralCount++
-		}
+		totalCompoundScore += post.SentimentScore // This is already the compound score
 	}
 
-	total := len(posts)
-	if total == 0 {
-		return "neutral"
+	averageCompoundScore := totalCompoundScore / float64(len(posts))
+
+	// Map compound score to category for backward compatibility
+	var sentimentCategory string
+	if averageCompoundScore >= 0.3 {
+		sentimentCategory = "positive"
+	} else if averageCompoundScore <= -0.3 {
+		sentimentCategory = "negative"
+	} else {
+		sentimentCategory = "neutral"
 	}
 
-	positivePercent := float64(positiveCount) / float64(total)
-	negativePercent := float64(negativeCount) / float64(total)
-	neutralPercent := float64(neutralCount) / float64(total)
+	// Scale to percentage range for 100-word system
+	netSentimentPercentage := averageCompoundScore * 100.0
 
-	log.Printf("🔍 ANALYZER DEBUG: Sentiment counts - Positive: %d (%.1f%%), Negative: %d (%.1f%%), Neutral: %d (%.1f%%)",
-		positiveCount, positivePercent*100, negativeCount, negativePercent*100, neutralCount, neutralPercent*100)
+	log.Printf("🔍 ANALYZER DEBUG: Average compound score: %.3f, Net sentiment: %.1f%%, Sentiment: %s",
+		averageCompoundScore, netSentimentPercentage, sentimentCategory)
 
-	// Determine dominant sentiment
-	if positivePercent > negativePercent && positivePercent > neutralPercent {
-		log.Printf("🔍 ANALYZER DEBUG: Overall sentiment determined as: positive")
-		return "positive"
-	} else if negativePercent > positivePercent && negativePercent > neutralPercent {
-		log.Printf("🔍 ANALYZER DEBUG: Overall sentiment determined as: negative")
-		return "negative"
-	}
-	log.Printf("🔍 ANALYZER DEBUG: Overall sentiment determined as: neutral")
-	return "neutral"
+	return sentimentCategory, netSentimentPercentage
 }
 
 // filterPostsByCutoffTime filters posts to only include those after the cutoff time

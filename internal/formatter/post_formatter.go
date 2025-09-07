@@ -17,11 +17,13 @@ type Post struct {
 }
 
 // FormatPostContent generates the post content that will be posted to Bluesky
-func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, positivePercent, negativePercent float64) string {
-	// Calculate net sentiment (positive - negative)
-	netSentiment := positivePercent - negativePercent
+func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, averageCompoundScore float64) string {
+	// Scale compound score to percentage range for 100-word system
+	// Vader compound score: -1.0 to +1.0
+	// Scale to percentage: -100% to +100%
+	netSentiment := averageCompoundScore * 100.0
 
-	// Get descriptive word for sentiment using 100-word scale
+	// Get descriptive word for sentiment using 100-word scale with normal curve
 	moodWord := getMoodWord100(netSentiment)
 
 	// Generate the post content with new format (mood word as hashtag)
@@ -36,7 +38,6 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 
 	return content
 }
-
 
 // getSentimentSymbol returns the symbol for sentiment (+ for positive, - for negative, x for neutral)
 func getSentimentSymbol(sentiment string) string {

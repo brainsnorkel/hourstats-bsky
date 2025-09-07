@@ -173,26 +173,15 @@ func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEv
 		}, err
 	}
 
-	// Calculate sentiment percentages from all posts
-	positiveCount := 0
-	negativeCount := 0
-	for _, post := range allPosts {
-		switch post.Sentiment {
-		case "positive":
-			positiveCount++
-		case "negative":
-			negativeCount++
-		}
-	}
+	// Use compound score from analyzer state
 	totalPosts := len(allPosts)
-	positivePercent := float64(positiveCount) / float64(totalPosts) * 100
-	negativePercent := float64(negativeCount) / float64(totalPosts) * 100
+	netSentimentPercentage := runState.NetSentimentPercentage
 
 	// Convert state posts to client posts
 	clientPosts := h.convertToClientPosts(runState.TopPosts)
 
-	// Post the summary
-	if err := blueskyClient.PostTrendingSummary(clientPosts, runState.OverallSentiment, event.AnalysisIntervalMinutes, totalPosts, positivePercent, negativePercent); err != nil {
+	// Post the summary using compound score
+	if err := blueskyClient.PostTrendingSummary(clientPosts, runState.OverallSentiment, event.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage); err != nil {
 		log.Printf("Failed to post summary: %v", err)
 		return Response{
 			StatusCode: 500,
