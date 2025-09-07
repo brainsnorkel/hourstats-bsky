@@ -32,7 +32,7 @@ func main() {
 
 	fmt.Printf("✅ Generated sparkline image: %s (%d bytes)\n", filename, len(imageData))
 	fmt.Printf("📊 Data points: %d\n", len(dataPoints))
-	fmt.Printf("📈 Time range: %s to %s\n", 
+	fmt.Printf("📈 Time range: %s to %s\n",
 		dataPoints[0].Timestamp.Format("2006-01-02 15:04:05"),
 		dataPoints[len(dataPoints)-1].Timestamp.Format("2006-01-02 15:04:05"))
 }
@@ -57,7 +57,7 @@ func generateTestData() []state.SentimentDataPoint {
 		}
 
 		// Add some random variation
-		variation := float64((i%3-1) * 5) // -5, 0, or +5
+		variation := float64((i%3 - 1) * 5) // -5, 0, or +5
 		sentiment := baseSentiment + variation
 
 		// Clamp to reasonable range
@@ -78,8 +78,8 @@ func generateTestData() []state.SentimentDataPoint {
 		}
 
 		dataPoint := state.SentimentDataPoint{
-			RunID:               fmt.Sprintf("test-run-%d", i),
-			Timestamp:           timestamp,
+			RunID:                fmt.Sprintf("test-run-%d", i),
+			Timestamp:            timestamp,
 			AverageCompoundScore: sentiment / 100.0,
 			NetSentimentPercent:  sentiment,
 			SentimentCategory:    category,

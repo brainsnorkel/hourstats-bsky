@@ -156,7 +156,7 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 	lastPoint := dataPoints[len(dataPoints)-1]
 	xFinal := x + (lastPoint.Timestamp.Sub(startTime).Seconds()/timeRange)*width
 	yFinal := y + height/2 - (lastPoint.NetSentimentPercent/100.0)*(height/2)
-	
+
 	var pointColor color.RGBA
 	if lastPoint.NetSentimentPercent > 10 {
 		pointColor = sg.config.PositiveLine
@@ -165,7 +165,7 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 	} else {
 		pointColor = sg.config.NeutralLine
 	}
-	
+
 	dc.SetColor(pointColor)
 	dc.DrawCircle(xFinal, yFinal, sg.config.PointRadius)
 	dc.Fill()
@@ -174,7 +174,7 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 // drawLabels draws time and sentiment labels
 func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64) {
 	dc.SetColor(sg.config.TextColor)
-	
+
 	// Load font (using default font for now)
 	if err := dc.LoadFontFace("", 12); err != nil {
 		// Fallback to default font - gg doesn't have SetFontSize, use LoadFontFace
@@ -202,7 +202,7 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 	if len(dataPoints) > 0 {
 		startLabel := dataPoints[0].Timestamp.Format("15:04")
 		endLabel := dataPoints[len(dataPoints)-1].Timestamp.Format("15:04")
-		
+
 		dc.DrawStringAnchored(startLabel, x, y+height+15, 0, 0)
 		dc.DrawStringAnchored(endLabel, x+width, y+height+15, 1, 0)
 	}

@@ -238,7 +238,7 @@ func (h *SparklinePosterHandler) postSparklineToBluesky(ctx context.Context, cli
 	// For now, we'll post a text-only version with the image URL
 	// In a full implementation, we'd need to implement image embedding in the Bluesky client
 	postText := fmt.Sprintf("%s\n\n📈 View chart: %s", text, imageURL)
-	
+
 	return client.PostWithFacets(ctx, postText, nil)
 }
 

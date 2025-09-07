@@ -27,8 +27,8 @@ type Response struct {
 
 // AnalyzerHandler handles the analyzer Lambda function
 type AnalyzerHandler struct {
-	stateManager           *state.StateManager
-	sentimentAnalyzer      *analyzer.SentimentAnalyzer
+	stateManager            *state.StateManager
+	sentimentAnalyzer       *analyzer.SentimentAnalyzer
 	sentimentHistoryManager *state.SentimentHistoryManager
 }
 
@@ -50,8 +50,8 @@ func NewAnalyzerHandler(ctx context.Context) (*AnalyzerHandler, error) {
 	sentimentAnalyzer := analyzer.New()
 
 	return &AnalyzerHandler{
-		stateManager:           stateManager,
-		sentimentAnalyzer:      sentimentAnalyzer,
+		stateManager:            stateManager,
+		sentimentAnalyzer:       sentimentAnalyzer,
 		sentimentHistoryManager: sentimentHistoryManager,
 	}, nil
 }
