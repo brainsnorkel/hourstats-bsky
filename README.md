@@ -40,6 +40,9 @@ Bluesky mood +16% from 1,041 posts in 1 minutes
 ## Project Status
 
 ✅ **Production Ready** - Multi-Lambda serverless architecture deployed and running on AWS
+✅ **Fully Automated** - EventBridge scheduling every 30 minutes with complete CI/CD pipeline
+✅ **Scalable** - Handles thousands of posts per analysis cycle with parallel processing
+✅ **Monitored** - Comprehensive logging and CloudWatch integration
 
 ## Features
 
@@ -241,7 +244,7 @@ The system uses DynamoDB to store and manage state across Lambda invocations:
 **Attributes**:
 - `status` (String): Current status (running, completed, failed)
 - `createdAt` (String): ISO timestamp of run creation
-- `ttl` (Number): TTL for automatic cleanup (7 days)
+- `ttl` (Number): TTL for automatic cleanup (2 days)
 
 **Global Secondary Index**: `status-index`
 - Hash key: `status`
@@ -346,43 +349,95 @@ The system uses DynamoDB to store and manage state across Lambda invocations:
 
 ### Testing
 
-Run the test suite:
+The project includes comprehensive testing at multiple levels:
+
+#### Unit Tests
 ```bash
+# Run all unit tests
 make test
+
+# Run specific package tests
+go test ./internal/analyzer/ -v
+go test ./cmd/lambda-orchestrator/ -v
 ```
 
-Run in dry-run mode (won't post to Bluesky):
+#### Integration Tests
 ```bash
-make dry-run
+# Test individual Lambda functions locally
+make test-lambdas
+
+# Test complete Step Functions workflow (requires AWS credentials)
+make test-workflow
+
+# Test multi-Lambda workflow with dry-run mode (requires AWS credentials)
+make test-multi-lambda
 ```
+
+#### Local Testing
+```bash
+# Dry-run mode (won't post to Bluesky)
+make dry-run
+
+# Full test with real posting (be careful!)
+make run
+```
+
+#### Test Coverage
+- **Sentiment Analysis**: Comprehensive tests for positive/negative/neutral detection
+- **Topic Extraction**: Tests for hashtag and keyword extraction
+- **Lambda Functions**: Unit tests for orchestrator and individual Lambda functions
+- **Workflow Testing**: End-to-end Step Functions workflow testing
+- **Integration Testing**: Full system testing with AWS services
+
+See [TESTING.md](TESTING.md) for detailed testing procedures and scenarios.
 
 ## Project Structure
 
 ```
 hourstats-bsky/
-├── cmd/
+├── cmd/                      # Application entry points and Lambda functions
 │   ├── trendjournal/         # Main application entry point (local testing)
 │   ├── lambda-orchestrator/  # Orchestrator Lambda function
 │   ├── lambda-fetcher/       # Fetcher Lambda function
 │   ├── lambda-analyzer/      # Analyzer Lambda function
 │   ├── lambda-aggregator/    # Aggregator Lambda function
-│   └── lambda-poster/        # Poster Lambda function
-├── internal/
+│   ├── lambda-poster/        # Poster Lambda function
+│   ├── lambda-processor/     # Legacy processor (deprecated)
+│   ├── local-test/           # Local testing utility
+│   └── query-runs/           # Query utility for analyzing runs
+├── internal/                 # Shared packages and business logic
 │   ├── client/               # Bluesky API client with adult content filtering
 │   ├── analyzer/             # Emotion-based sentiment analysis
+│   ├── formatter/            # Post formatting and display logic
 │   ├── scheduler/            # Analysis scheduling logic
 │   ├── config/               # Configuration management
+│   ├── lambda/               # Lambda-specific utilities
 │   └── state/                # DynamoDB state management
-├── terraform/
+├── terraform/                # Infrastructure as Code
 │   ├── main.tf               # AWS infrastructure definition
+│   ├── backend.tf            # Terraform backend configuration
+│   ├── state-backend.tf      # State backend configuration
 │   └── step-functions-definition.json  # Step Functions workflow
-├── .github/workflows/
-│   └── deploy-lambda.yml     # CI/CD pipeline
+├── .github/workflows/        # CI/CD pipeline
+│   └── deploy-lambda.yml     # GitHub Actions deployment
+├── scripts/                  # Utility scripts
+│   ├── deploy-production.sh  # Production deployment script
+│   └── query-runs.sh         # Query runs utility script
+├── docs/                     # Documentation
+│   └── CID_IMPLEMENTATION.md # CID implementation documentation
 ├── config.example.yaml       # Configuration template
 ├── Makefile                  # Build and run commands
+├── Makefile.lambda          # Lambda-specific build commands
 ├── CHANGELOG.md              # Project changelog
-└── README.md
+├── TESTING.md                # Testing documentation
+└── README.md                 # This file
 ```
+
+### Important Notes
+
+**cmd/ Directory**: The `cmd/` directory contains both source code (`.go` files) and compiled binaries (`bootstrap`, `main` executables). The compiled binaries are **NOT** checked into git and are built during the CI/CD process. Only the source code should be committed.
+
+**Binary Files**: Executable files like `bootstrap` and `main` in the cmd subdirectories are build artifacts and should be ignored by git. They are automatically generated during the build process.
 
 ## Development
 

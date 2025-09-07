@@ -26,6 +26,7 @@ type RunState struct {
 	TotalPostsRetrieved     int       `json:"totalPostsRetrieved" dynamodbav:"totalPostsRetrieved"`
 	HasMorePosts            bool      `json:"hasMorePosts" dynamodbav:"hasMorePosts"`
 	OverallSentiment        string    `json:"overallSentiment,omitempty" dynamodbav:"overallSentiment,omitempty"`
+	NetSentimentPercentage  float64   `json:"netSentimentPercentage,omitempty" dynamodbav:"netSentimentPercentage,omitempty"`
 	TopPosts                []Post    `json:"topPosts,omitempty" dynamodbav:"topPosts,omitempty"`
 	CreatedAt               time.Time `json:"createdAt" dynamodbav:"createdAt"`
 	UpdatedAt               time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
@@ -89,7 +90,7 @@ func NewStateManager(ctx context.Context, tableName string) (*StateManager, erro
 // CreateRun creates a new analysis run state
 func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisIntervalMinutes int) (*RunState, error) {
 	now := time.Now()
-	ttl := now.Add(7 * 24 * time.Hour).Unix() // 7 days TTL
+	ttl := now.Add(2 * 24 * time.Hour).Unix() // 2 days TTL
 
 	// Calculate cutoff time once for consistency across all processes
 	cutoffTime := now.Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
@@ -204,7 +205,7 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 				PostID:    fmt.Sprintf("%s#%d", runID, state.TotalPostsRetrieved+j),
 				Post:      posts[j],
 				CreatedAt: time.Now(),
-				TTL:       time.Now().Add(7 * 24 * time.Hour).Unix(), // 7 days TTL
+				TTL:       time.Now().Add(2 * 24 * time.Hour).Unix(), // 2 days TTL
 			}
 
 			item, err := attributevalue.MarshalMap(postItem)

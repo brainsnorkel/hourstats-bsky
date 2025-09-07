@@ -229,6 +229,8 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 
 	// Analyze sentiment for all posts
 	sentimentAnalyzer := analyzer.New()
+	var allAnalyzedPosts []analyzer.AnalyzedPost
+
 	for i := range deduplicatedPosts {
 		// Convert to analyzer.Post format
 		analyzerPost := analyzer.Post{
@@ -248,6 +250,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 			deduplicatedPosts[i].Sentiment = "neutral"
 		} else if len(analyzedPosts) > 0 {
 			deduplicatedPosts[i].Sentiment = analyzedPosts[0].Sentiment
+			allAnalyzedPosts = append(allAnalyzedPosts, analyzedPosts[0])
 		} else {
 			deduplicatedPosts[i].Sentiment = "neutral"
 		}
@@ -273,8 +276,8 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		topPosts = deduplicatedPosts[:5]
 	}
 
-	// Calculate overall sentiment and percentages
-	overallSentiment, positivePercent, negativePercent := m.calculateOverallSentimentWithPercentages(deduplicatedPosts)
+	// Calculate overall sentiment using compound scores
+	overallSentiment, netSentimentPercentage := m.calculateOverallSentimentWithCompoundScores(allAnalyzedPosts)
 
 	// Convert to formatter posts
 	formatterPosts := make([]formatter.Post, len(topPosts))
@@ -292,7 +295,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 	}
 
 	// Generate post content
-	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, len(allPosts), positivePercent, negativePercent)
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, len(allPosts), netSentimentPercentage)
 
 	// Calculate character count
 	charCount := len(postContent)
@@ -356,7 +359,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		}
 
 		// Post to Bluesky with facets and embed cards
-		err = blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, analysisIntervalMinutes, len(deduplicatedPosts), positivePercent, negativePercent)
+		err = blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, analysisIntervalMinutes, len(deduplicatedPosts), netSentimentPercentage)
 		if err != nil {
 			return fmt.Errorf("failed to post to Bluesky: %w", err)
 		}
@@ -458,6 +461,34 @@ func (m *MockLambdaClient) calculateOverallSentimentWithPercentages(posts []stat
 		return "negative", positivePercent, negativePercent
 	}
 	return "neutral", positivePercent, negativePercent
+}
+
+func (m *MockLambdaClient) calculateOverallSentimentWithCompoundScores(posts []analyzer.AnalyzedPost) (string, float64) {
+	if len(posts) == 0 {
+		return "neutral", 0.0
+	}
+
+	var totalCompoundScore float64
+	for _, post := range posts {
+		totalCompoundScore += post.SentimentScore // This is already the compound score
+	}
+
+	averageCompoundScore := totalCompoundScore / float64(len(posts))
+
+	// Map compound score to category for backward compatibility
+	var sentimentCategory string
+	if averageCompoundScore >= 0.3 {
+		sentimentCategory = "positive"
+	} else if averageCompoundScore <= -0.3 {
+		sentimentCategory = "negative"
+	} else {
+		sentimentCategory = "neutral"
+	}
+
+	// Scale to percentage range for 100-word system
+	netSentimentPercentage := averageCompoundScore * 100.0
+
+	return sentimentCategory, netSentimentPercentage
 }
 
 // fetchAllPostsInParallel fetches all posts using parallel API calls and internal loops

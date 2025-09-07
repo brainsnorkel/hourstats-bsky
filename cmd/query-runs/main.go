@@ -151,7 +151,7 @@ func analyzeRun(ctx context.Context, stateManager *state.StateManager, runID str
 
 	// Analyze posts (same logic as processor)
 	fmt.Println("🧠 Analyzing posts...")
-	analyzedPosts, overallSentiment, positivePercent, negativePercent, err := analyzePosts(filteredPosts)
+	analyzedPosts, overallSentiment, netSentimentPercentage, err := analyzePosts(filteredPosts)
 	if err != nil {
 		log.Fatalf("Failed to analyze posts: %v", err)
 	}
@@ -182,7 +182,7 @@ func analyzeRun(ctx context.Context, stateManager *state.StateManager, runID str
 		}
 	}
 
-	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, stats.AnalysisIntervalMinutes, len(filteredPosts), positivePercent, negativePercent)
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, stats.AnalysisIntervalMinutes, len(filteredPosts), netSentimentPercentage)
 	fmt.Println(postContent)
 	fmt.Println(strings.Repeat("=", 60))
 
@@ -222,7 +222,7 @@ func filterPostsByCutoffTime(posts []state.Post, cutoffTime time.Time) []state.P
 	return filteredPosts
 }
 
-func analyzePosts(posts []state.Post) ([]state.Post, string, float64, float64, error) {
+func analyzePosts(posts []state.Post) ([]state.Post, string, float64, error) {
 	// Convert state posts to analyzer posts
 	analyzerPosts := make([]analyzer.Post, len(posts))
 	for i, post := range posts {
@@ -241,11 +241,11 @@ func analyzePosts(posts []state.Post) ([]state.Post, string, float64, float64, e
 	sentimentAnalyzer := analyzer.New()
 	analyzedPosts, err := sentimentAnalyzer.AnalyzePosts(analyzerPosts)
 	if err != nil {
-		return nil, "", 0, 0, fmt.Errorf("failed to analyze posts: %w", err)
+		return nil, "", 0.0, fmt.Errorf("failed to analyze posts: %w", err)
 	}
 
-	// Calculate overall sentiment and percentages
-	overallSentiment, positivePercent, negativePercent := calculateOverallSentimentWithPercentages(analyzedPosts)
+	// Calculate overall sentiment using compound scores
+	overallSentiment, netSentimentPercentage := calculateOverallSentimentWithCompoundScores(analyzedPosts)
 
 	// Convert back to state posts with analysis results
 	statePosts := make([]state.Post, len(analyzedPosts))
@@ -263,9 +263,36 @@ func analyzePosts(posts []state.Post) ([]state.Post, string, float64, float64, e
 		}
 	}
 
-	return statePosts, overallSentiment, positivePercent, negativePercent, nil
+	return statePosts, overallSentiment, netSentimentPercentage, nil
 }
 
+func calculateOverallSentimentWithCompoundScores(posts []analyzer.AnalyzedPost) (string, float64) {
+	if len(posts) == 0 {
+		return "neutral", 0.0
+	}
+
+	var totalCompoundScore float64
+	for _, post := range posts {
+		totalCompoundScore += post.SentimentScore // This is already the compound score
+	}
+
+	averageCompoundScore := totalCompoundScore / float64(len(posts))
+
+	// Map compound score to category for backward compatibility
+	var sentimentCategory string
+	if averageCompoundScore >= 0.3 {
+		sentimentCategory = "positive"
+	} else if averageCompoundScore <= -0.3 {
+		sentimentCategory = "negative"
+	} else {
+		sentimentCategory = "neutral"
+	}
+
+	// Scale to percentage range for 100-word system
+	netSentimentPercentage := averageCompoundScore * 100.0
+
+	return sentimentCategory, netSentimentPercentage
+}
 
 func calculateOverallSentimentWithPercentages(posts []analyzer.AnalyzedPost) (string, float64, float64) {
 	positiveCount := 0
@@ -321,21 +348,21 @@ func getTopPosts(posts []state.Post, n int) []state.Post {
 // deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
 func deduplicatePostsByURI(posts []state.Post) []state.Post {
 	uriToPost := make(map[string]state.Post)
-	
+
 	for _, post := range posts {
 		// Skip posts with empty URIs
 		if post.URI == "" {
 			continue
 		}
-		
+
 		// Calculate engagement score for this post
 		currentEngagement := post.Likes + post.Reposts + post.Replies
-		
+
 		// Check if we've seen this URI before
 		if existingPost, exists := uriToPost[post.URI]; exists {
 			// Calculate engagement score for existing post
 			existingEngagement := existingPost.Likes + existingPost.Reposts + existingPost.Replies
-			
+
 			// Keep the post with higher engagement score
 			if currentEngagement > existingEngagement {
 				uriToPost[post.URI] = post
@@ -345,12 +372,12 @@ func deduplicatePostsByURI(posts []state.Post) []state.Post {
 			uriToPost[post.URI] = post
 		}
 	}
-	
+
 	// Convert map values to slice
 	var deduplicatedPosts []state.Post
 	for _, post := range uriToPost {
 		deduplicatedPosts = append(deduplicatedPosts, post)
 	}
-	
+
 	return deduplicatedPosts
 }
