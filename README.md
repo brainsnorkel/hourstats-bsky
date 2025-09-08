@@ -72,6 +72,7 @@ Bluesky is #satisfied
 - [x] Embedded image posting to Bluesky (no external links)
 - [x] Smart fallback for insufficient historical data
 
+
 ## Tech Stack
 
 - **Language**: Go 1.24+
@@ -83,6 +84,8 @@ Bluesky is #satisfied
 - **Image Storage**: S3 with public read access
 - **Orchestration**: AWS Step Functions
 - **Scheduling**: AWS EventBridge (every 30 minutes)
+- **Image Generation**: Go graphics library (fogleman/gg)
+- **Image Storage**: S3 with public read access
 - **Infrastructure**: Terraform with S3 remote state
 
 ## Long-Term Expectations

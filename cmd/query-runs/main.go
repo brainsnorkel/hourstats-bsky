@@ -294,7 +294,6 @@ func calculateOverallSentimentWithCompoundScores(posts []analyzer.AnalyzedPost) 
 	return sentimentCategory, netSentimentPercentage
 }
 
-
 func getTopPosts(posts []state.Post, n int) []state.Post {
 	if len(posts) <= n {
 		return posts

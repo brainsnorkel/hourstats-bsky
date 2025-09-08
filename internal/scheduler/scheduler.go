@@ -156,7 +156,6 @@ func (s *Scheduler) CalculateOverallSentiment(posts []analyzer.AnalyzedPost) (st
 	return sentimentCategory, netSentimentPercentage
 }
 
-
 func (s *Scheduler) GetTopPosts(posts []analyzer.AnalyzedPost, count int) []analyzer.AnalyzedPost {
 	// Sort by engagement score (replies + likes + reposts + sentiment boost)
 	// This matches the README specification for ranking posts
