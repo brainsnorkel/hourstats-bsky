@@ -177,8 +177,15 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64) {
 	dc.SetColor(sg.config.TextColor)
 
-	// Use default font - gg has a built-in default font that works without LoadFontFace
-	// We'll skip font loading and let gg use its default font
+	// Load a system font for text rendering
+	// Try Geneva first, then fall back to Symbol if needed
+	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", 12); err != nil {
+		// Fallback to Symbol font
+		if fallbackErr := dc.LoadFontFace("/System/Library/Fonts/Symbol.ttf", 12); fallbackErr != nil {
+			// If both fail, we'll continue without custom font
+			_ = fallbackErr
+		}
+	}
 
 	// Draw sentiment level labels
 	levels := []struct {
@@ -194,7 +201,7 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 
 	for _, level := range levels {
 		yPos := y + height/2 - (level.value/100.0)*(height/2)
-		dc.DrawStringAnchored(level.label, x-5, yPos, 1, 0.5)
+		dc.DrawStringAnchored(level.label, x-10, yPos, 1, 0.5)
 	}
 
 	// Draw time labels (start and end)
