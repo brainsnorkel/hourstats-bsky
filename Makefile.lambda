@@ -11,7 +11,7 @@ GOOS = linux
 GOARCH = amd64
 CGO_ENABLED = 0
 
-.PHONY: help build-lambda deploy-lambda destroy-lambda clean-lambda test-lambda
+.PHONY: help build-lambda build-sparkline-poster deploy-lambda destroy-lambda clean-lambda test-lambda
 
 help: ## Show this help message
 	@echo "Available targets:"
@@ -25,6 +25,15 @@ build-lambda: ## Build the Lambda function binary
 	@mv hourstats.zip $(TERRAFORM_DIR)/
 	@rm -f main
 	@echo "Lambda function built and packaged as hourstats.zip"
+
+build-sparkline-poster: ## Build the sparkline poster Lambda function
+	@echo "Building sparkline poster Lambda function..."
+	@cd cmd/lambda-sparkline-poster && \
+	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=$(CGO_ENABLED) go build -o bootstrap . && \
+	zip lambda-sparkline-poster.zip bootstrap && \
+	mv lambda-sparkline-poster.zip ../../$(TERRAFORM_DIR)/ && \
+	rm -f bootstrap
+	@echo "Sparkline poster Lambda function built and packaged as lambda-sparkline-poster.zip"
 
 deploy-lambda: build-lambda ## Deploy the Lambda function to AWS
 	@echo "Deploying Lambda function to AWS..."

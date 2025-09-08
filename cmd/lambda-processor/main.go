@@ -277,7 +277,6 @@ func (h *ProcessorHandler) calculateOverallSentimentWithCompoundScores(posts []a
 	return sentimentCategory, netSentimentPercentage
 }
 
-
 // getTopPosts gets the top N posts by engagement score
 func (h *ProcessorHandler) getTopPosts(posts []state.Post, n int) []state.Post {
 	if len(posts) <= n {

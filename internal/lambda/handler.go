@@ -191,4 +191,3 @@ func (h *HourStatsAnalyzer) calculateOverallSentiment(posts []analyzer.AnalyzedP
 
 	return sentimentCategory, netSentimentPercentage
 }
-
