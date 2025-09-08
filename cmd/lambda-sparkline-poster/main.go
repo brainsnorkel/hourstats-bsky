@@ -132,8 +132,14 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 		}, err
 	}
 
+	// Analyze sentiment extremes
+	extremeMessage := h.analyzeSentimentExtremes(dataPoints)
+	
 	// Post sparkline with embedded image to Bluesky
 	postText := "📊 Seven day Bluesky sentiment"
+	if extremeMessage != "" {
+		postText += "\n\n" + extremeMessage
+	}
 	altText := "Seven day sentiment trend chart showing community mood over time"
 	if err := blueskyClient.PostWithImage(ctx, postText, imageData, altText); err != nil {
 		log.Printf("Failed to post sparkline with embedded image: %v", err)
@@ -195,6 +201,41 @@ func (h *SparklinePosterHandler) getBlueskyCredentials(ctx context.Context) (str
 	}
 
 	return handle, password, nil
+}
+
+// analyzeSentimentExtremes checks if the latest sentiment is the highest or lowest for the week
+func (h *SparklinePosterHandler) analyzeSentimentExtremes(dataPoints []state.SentimentDataPoint) string {
+	if len(dataPoints) < 2 {
+		return ""
+	}
+	
+	// Get the latest sentiment (last data point)
+	latestSentiment := dataPoints[len(dataPoints)-1].NetSentimentPercent
+	
+	// Find min and max sentiment values
+	minSentiment := dataPoints[0].NetSentimentPercent
+	maxSentiment := dataPoints[0].NetSentimentPercent
+	
+	for _, point := range dataPoints {
+		if point.NetSentimentPercent < minSentiment {
+			minSentiment = point.NetSentimentPercent
+		}
+		if point.NetSentimentPercent > maxSentiment {
+			maxSentiment = point.NetSentimentPercent
+		}
+	}
+	
+	// Check if latest sentiment is the lowest (with small tolerance for floating point comparison)
+	if latestSentiment <= minSentiment+0.01 {
+		return "* Lowest sentiment for the charted period"
+	}
+	
+	// Check if latest sentiment is the highest (with small tolerance for floating point comparison)
+	if latestSentiment >= maxSentiment-0.01 {
+		return "* Highest sentiment for the charted period"
+	}
+	
+	return ""
 }
 
 // postInsufficientDataMessage posts a message about insufficient data
