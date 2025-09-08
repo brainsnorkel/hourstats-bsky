@@ -12,6 +12,7 @@ on:
       - 'internal/config/**'
       - 'internal/state/**'
       - 'internal/formatter/**'
+      - 'internal/sparkline/**'
       - 'terraform/**'
       - '.github/workflows/deploy-lambda.yml'
   pull_request:
@@ -21,6 +22,7 @@ on:
       - 'internal/lambda/**'
       - 'internal/state/**'
       - 'internal/formatter/**'
+      - 'internal/sparkline/**'
       - 'terraform/**'
 
 env:
