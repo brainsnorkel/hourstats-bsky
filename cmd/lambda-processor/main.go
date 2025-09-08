@@ -291,7 +291,14 @@ func (h *ProcessorHandler) calculateOverallSentimentWithCompoundScores(posts []a
 
 	var totalCompoundScore float64
 	for _, post := range posts {
-		totalCompoundScore += post.SentimentScore // This is already the compound score
+		// Clamp compound score to expected VADER range (-1.0 to +1.0)
+		clampedScore := post.SentimentScore
+		if clampedScore > 1.0 {
+			clampedScore = 1.0
+		} else if clampedScore < -1.0 {
+			clampedScore = -1.0
+		}
+		totalCompoundScore += clampedScore
 	}
 
 	averageCompoundScore := totalCompoundScore / float64(len(posts))
@@ -417,7 +424,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 	}
 
 	// Post the summary
-	return h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
+	return h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage/100.0)
 }
 
 // deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
