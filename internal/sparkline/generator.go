@@ -41,7 +41,7 @@ func (sg *SparklineGenerator) calculateYRange(dataPoints []state.SentimentDataPo
 	// Find min and max values
 	min := dataPoints[0].NetSentimentPercent
 	max := dataPoints[0].NetSentimentPercent
-	
+
 	for _, dp := range dataPoints {
 		if dp.NetSentimentPercent < min {
 			min = dp.NetSentimentPercent
@@ -75,7 +75,7 @@ func (sg *SparklineGenerator) calculateYRange(dataPoints []state.SentimentDataPo
 // DefaultConfig returns a default sparkline configuration
 func DefaultConfig() *SparklineConfig {
 	return &SparklineConfig{
-		Width:        400,
+		Width:        500,  // Increased from 400 to 500
 		Height:       200,
 		Padding:      20,
 		LineWidth:    2.0,
@@ -115,11 +115,16 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 	dc.SetColor(sg.config.Background)
 	dc.Clear()
 
-	// Calculate drawing area
-	drawWidth := float64(sg.config.Width - 2*sg.config.Padding)
-	drawHeight := float64(sg.config.Height - 2*sg.config.Padding)
-	drawX := float64(sg.config.Padding)
-	drawY := float64(sg.config.Padding)
+	// Calculate drawing area with extra space for Y-axis labels
+	leftPadding := sg.config.Padding + 50  // Extra 50px for Y-axis labels
+	rightPadding := sg.config.Padding
+	topPadding := sg.config.Padding
+	bottomPadding := sg.config.Padding + 20  // Extra 20px for time labels
+	
+	drawWidth := float64(sg.config.Width - leftPadding - rightPadding)
+	drawHeight := float64(sg.config.Height - topPadding - bottomPadding)
+	drawX := float64(leftPadding)
+	drawY := float64(topPadding)
 
 	// Calculate Y-axis range based on actual data
 	yRange := sg.calculateYRange(dataPoints)
