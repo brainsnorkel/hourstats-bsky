@@ -75,9 +75,9 @@ func (sg *SparklineGenerator) calculateYRange(dataPoints []state.SentimentDataPo
 // DefaultConfig returns a default sparkline configuration
 func DefaultConfig() *SparklineConfig {
 	return &SparklineConfig{
-		Width:        1200,                           // Square canvas 1200x1200
-		Height:       1200,                           // Square canvas 1200x1200
-		Padding:      100,                            // Adjusted padding for square canvas
+		Width:        1200,                           // Canvas 1200x800 (3:2 aspect ratio)
+		Height:       800,                            // Canvas 1200x800 (3:2 aspect ratio)
+		Padding:      80,                             // Adjusted padding for 1200x800 canvas
 		LineWidth:    6.0,                            // 75% of 8.0 (8.0 * 0.75)
 		PointRadius:  0.8,                            // Reduced to 0.8 for very small dots
 		Background:   color.RGBA{248, 249, 250, 255}, // Light gray
