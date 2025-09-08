@@ -27,8 +27,9 @@ type Response struct {
 
 // AnalyzerHandler handles the analyzer Lambda function
 type AnalyzerHandler struct {
-	stateManager      *state.StateManager
-	sentimentAnalyzer *analyzer.SentimentAnalyzer
+	stateManager            *state.StateManager
+	sentimentAnalyzer       *analyzer.SentimentAnalyzer
+	sentimentHistoryManager *state.SentimentHistoryManager
 }
 
 // NewAnalyzerHandler creates a new analyzer handler
@@ -39,12 +40,19 @@ func NewAnalyzerHandler(ctx context.Context) (*AnalyzerHandler, error) {
 		return nil, fmt.Errorf("failed to create state manager: %w", err)
 	}
 
+	// Initialize sentiment history manager
+	sentimentHistoryManager, err := state.NewSentimentHistoryManager(ctx, "hourstats-sentiment-history")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sentiment history manager: %w", err)
+	}
+
 	// Initialize sentiment analyzer
 	sentimentAnalyzer := analyzer.New()
 
 	return &AnalyzerHandler{
-		stateManager:      stateManager,
-		sentimentAnalyzer: sentimentAnalyzer,
+		stateManager:            stateManager,
+		sentimentAnalyzer:       sentimentAnalyzer,
+		sentimentHistoryManager: sentimentHistoryManager,
 	}, nil
 }
 
@@ -104,6 +112,23 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 			StatusCode: 500,
 			Body:       "Failed to update state: " + err.Error(),
 		}, err
+	}
+
+	// Store sentiment data for historical tracking
+	sentimentDataPoint := state.SentimentDataPoint{
+		RunID:                event.RunID,
+		Timestamp:            time.Now(),
+		AverageCompoundScore: netSentimentPercentage / 100.0, // Convert percentage back to compound score
+		NetSentimentPercent:  netSentimentPercentage,
+		SentimentCategory:    overallSentiment,
+		TotalPosts:           len(filteredPosts),
+	}
+
+	if err := h.sentimentHistoryManager.StoreSentimentData(ctx, sentimentDataPoint); err != nil {
+		log.Printf("Warning: Failed to store sentiment history: %v", err)
+		// Don't fail the entire operation for this
+	} else {
+		log.Printf("Successfully stored sentiment data point for run: %s", event.RunID)
 	}
 
 	log.Printf("Successfully analyzed %d posts for run: %s", len(analyzedPosts), event.RunID)

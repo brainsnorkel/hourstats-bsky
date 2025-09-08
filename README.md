@@ -35,6 +35,7 @@ Bluesky mood +16% from 1,041 posts in 1 minutes
 - **Clickable links**: User handles link to their posts via Bluesky facets
 - **Adult content filtering**: Uses Bluesky's official moderation labels
 - **Deduplication**: Removes duplicate posts, keeping highest engagement version
+- **48-Hour Sentiment Sparkline**: Visual chart showing sentiment trends over the last 48 hours
 
 
 ## Project Status
@@ -69,16 +70,21 @@ Bluesky mood +16% from 1,041 posts in 1 minutes
 - [x] EventBridge scheduling for automated execution
 - [x] CID extraction and storage for embed cards
 - [x] Embed cards for top posts (rich post display with full content preview)
+- [x] 48-hour sentiment sparkline visualization with PNG image generation
+- [x] Historical sentiment data storage in DynamoDB
+- [x] S3 integration for sparkline image hosting
 
 ## Tech Stack
 
 - **Language**: Go 1.24+
 - **AT Protocol**: [Bluesky indigo library](https://github.com/bluesky-social/indigo)
 - **Sentiment Analysis**: [GoVader](https://github.com/jonreiter/govader)
-- **Cloud Platform**: AWS (Lambda, Step Functions, DynamoDB, EventBridge)
+- **Cloud Platform**: AWS (Lambda, Step Functions, DynamoDB, EventBridge, S3)
 - **State Management**: DynamoDB with TTL and GSI
 - **Orchestration**: AWS Step Functions
 - **Scheduling**: AWS EventBridge (every 30 minutes)
+- **Image Generation**: Go graphics library (fogleman/gg)
+- **Image Storage**: S3 with public read access
 - **Infrastructure**: Terraform with S3 remote state
 
 ## Getting Started
