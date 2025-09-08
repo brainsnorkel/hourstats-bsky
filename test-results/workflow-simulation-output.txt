@@ -1,0 +1,51 @@
+🎯 Simulating Complete 48-Hour Sparkline Workflow
+=================================================
+
+📊 Step 1: Simulating analyzer storing sentiment data...
+  📝 Storing sentiment data points...
+  💾 Stored data point 1: 09:26 (-28.0%) - negative
+  💾 Stored data point 2: 11:26 (-21.0%) - negative
+  💾 Stored data point 3: 13:26 (-14.0%) - neutral
+  💾 Stored data point 4: 15:26 (-7.0%) - neutral
+  💾 Stored data point 5: 17:26 (0.0%) - neutral
+  💾 Stored data point 6: 19:26 (-13.0%) - neutral
+  💾 Stored data point 7: 21:26 (6.0%) - neutral
+  💾 Stored data point 8: 23:26 (12.0%) - neutral
+  💾 Stored data point 9: 01:26 (18.0%) - positive
+  💾 Stored data point 10: 03:26 (24.0%) - positive
+  💾 Stored data point 11: 05:26 (10.0%) - neutral
+  💾 Stored data point 12: 07:26 (16.0%) - positive
+  💾 Stored data point 13: 09:26 (25.0%) - positive
+  💾 Stored data point 14: 11:26 (27.5%) - positive
+  💾 Stored data point 15: 13:26 (30.0%) - positive
+  💾 Stored data point 16: 15:26 (12.5%) - neutral
+  💾 Stored data point 17: 17:26 (15.0%) - neutral
+  💾 Stored data point 18: 19:26 (17.5%) - positive
+  💾 Stored data point 19: 21:26 (9.0%) - neutral
+  💾 Stored data point 20: 23:26 (11.0%) - neutral
+  💾 Stored data point 21: 01:26 (-7.0%) - neutral
+  💾 Stored data point 22: 03:26 (-5.0%) - neutral
+  💾 Stored data point 23: 05:26 (-3.0%) - neutral
+  💾 Stored data point 24: 07:26 (-1.0%) - neutral
+  ✅ Stored 24 sentiment data points
+
+📈 Step 2: Simulating sparkline generation...
+  🎨 Generating sparkline image...
+  ✅ Generated sparkline: workflow-sparkline.png (6904 bytes)
+
+☁️ Step 3: Simulating S3 upload...
+  📤 Uploading to S3...
+  ✅ Uploaded to S3: https://hourstats-sparkline-images.s3.amazonaws.com/sparklines/workflow-test-1757287614.png
+  📊 Image size: 6904 bytes
+
+🐦 Step 4: Simulating Bluesky post...
+  🐦 Posting to Bluesky...
+  📝 Post content:
+  📊 Sentiment for the last 48 hours
+
+📈 View chart: https://hourstats-sparkline-images.s3.amazonaws.com/sparklines/workflow-test-1757287614.png
+  📏 Character count: 146
+  ✅ Posted to Bluesky successfully!
+
+✅ Complete sparkline workflow simulation successful!
+🎉 The 48-hour sentiment sparkline feature is ready for production!
