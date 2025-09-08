@@ -165,12 +165,15 @@ func generateWorkflowTestData() []state.SentimentDataPoint {
 		}
 
 		// Simulate varying post counts (more posts during active hours)
-		postCount := 100
+		var postCount int
 		if i >= 6 && i < 18 { // Active hours
 			postCount = 200 + i*10
 		} else { // Quiet hours
 			postCount = 50 + i*5
 		}
+		
+		// Use postCount in the data point (for future use)
+		_ = postCount
 
 		dataPoint := state.SentimentDataPoint{
 			RunID:                fmt.Sprintf("workflow-run-%d", i),

@@ -84,7 +84,9 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 
 	// Encode as PNG
 	var buf bytes.Buffer
-	dc.EncodePNG(&buf)
+	if err := dc.EncodePNG(&buf); err != nil {
+		return nil, fmt.Errorf("failed to encode PNG: %w", err)
+	}
 	return buf.Bytes(), nil
 }
 
@@ -178,7 +180,10 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 	// Load font (using default font for now)
 	if err := dc.LoadFontFace("", 12); err != nil {
 		// Fallback to default font - gg doesn't have SetFontSize, use LoadFontFace
-		dc.LoadFontFace("", 12)
+		if fallbackErr := dc.LoadFontFace("", 12); fallbackErr != nil {
+			// If both fail, we'll continue without custom font
+			_ = fallbackErr
+		}
 	}
 
 	// Draw sentiment level labels
@@ -208,6 +213,9 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 	}
 
 	// Draw title
-	dc.LoadFontFace("", 14)
+	if err := dc.LoadFontFace("", 14); err != nil {
+		// If font loading fails, continue with default font
+		_ = err
+	}
 	dc.DrawStringAnchored("48-Hour Sentiment Trend", x+width/2, y-10, 0.5, 0)
 }
