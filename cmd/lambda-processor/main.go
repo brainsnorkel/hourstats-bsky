@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awslambda "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/config"
@@ -34,10 +38,12 @@ type Response struct {
 
 // ProcessorHandler handles the combined analysis, aggregation, and posting
 type ProcessorHandler struct {
-	stateManager      *state.StateManager
-	sentimentAnalyzer *analyzer.SentimentAnalyzer
-	blueskyClient     *client.BlueskyClient
-	config            *config.Config
+	stateManager            *state.StateManager
+	sentimentAnalyzer       *analyzer.SentimentAnalyzer
+	blueskyClient           *client.BlueskyClient
+	lambdaClient            *awslambda.Client
+	sentimentHistoryManager *state.SentimentHistoryManager
+	config                  *config.Config
 }
 
 // NewProcessorHandler creates a new processor handler
@@ -65,11 +71,26 @@ func NewProcessorHandler(ctx context.Context) (*ProcessorHandler, error) {
 	// Initialize Bluesky client
 	blueskyClient := client.New(cfg.Bluesky.Handle, cfg.Bluesky.Password)
 
+	// Initialize Lambda client for invoking other functions
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+	lambdaClient := awslambda.NewFromConfig(awsCfg)
+
+	// Initialize sentiment history manager
+	sentimentHistoryManager, err := state.NewSentimentHistoryManager(ctx, "hourstats-sentiment-history")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sentiment history manager: %w", err)
+	}
+
 	return &ProcessorHandler{
-		stateManager:      stateManager,
-		sentimentAnalyzer: sentimentAnalyzer,
-		blueskyClient:     blueskyClient,
-		config:            cfg,
+		stateManager:            stateManager,
+		sentimentAnalyzer:       sentimentAnalyzer,
+		blueskyClient:           blueskyClient,
+		lambdaClient:            lambdaClient,
+		sentimentHistoryManager: sentimentHistoryManager,
+		config:                  cfg,
 	}, nil
 }
 
@@ -183,6 +204,23 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	}
 
 	log.Printf("Successfully processed %d posts and posted summary for run: %s", len(analyzedPosts), event.RunID)
+
+	// Store sentiment data for sparkline generation
+	log.Printf("Storing sentiment data for sparkline generation")
+	err = h.storeSentimentData(event.RunID, overallSentiment, netSentimentPercentage, len(analyzedPosts))
+	if err != nil {
+		log.Printf("Failed to store sentiment data: %v", err)
+		// Don't fail the main process if sentiment storage fails
+	}
+
+	// Trigger sparkline poster after successful main post
+	log.Printf("Triggering sparkline poster for run: %s", event.RunID)
+	err = h.triggerSparklinePoster(event.RunID)
+	if err != nil {
+		log.Printf("Failed to trigger sparkline poster: %v", err)
+		// Don't fail the main process if sparkline fails
+	}
+
 	return Response{
 		StatusCode:       200,
 		Body:             "Posts processed and summary posted successfully",
@@ -363,7 +401,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 		}
 	}
 
-	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage/100.0)
 	characterCount := len(postContent)
 	blueskyLimit := 300
 	remainingChars := blueskyLimit - characterCount
@@ -436,6 +474,70 @@ func (h *ProcessorHandler) fixPostURIs(posts []state.Post) []state.Post {
 	}
 	log.Printf("🔍 URI FIX: Fixed %d posts with invalid URI format", fixedCount)
 	return posts
+}
+
+// triggerSparklinePoster invokes the sparkline poster Lambda
+func (h *ProcessorHandler) triggerSparklinePoster(runID string) error {
+	log.Printf("🎯 SPARKLINE: Triggering sparkline poster for run: %s", runID)
+
+	// Prepare the payload for the sparkline poster
+	payload := map[string]interface{}{
+		"runId": runID,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal sparkline poster payload: %w", err)
+	}
+
+	// Invoke the sparkline poster Lambda
+	_, err = h.lambdaClient.Invoke(context.Background(), &awslambda.InvokeInput{
+		FunctionName: aws.String("hourstats-sparkline-poster"),
+		Payload:      payloadBytes,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to invoke sparkline poster lambda: %w", err)
+	}
+
+	log.Printf("✅ SPARKLINE: Successfully triggered sparkline poster for run: %s", runID)
+	return nil
+}
+
+// storeSentimentData stores sentiment data for sparkline generation
+func (h *ProcessorHandler) storeSentimentData(runID, overallSentiment string, netSentimentPercentage float64, totalPosts int) error {
+	log.Printf("📊 SENTIMENT: Storing sentiment data - RunID: %s, Sentiment: %s, Net: %.1f%%, Posts: %d",
+		runID, overallSentiment, netSentimentPercentage, totalPosts)
+
+	// Convert sentiment category to compound score for storage
+	var averageCompoundScore float64
+	switch overallSentiment {
+	case "positive":
+		averageCompoundScore = 0.5 + (netSentimentPercentage / 200.0) // Scale to 0.5-1.0
+	case "negative":
+		averageCompoundScore = -0.5 - (netSentimentPercentage / 200.0) // Scale to -1.0 to -0.5
+	default: // neutral
+		averageCompoundScore = netSentimentPercentage / 100.0 // Scale to -1.0 to 1.0
+	}
+
+	// Create sentiment data point
+	dataPoint := state.SentimentDataPoint{
+		RunID:                runID,
+		Timestamp:            time.Now(),
+		AverageCompoundScore: averageCompoundScore,
+		NetSentimentPercent:  netSentimentPercentage,
+		SentimentCategory:    overallSentiment,
+		TotalPosts:           totalPosts,
+	}
+
+	// Store the data point
+	err := h.sentimentHistoryManager.StoreSentimentData(context.Background(), dataPoint)
+	if err != nil {
+		return fmt.Errorf("failed to store sentiment data point: %w", err)
+	}
+
+	log.Printf("✅ SENTIMENT: Successfully stored sentiment data for run: %s", runID)
+	return nil
 }
 
 func main() {

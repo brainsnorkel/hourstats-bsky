@@ -89,6 +89,24 @@ resource "aws_iam_policy" "lambda_policy" {
       {
         Effect = "Allow"
         Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+        Resource = aws_dynamodb_table.sentiment_history.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+        Resource = "${aws_dynamodb_table.sentiment_history.arn}/index/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "dynamodb:Query"
         ]
         Resource = "${aws_dynamodb_table.hourstats_state.arn}/index/*"
@@ -111,7 +129,8 @@ resource "aws_iam_policy" "lambda_policy" {
         Resource = [
           aws_lambda_function.hourstats_orchestrator.arn,
           aws_lambda_function.hourstats_fetcher.arn,
-          aws_lambda_function.hourstats_processor.arn
+          aws_lambda_function.hourstats_processor.arn,
+          aws_lambda_function.hourstats_sparkline_poster.arn
         ]
       }
     ]
@@ -278,7 +297,7 @@ resource "aws_lambda_function" "hourstats_sparkline_poster" {
   source_code_hash = filebase64sha256("lambda-sparkline-poster.zip")
   runtime         = "provided.al2023"
   timeout         = 300  # 5 minutes
-  memory_size     = 256  # More memory for image generation
+  memory_size     = 256
 
   environment {
     variables = {
