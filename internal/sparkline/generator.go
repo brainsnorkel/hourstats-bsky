@@ -264,13 +264,36 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 		dc.DrawStringAnchored(level.label, x-15, yPos, 1, 0.5)
 	}
 
-	// Draw time labels (start and end)
+	// Draw time labels - show days of the week for 7-day view
 	if len(dataPoints) > 0 {
-		startLabel := dataPoints[0].Timestamp.Format("15:04")
-		endLabel := dataPoints[len(dataPoints)-1].Timestamp.Format("15:04")
-
-		dc.DrawStringAnchored(startLabel, x, y+height+15, 0, 0)
-		dc.DrawStringAnchored(endLabel, x+width, y+height+15, 1, 0)
+		startTime := dataPoints[0].Timestamp
+		endTime := dataPoints[len(dataPoints)-1].Timestamp
+		
+		// Calculate time range in days
+		timeRange := endTime.Sub(startTime).Hours() / 24
+		
+		if timeRange >= 1 {
+			// For multi-day data, show day labels
+			startLabel := startTime.Format("Mon")
+			endLabel := endTime.Format("Mon")
+			
+			dc.DrawStringAnchored(startLabel, x, y+height+15, 0, 0)
+			dc.DrawStringAnchored(endLabel, x+width, y+height+15, 1, 0)
+			
+			// Add middle day label if we have enough data
+			if timeRange >= 3 {
+				middleTime := startTime.Add(endTime.Sub(startTime) / 2)
+				middleLabel := middleTime.Format("Mon")
+				dc.DrawStringAnchored(middleLabel, x+width/2, y+height+15, 0.5, 0)
+			}
+		} else {
+			// For same-day data, show time labels
+			startLabel := startTime.Format("15:04")
+			endLabel := endTime.Format("15:04")
+			
+			dc.DrawStringAnchored(startLabel, x, y+height+15, 0, 0)
+			dc.DrawStringAnchored(endLabel, x+width, y+height+15, 1, 0)
+		}
 	}
 
 	// Draw title
