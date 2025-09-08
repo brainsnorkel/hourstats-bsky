@@ -73,17 +73,17 @@ func (shm *SentimentHistoryManager) GetSentimentHistory(ctx context.Context, dur
 	startTime := time.Now().Add(-duration)
 
 	// Query using the timestamp-index GSI
-	result, err := shm.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(shm.tableName),
-		IndexName:              aws.String("timestamp-index"),
-		KeyConditionExpression: aws.String("#timestamp >= :startTime"),
+	// Since timestamp is the hash key in the GSI, we need to use a different approach
+	// We'll scan the table and filter by timestamp
+	result, err := shm.client.Scan(ctx, &dynamodb.ScanInput{
+		TableName:        aws.String(shm.tableName),
+		FilterExpression: aws.String("#timestamp >= :startTime"),
 		ExpressionAttributeNames: map[string]string{
 			"#timestamp": "timestamp",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":startTime": &types.AttributeValueMemberS{Value: startTime.Format(time.RFC3339)},
 		},
-		ScanIndexForward: aws.Bool(true), // Sort by timestamp ascending
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query sentiment history: %w", err)
