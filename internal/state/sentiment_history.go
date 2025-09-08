@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -98,6 +99,11 @@ func (shm *SentimentHistoryManager) GetSentimentHistory(ctx context.Context, dur
 		}
 		dataPoints = append(dataPoints, dataPoint)
 	}
+
+	// Sort by timestamp to ensure chronological order
+	sort.Slice(dataPoints, func(i, j int) bool {
+		return dataPoints[i].Timestamp.Before(dataPoints[j].Timestamp)
+	})
 
 	return dataPoints, nil
 }
