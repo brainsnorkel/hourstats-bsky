@@ -177,14 +177,8 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64) {
 	dc.SetColor(sg.config.TextColor)
 
-	// Load font (using default font for now)
-	if err := dc.LoadFontFace("", 12); err != nil {
-		// Fallback to default font - gg doesn't have SetFontSize, use LoadFontFace
-		if fallbackErr := dc.LoadFontFace("", 12); fallbackErr != nil {
-			// If both fail, we'll continue without custom font
-			_ = fallbackErr
-		}
-	}
+	// Use default font - gg has a built-in default font that works without LoadFontFace
+	// We'll skip font loading and let gg use its default font
 
 	// Draw sentiment level labels
 	levels := []struct {
