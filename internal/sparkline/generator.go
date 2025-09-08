@@ -75,11 +75,11 @@ func (sg *SparklineGenerator) calculateYRange(dataPoints []state.SentimentDataPo
 // DefaultConfig returns a default sparkline configuration
 func DefaultConfig() *SparklineConfig {
 	return &SparklineConfig{
-		Width:        500,  // Increased from 400 to 500
-		Height:       200,
-		Padding:      20,
-		LineWidth:    2.0,
-		PointRadius:  3.0,
+		Width:        1000, // Doubled from 500 to 1000
+		Height:       400,  // Doubled from 200 to 400
+		Padding:      40,   // Doubled padding to maintain proportions
+		LineWidth:    4.0,  // Doubled from 2.0 to 4.0
+		PointRadius:  6.0,  // Doubled from 3.0 to 6.0
 		Background:   color.RGBA{248, 249, 250, 255}, // Light gray
 		PositiveLine: color.RGBA{40, 167, 69, 255},   // Green
 		NegativeLine: color.RGBA{220, 53, 69, 255},   // Red
@@ -116,11 +116,11 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 	dc.Clear()
 
 	// Calculate drawing area with extra space for Y-axis labels
-	leftPadding := sg.config.Padding + 50  // Extra 50px for Y-axis labels
+	leftPadding := sg.config.Padding + 50 // Extra 50px for Y-axis labels
 	rightPadding := sg.config.Padding
 	topPadding := sg.config.Padding
-	bottomPadding := sg.config.Padding + 20  // Extra 20px for time labels
-	
+	bottomPadding := sg.config.Padding + 20 // Extra 20px for time labels
+
 	drawWidth := float64(sg.config.Width - leftPadding - rightPadding)
 	drawHeight := float64(sg.config.Height - topPadding - bottomPadding)
 	drawX := float64(leftPadding)
@@ -268,18 +268,18 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 	if len(dataPoints) > 0 {
 		startTime := dataPoints[0].Timestamp
 		endTime := dataPoints[len(dataPoints)-1].Timestamp
-		
+
 		// Calculate time range in days
 		timeRange := endTime.Sub(startTime).Hours() / 24
-		
+
 		if timeRange >= 1 {
 			// For multi-day data, show day labels
 			startLabel := startTime.Format("Mon")
 			endLabel := endTime.Format("Mon")
-			
+
 			dc.DrawStringAnchored(startLabel, x, y+height+15, 0, 0)
 			dc.DrawStringAnchored(endLabel, x+width, y+height+15, 1, 0)
-			
+
 			// Add middle day label if we have enough data
 			if timeRange >= 3 {
 				middleTime := startTime.Add(endTime.Sub(startTime) / 2)
@@ -290,7 +290,7 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 			// For same-day data, show time labels
 			startLabel := startTime.Format("15:04")
 			endLabel := endTime.Format("15:04")
-			
+
 			dc.DrawStringAnchored(startLabel, x, y+height+15, 0, 0)
 			dc.DrawStringAnchored(endLabel, x+width, y+height+15, 1, 0)
 		}
