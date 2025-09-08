@@ -24,6 +24,54 @@ type SparklineConfig struct {
 	TextColor    color.RGBA
 }
 
+// YRange represents the Y-axis range for the sparkline
+type YRange struct {
+	Min    float64
+	Max    float64
+	Center float64
+	Scale  float64
+}
+
+// calculateYRange calculates the Y-axis range based on actual data
+func (sg *SparklineGenerator) calculateYRange(dataPoints []state.SentimentDataPoint) YRange {
+	if len(dataPoints) == 0 {
+		return YRange{Min: -100, Max: 100, Center: 0, Scale: 1.0}
+	}
+
+	// Find min and max values
+	min := dataPoints[0].NetSentimentPercent
+	max := dataPoints[0].NetSentimentPercent
+	
+	for _, dp := range dataPoints {
+		if dp.NetSentimentPercent < min {
+			min = dp.NetSentimentPercent
+		}
+		if dp.NetSentimentPercent > max {
+			max = dp.NetSentimentPercent
+		}
+	}
+
+	// Add padding (10% of the range, minimum 5% on each side)
+	dataRange := max - min
+	padding := dataRange * 0.1
+	if padding < 5.0 {
+		padding = 5.0
+	}
+
+	// Calculate final range
+	finalMin := min - padding
+	finalMax := max + padding
+	center := (finalMin + finalMax) / 2.0
+	scale := 200.0 / (finalMax - finalMin) // Scale to fit in -100 to +100 range
+
+	return YRange{
+		Min:    finalMin,
+		Max:    finalMax,
+		Center: center,
+		Scale:  scale,
+	}
+}
+
 // DefaultConfig returns a default sparkline configuration
 func DefaultConfig() *SparklineConfig {
 	return &SparklineConfig{
@@ -73,14 +121,17 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 	drawX := float64(sg.config.Padding)
 	drawY := float64(sg.config.Padding)
 
+	// Calculate Y-axis range based on actual data
+	yRange := sg.calculateYRange(dataPoints)
+
 	// Draw grid lines
-	sg.drawGrid(dc, drawX, drawY, drawWidth, drawHeight)
+	sg.drawGrid(dc, drawX, drawY, drawWidth, drawHeight, yRange)
 
 	// Draw sentiment line
-	sg.drawSentimentLine(dc, dataPoints, drawX, drawY, drawWidth, drawHeight)
+	sg.drawSentimentLine(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
 
 	// Draw labels
-	sg.drawLabels(dc, dataPoints, drawX, drawY, drawWidth, drawHeight)
+	sg.drawLabels(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
 
 	// Encode as PNG
 	var buf bytes.Buffer
@@ -91,14 +142,16 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 }
 
 // drawGrid draws grid lines and axes
-func (sg *SparklineGenerator) drawGrid(dc *gg.Context, x, y, width, height float64) {
+func (sg *SparklineGenerator) drawGrid(dc *gg.Context, x, y, width, height float64, yRange YRange) {
 	dc.SetColor(sg.config.GridColor)
 	dc.SetLineWidth(0.5)
 
-	// Horizontal grid lines (sentiment levels)
-	levels := []float64{-100, -50, 0, 50, 100}
+	// Horizontal grid lines (sentiment levels) - use compressed range
+	levels := []float64{yRange.Min, yRange.Center, yRange.Max}
 	for _, level := range levels {
-		yPos := y + height/2 - (level/100.0)*(height/2)
+		// Convert to Y position using compressed range
+		normalizedLevel := (level - yRange.Center) * yRange.Scale / 100.0
+		yPos := y + height/2 - normalizedLevel*(height/2)
 		dc.DrawLine(x, yPos, x+width, yPos)
 		dc.Stroke()
 	}
@@ -111,7 +164,7 @@ func (sg *SparklineGenerator) drawGrid(dc *gg.Context, x, y, width, height float
 }
 
 // drawSentimentLine draws the sentiment line with appropriate colors
-func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64) {
+func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64, yRange YRange) {
 	if len(dataPoints) < 2 {
 		return
 	}
@@ -128,9 +181,11 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 
 		// Calculate positions
 		x1 := x + (current.Timestamp.Sub(startTime).Seconds()/timeRange)*width
-		y1 := y + height/2 - (current.NetSentimentPercent/100.0)*(height/2)
+		normalizedY1 := (current.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
+		y1 := y + height/2 - normalizedY1*(height/2)
 		x2 := x + (next.Timestamp.Sub(startTime).Seconds()/timeRange)*width
-		y2 := y + height/2 - (next.NetSentimentPercent/100.0)*(height/2)
+		normalizedY2 := (next.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
+		y2 := y + height/2 - normalizedY2*(height/2)
 
 		// Determine color based on sentiment
 		var lineColor color.RGBA
@@ -157,7 +212,8 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 	// Draw final point
 	lastPoint := dataPoints[len(dataPoints)-1]
 	xFinal := x + (lastPoint.Timestamp.Sub(startTime).Seconds()/timeRange)*width
-	yFinal := y + height/2 - (lastPoint.NetSentimentPercent/100.0)*(height/2)
+	normalizedYFinal := (lastPoint.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
+	yFinal := y + height/2 - normalizedYFinal*(height/2)
 
 	var pointColor color.RGBA
 	if lastPoint.NetSentimentPercent > 10 {
@@ -174,7 +230,7 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 }
 
 // drawLabels draws time and sentiment labels
-func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64) {
+func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64, yRange YRange) {
 	dc.SetColor(sg.config.TextColor)
 
 	// Load a system font for text rendering
@@ -187,21 +243,20 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 		}
 	}
 
-	// Draw sentiment level labels
+	// Draw sentiment level labels - use compressed range
 	levels := []struct {
 		value float64
 		label string
 	}{
-		{100, "+100%"},
-		{50, "+50%"},
-		{0, "0%"},
-		{-50, "-50%"},
-		{-100, "-100%"},
+		{yRange.Max, fmt.Sprintf("%.1f%%", yRange.Max)},
+		{yRange.Center, fmt.Sprintf("%.1f%%", yRange.Center)},
+		{yRange.Min, fmt.Sprintf("%.1f%%", yRange.Min)},
 	}
 
 	for _, level := range levels {
-		yPos := y + height/2 - (level.value/100.0)*(height/2)
-		dc.DrawStringAnchored(level.label, x-10, yPos, 1, 0.5)
+		normalizedLevel := (level.value - yRange.Center) * yRange.Scale / 100.0
+		yPos := y + height/2 - normalizedLevel*(height/2)
+		dc.DrawStringAnchored(level.label, x-15, yPos, 1, 0.5)
 	}
 
 	// Draw time labels (start and end)
