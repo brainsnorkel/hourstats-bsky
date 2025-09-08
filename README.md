@@ -16,25 +16,23 @@ Bluesky HourStats is an automated bot that:
 
 The bot posts summaries in this format:
 ```
-Bluesky mood +16% from 1,041 posts in 1 minutes
+Bluesky is #satisfied
 
-1. @username.bsky.social (15) +
-2. @anotheruser.bsky.social (12) -
-3. @thirduser.bsky.social (8) x
-4. @fourthuser.bsky.social (6) +
-5. @fifthuser.bsky.social (4) x
+1. @username.bsky.social +
+2. @anotheruser.bsky.social -
+3. @thirduser.bsky.social x
+4. @fourthuser.bsky.social +
+5. @fifthuser.bsky.social x
 ```
 
 **Features:**
-- **Bluesky mood**: Net sentiment percentage calculated from all posts (positive% - negative%)
-- **Post count**: Total number of posts analyzed in the time period
-- **Time period**: Configurable (minutes or hours)
+- **Mood Hashtag**: Descriptive mood word (e.g., #satisfied, #excited, #concerned) from 100-word sentiment vocabulary
 - **Top 5 posts**: Ranked by total engagement score with clickable links
-- **Engagement scores**: Total score in parentheses (likes + reposts + replies)
 - **Sentiment indicators**: + for positive, - for negative, x for neutral
 - **Clickable links**: User handles link to their posts via Bluesky facets
 - **Adult content filtering**: Uses Bluesky's official moderation labels
 - **Deduplication**: Removes duplicate posts, keeping highest engagement version
+- **48-Hour Sentiment Sparkline**: Visual chart showing sentiment trends over the last 48 hours
 
 
 ## Project Status
@@ -69,17 +67,108 @@ Bluesky mood +16% from 1,041 posts in 1 minutes
 - [x] EventBridge scheduling for automated execution
 - [x] CID extraction and storage for embed cards
 - [x] Embed cards for top posts (rich post display with full content preview)
+- [x] 48-hour sentiment sparkline visualization with PNG image generation
+- [x] Historical sentiment data storage in DynamoDB
+- [x] Embedded image posting to Bluesky (no external links)
+- [x] Smart fallback for insufficient historical data
 
 ## Tech Stack
 
 - **Language**: Go 1.24+
 - **AT Protocol**: [Bluesky indigo library](https://github.com/bluesky-social/indigo)
 - **Sentiment Analysis**: [GoVader](https://github.com/jonreiter/govader)
+- **Image Generation**: Go graphics library (fogleman/gg)
 - **Cloud Platform**: AWS (Lambda, Step Functions, DynamoDB, EventBridge)
 - **State Management**: DynamoDB with TTL and GSI
+- **Image Storage**: S3 with public read access
 - **Orchestration**: AWS Step Functions
 - **Scheduling**: AWS EventBridge (every 30 minutes)
 - **Infrastructure**: Terraform with S3 remote state
+
+## Long-Term Expectations
+
+### Data Volume & Processing Requirements
+
+#### **Current Scale (2025)**
+- **Posts per analysis**: 1,000-5,000 posts every 30 minutes
+- **Daily post volume**: ~50,000-240,000 posts analyzed
+- **Storage requirements**: ~50MB/day (DynamoDB + S3)
+- **Processing time**: 2-5 minutes per analysis cycle
+- **Monthly cost**: ~$15-25 (AWS Lambda + DynamoDB + S3)
+
+#### **Projected Growth (2026-2027)**
+- **Posts per analysis**: 5,000-15,000 posts every 30 minutes
+- **Daily post volume**: ~240,000-720,000 posts analyzed
+- **Storage requirements**: ~200MB/day (DynamoDB + S3)
+- **Processing time**: 5-10 minutes per analysis cycle
+- **Monthly cost**: ~$50-100 (AWS Lambda + DynamoDB + S3)
+
+#### **High Growth Scenario (2028+)**
+- **Posts per analysis**: 15,000-50,000 posts every 30 minutes
+- **Daily post volume**: ~720,000-2.4M posts analyzed
+- **Storage requirements**: ~500MB/day (DynamoDB + S3)
+- **Processing time**: 10-15 minutes per analysis cycle
+- **Monthly cost**: ~$150-300 (AWS Lambda + DynamoDB + S3)
+
+### Cost Breakdown Analysis
+
+#### **AWS Lambda Costs**
+- **Current**: $5-10/month (2,880 executions × 3 minutes × 1GB)
+- **2026-2027**: $20-40/month (2,880 executions × 7 minutes × 1GB)
+- **2028+**: $50-100/month (2,880 executions × 12 minutes × 1GB)
+
+#### **DynamoDB Costs**
+- **Current**: $5-10/month (50K reads/writes, 1GB storage)
+- **2026-2027**: $15-30/month (200K reads/writes, 5GB storage)
+- **2028+**: $40-80/month (500K reads/writes, 15GB storage)
+
+#### **S3 Storage Costs**
+- **Current**: $0.50/month (15GB sparkline images)
+- **2026-2027**: $2/month (60GB sparkline images)
+- **2028+**: $5/month (150GB sparkline images)
+
+### Scalability Considerations
+
+#### **Architecture Scaling Points**
+1. **Lambda Memory**: Can increase from 1GB to 3GB for faster processing
+2. **Parallel Processing**: Can add more fetcher Lambdas for higher throughput
+3. **DynamoDB**: Can add read replicas and increase provisioned capacity
+4. **S3**: Automatically scales with no configuration changes needed
+
+#### **Performance Optimizations**
+- **Batch Processing**: DynamoDB batch operations for efficient data storage
+- **Connection Pooling**: Reuse HTTP connections for Bluesky API calls
+- **Caching**: Implement Redis for frequently accessed sentiment data
+- **CDN**: CloudFront distribution for sparkline images
+
+#### **Monitoring & Alerting**
+- **CloudWatch Metrics**: Track Lambda duration, DynamoDB throttling, S3 requests
+- **Cost Alerts**: Set up billing alerts for unexpected cost increases
+- **Performance Alerts**: Monitor for processing time increases or failures
+
+### Data Retention Strategy
+
+#### **DynamoDB TTL**
+- **Run State**: 2 days (automatic cleanup)
+- **Sentiment History**: 7 days (for sparkline generation)
+- **Total Storage**: Minimal impact on costs
+
+#### **S3 Lifecycle Policies**
+- **Sparkline Images**: 30 days standard, then move to IA, then Glacier
+- **Cost Optimization**: Reduces storage costs by 60-80% over time
+
+### Future Feature Considerations
+
+#### **Potential Enhancements**
+- **Real-time Processing**: Kinesis Data Streams for continuous analysis
+- **Machine Learning**: SageMaker integration for improved sentiment analysis
+- **Multi-language Support**: Expand beyond English sentiment analysis
+- **Advanced Visualizations**: Interactive charts and trend analysis
+
+#### **Technical Debt Management**
+- **Code Refactoring**: Regular refactoring to maintain performance
+- **Dependency Updates**: Keep Go modules and AWS SDKs current
+- **Security Updates**: Regular security patches and vulnerability scanning
 
 ## Getting Started
 
@@ -171,16 +260,30 @@ graph TD
     G -->|Yes| H[Analyzer Lambda<br/>Sentiment Analysis]
     H --> I[Aggregator Lambda<br/>Rank & Prepare Results]
     I --> J[Poster Lambda<br/>Publish Summary]
-    J --> K[End]
+    J --> K[Sparkline Poster Lambda<br/>Generate & Post Chart]
+    K --> L[End]
     
-    D --> L[Fetcher Failure]
-    L --> M[Workflow Failure]
-    C --> M
-    E --> M
-    F --> M
-    H --> M
-    I --> M
-    J --> M
+    D --> M[Fetcher Failure]
+    M --> N[Workflow Failure]
+    C --> N
+    E --> N
+    F --> N
+    H --> N
+    I --> N
+    J --> N
+    K --> N
+    
+    subgraph "Data Storage"
+        O[DynamoDB<br/>Run State & Sentiment History]
+        P[S3<br/>Sparkline Images]
+    end
+    
+    C --> O
+    D --> O
+    H --> O
+    I --> O
+    K --> O
+    K --> P
 ```
 
 ### Lambda Functions
@@ -230,6 +333,17 @@ graph TD
   - Formats the summary post
   - Publishes to Bluesky with proper rich text facets
   - Handles posting errors and retries
+
+#### 6. **Sparkline Poster Lambda** (`hourstats-sparkline-poster`)
+- **Purpose**: Generates and posts 48-hour sentiment sparkline charts
+- **Duration**: ~2 minutes
+- **Memory**: 256MB
+- **Responsibilities**:
+  - Retrieves historical sentiment data from DynamoDB
+  - Generates PNG sparkline charts using Go graphics library
+  - Uploads images to S3 with public read access
+  - Posts sparkline charts to Bluesky with embedded images
+  - Handles fallback for insufficient historical data
 
 ### DynamoDB State Management
 
@@ -424,7 +538,8 @@ hourstats-bsky/
 │   ├── deploy-production.sh  # Production deployment script
 │   └── query-runs.sh         # Query runs utility script
 ├── docs/                     # Documentation
-│   └── CID_IMPLEMENTATION.md # CID implementation documentation
+│   ├── CID_IMPLEMENTATION.md # CID implementation documentation
+│   └── SEQUENCE_DIAGRAMS.md  # Detailed sequence diagrams
 ├── config.example.yaml       # Configuration template
 ├── Makefile                  # Build and run commands
 ├── Makefile.lambda          # Lambda-specific build commands

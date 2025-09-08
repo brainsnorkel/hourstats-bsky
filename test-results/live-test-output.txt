@@ -1,0 +1,33 @@
+🚀 Live Testing 48-Hour Sentiment Sparkline Feature
+==================================================
+
+📊 Test 1: Generating sparkline with test data...
+✅ Generated sparkline: live-test-sparkline.png (6662 bytes)
+📊 Data points: 24
+📈 Time range: 2025-09-06 09:26:50 to 2025-09-08 07:26:50
+📊 Sentiment breakdown: +6, -9, ~9 (avg: -3.0%)
+
+📈 Test 2: Generating sparkline with realistic data...
+✅ Generated realistic sparkline: realistic-sparkline.png (10530 bytes)
+📊 Data points: 48
+  📊 Analysis:
+    Range: -35.0% to 29.0%
+    Average: -1.2%
+    Distribution: +15 (31.2%), -13 (27.1%), ~20 (41.7%)
+
+🔍 Test 3: Testing edge cases...
+  Testing empty data...
+  ✅ Empty data handled correctly: no data points provided
+  Testing single data point...
+  ✅ Single data point handled: 1771 bytes
+  Testing extreme values...
+  ✅ Extreme values handled: 8533 bytes
+  Testing custom configuration...
+  ✅ Custom config handled: 2135 bytes
+
+⚡ Test 4: Performance testing...
+✅ Generated sparkline with 96 data points in 3.548875ms
+📊 Image size: 16637 bytes
+⚡ Performance: 27050.83 data points/second
+
+✅ All sparkline tests completed successfully!
