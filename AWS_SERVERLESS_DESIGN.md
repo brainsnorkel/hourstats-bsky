@@ -2,24 +2,75 @@
 
 ## Overview
 
-This document outlines the transformation of the current Bluesky HourStats bot from a long-running process to an economical AWS serverless architecture.
+This document outlines the current AWS serverless architecture for the Bluesky HourStats bot, including the multi-Lambda workflow, DynamoDB state management, and the new 48-hour sentiment sparkline feature.
 
-## Current Architecture Analysis
+## Current Architecture
 
-### Current Components:
-- **Main Process**: Long-running Go binary with ticker-based scheduling
-- **Scheduler**: Runs every hour with infinite loop
-- **Bluesky Client**: Handles API calls and authentication
-- **Sentiment Analyzer**: Processes posts for sentiment analysis
-- **Configuration**: YAML file-based config
+### Multi-Lambda Serverless Components:
+- **EventBridge**: Triggers workflow every 30 minutes
+- **Step Functions**: Orchestrates the multi-Lambda workflow
+- **Orchestrator Lambda**: Manages run state and coordination
+- **Fetcher Lambdas**: Collect posts from Bluesky API in parallel batches
+- **Analyzer Lambda**: Performs sentiment analysis on collected posts
+- **Aggregator Lambda**: Ranks posts and prepares final results
+- **Poster Lambda**: Publishes main summary to Bluesky
+- **Sparkline Poster Lambda**: Generates and posts 48-hour sentiment charts
+- **DynamoDB**: State management and historical data storage
+- **S3**: Storage for sparkline images
+- **SSM Parameter Store**: Secure configuration management
 
-### Current Issues for Serverless:
-- Long-running process with infinite loop
-- File-based configuration
-- Persistent authentication state
-- Memory-intensive post collection (9,000+ posts)
+### Key Benefits:
+- **Scalability**: Handles unlimited posts without timeout issues
+- **Cost Efficiency**: Pay only for actual compute time used
+- **Reliability**: Each step can retry independently
+- **Monitoring**: CloudWatch logs for each Lambda function
+- **State Persistence**: DynamoDB ensures no data loss between steps
 
-## Proposed AWS Serverless Architecture
+## 48-Hour Sentiment Sparkline Feature
+
+### Overview
+The system now includes a sophisticated 48-hour sentiment visualization feature that generates PNG sparkline charts and posts them to Bluesky with embedded images.
+
+### Architecture Components
+
+#### **Sparkline Poster Lambda**
+- **Purpose**: Generates and posts 48-hour sentiment sparkline charts
+- **Memory**: 256MB (increased for image processing)
+- **Duration**: ~2 minutes
+- **Dependencies**: Go graphics library (fogleman/gg)
+
+#### **Historical Data Storage**
+- **DynamoDB Table**: `hourstats-sentiment-history`
+- **TTL**: 7 days (automatic cleanup)
+- **Data Points**: Sentiment scores every 30 minutes
+- **Storage**: ~1KB per data point
+
+#### **Image Generation**
+- **Library**: Go graphics library (fogleman/gg)
+- **Format**: PNG images (400x200 pixels)
+- **Features**: Line graphs with sentiment trends
+- **Fallback**: Skips generation if insufficient data (<24 points)
+
+#### **Image Storage**
+- **S3 Bucket**: `hourstats-sparkline-images`
+- **Access**: Public read access for Bluesky embedding
+- **Lifecycle**: 30 days standard, then IA, then Glacier
+- **Cost**: ~$0.50/month for current scale
+
+### Data Flow
+1. **Data Collection**: Each analysis run stores sentiment data in DynamoDB
+2. **Chart Generation**: Sparkline Poster Lambda queries 48 hours of data
+3. **Image Creation**: Go graphics library generates PNG sparkline
+4. **S3 Upload**: Image uploaded to S3 with public read access
+5. **Bluesky Post**: Image embedded directly in Bluesky post
+
+### Cost Impact
+- **Additional Lambda**: ~$2-5/month
+- **DynamoDB Storage**: ~$1-2/month
+- **S3 Storage**: ~$0.50/month
+- **Total Additional Cost**: ~$3.50-7.50/month
+
+## Current AWS Serverless Architecture
 
 ### 1. EventBridge Rule (Trigger)
 ```yaml
