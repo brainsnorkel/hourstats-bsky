@@ -85,8 +85,8 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 		}, nil
 	}
 
-	// Get 48 hours of sentiment data
-	dataPoints, err := h.sentimentHistoryManager.GetSentimentHistory(ctx, 48*time.Hour)
+	// Get 7 days of sentiment data
+	dataPoints, err := h.sentimentHistoryManager.GetSentimentHistory(ctx, 7*24*time.Hour)
 	if err != nil {
 		log.Printf("Failed to get sentiment history: %v", err)
 		return Response{
@@ -133,8 +133,8 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 	}
 
 	// Post sparkline with embedded image to Bluesky
-	postText := "📊 Sentiment for the last 48 hours"
-	altText := "48-hour sentiment trend chart showing community mood over time"
+	postText := "📊 Seven day Bluesky sentiment"
+	altText := "Seven day sentiment trend chart showing community mood over time"
 	if err := blueskyClient.PostWithImage(ctx, postText, imageData, altText); err != nil {
 		log.Printf("Failed to post sparkline with embedded image: %v", err)
 		return Response{
@@ -223,12 +223,12 @@ func (h *SparklinePosterHandler) postInsufficientDataMessage(ctx context.Context
 	var message string
 	if dataPointCount == 0 {
 		message = "📊 Building sentiment history...\n\n" +
-			"⏳ Sparkline charts will be available after collecting 48 hours of data.\n" +
-			"📈 First chart expected in ~24-48 hours.\n\n" +
+			"⏳ Sparkline charts will be available after collecting 7 days of data.\n" +
+			"📈 First chart expected in ~7 days.\n\n" +
 			"💡 In the meantime, check out the hourly sentiment summaries above!"
 	} else {
 		message = fmt.Sprintf("📊 Building sentiment history...\n\n"+
-			"⏳ Sparkline charts will be available after collecting 48 hours of data.\n"+
+			"⏳ Sparkline charts will be available after collecting 7 days of data.\n"+
 			"📈 Currently have %d data points, need 2+ for charts.\n\n"+
 			"💡 In the meantime, check out the hourly sentiment summaries above!", dataPointCount)
 	}
