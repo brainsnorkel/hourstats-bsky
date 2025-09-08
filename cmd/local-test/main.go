@@ -431,7 +431,6 @@ func (m *MockLambdaClient) convertToStatePosts(posts []bskyclient.Post) []state.
 	return statePosts
 }
 
-
 func (m *MockLambdaClient) calculateOverallSentimentWithCompoundScores(posts []analyzer.AnalyzedPost) (string, float64) {
 	if len(posts) == 0 {
 		return "neutral", 0.0

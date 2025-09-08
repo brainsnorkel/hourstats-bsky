@@ -28,18 +28,24 @@ func getMoodWord100(netSentiment float64) string {
 // normalCurveMapping converts a linear 0-1 input to a normal curve distribution
 // This concentrates more values in the middle (0.3-0.7 range) and fewer at extremes
 func normalCurveMapping(x float64) int {
-	// Use a power function to create the curve
-	// Higher powers create more concentration in the middle
-	power := 2.5 // Adjust this to control curve steepness
+	// Use a more balanced approach to ensure better distribution
+	// Apply curve compression only in the middle range, keep extremes more linear
 
-	if x < 0.5 {
-		// Left side: compress toward middle
-		compressed := math.Pow(2*x, power) / 2
-		return int(compressed * 100)
+	if x < 0.3 {
+		// Low values: more linear mapping to preserve extreme negative words
+		return int(x * 100 * 1.2) // Slight expansion
+	} else if x > 0.7 {
+		// High values: more linear mapping to preserve extreme positive words
+		// Map 0.7-1.0 to 70-99 (last 30 indices)
+		normalized := (x - 0.7) / 0.3
+		return int(70 + normalized*29)
 	} else {
-		// Right side: compress toward middle
-		compressed := 1 - math.Pow(2*(1-x), power)/2
-		return int(compressed * 100)
+		// Middle values: apply curve compression
+		// Map 0.3-0.7 to 30-69 (middle 40 indices)
+		normalized := (x - 0.3) / 0.4
+		power := 1.5
+		compressed := math.Pow(normalized, power)
+		return int(30 + compressed*39)
 	}
 }
 
@@ -86,13 +92,13 @@ var sentimentWords100 = []string{
 	"cheerful", "upbeat", "bright", "sunny", "optimistic",
 
 	// +30% to +40%: Moderate positive (happy to delighted)
-	"happy", "joyful", "glad", "delighted", "pleased",
+	"happy", "joyful", "glad", "delighted", "merry",
 
 	// +40% to +50%: Moderate-high positive (excited to elated)
 	"excited", "enthusiastic", "eager", "thrilled", "elated",
 
 	// +50% to +60%: High positive (ecstatic to rapturous)
-	"ecstatic", "euphoric", "overjoyed", "blissful", "rapturous",
+	"ecstatic", "overjoyed", "joyous", "rapturous", "exultant",
 
 	// +60% to +70%: Very high positive (exhilarated to lively)
 	"exhilarated", "exuberant", "vibrant", "energetic", "lively",
@@ -103,6 +109,6 @@ var sentimentWords100 = []string{
 	// +80% to +90%: Near maximum positive (transcendent to sublime)
 	"transcendent", "blissful", "divine", "heavenly", "sublime",
 
-	// +90% to +100%: Maximum positive (euphoric to heavenly)
-	"euphoric", "transcendent", "blissful", "divine", "heavenly",
+	// +90% to +100%: Maximum positive (euphoric to magnificent)
+	"euphoric", "magnificent", "glorious", "radiant", "exalted",
 }

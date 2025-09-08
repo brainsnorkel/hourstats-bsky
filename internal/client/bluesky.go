@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -707,6 +708,81 @@ func (c *BlueskyClient) PostWithFacets(ctx context.Context, text string, facets 
 	}
 
 	log.Printf("Successfully posted to Bluesky: %s", text[:min(50, len(text))])
+	return nil
+}
+
+// UploadImage uploads an image to Bluesky's blob service and returns the blob reference
+func (c *BlueskyClient) UploadImage(ctx context.Context, imageData []byte, altText string) (*bsky.EmbedImages_Image, error) {
+	if c.client == nil {
+		return nil, fmt.Errorf("client not authenticated")
+	}
+
+	// Determine content type from image data
+	contentType := "image/png" // Default for our sparkline images
+	if len(imageData) > 4 {
+		// Check PNG signature
+		if imageData[0] == 0x89 && imageData[1] == 0x50 && imageData[2] == 0x4E && imageData[3] == 0x47 {
+			contentType = "image/png"
+		} else if imageData[0] == 0xFF && imageData[1] == 0xD8 {
+			contentType = "image/jpeg"
+		}
+	}
+
+	// Upload the blob
+	blob, err := atproto.RepoUploadBlob(ctx, c.client, bytes.NewReader(imageData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload image blob: %w", err)
+	}
+
+	// Create image reference for embedding
+	imageRef := &bsky.EmbedImages_Image{
+		Image: &util.LexBlob{
+			Ref:      blob.Blob.Ref,
+			MimeType: contentType,
+			Size:     int64(len(imageData)),
+		},
+		Alt: altText,
+	}
+
+	log.Printf("Successfully uploaded image blob: %s (%d bytes, %s)", blob.Blob.Ref, len(imageData), contentType)
+	return imageRef, nil
+}
+
+// PostWithImage posts a text with an embedded image
+func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageData []byte, altText string) error {
+	if c.client == nil {
+		return fmt.Errorf("client not authenticated")
+	}
+
+	// Upload the image first
+	imageRef, err := c.UploadImage(ctx, imageData, altText)
+	if err != nil {
+		return fmt.Errorf("failed to upload image: %w", err)
+	}
+
+	// Create the post with image embed
+	postRecord := &bsky.FeedPost{
+		Text:      text,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Embed: &bsky.FeedPost_Embed{
+			EmbedImages: &bsky.EmbedImages{
+				Images: []*bsky.EmbedImages_Image{imageRef},
+			},
+		},
+	}
+
+	// Post the record
+	_, err = atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+		Repo:       c.handle,
+		Collection: "app.bsky.feed.post",
+		Record:     &util.LexiconTypeDecoder{Val: postRecord},
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to post with image: %w", err)
+	}
+
+	log.Printf("Successfully posted with embedded image: %s", text[:min(50, len(text))])
 	return nil
 }
 
