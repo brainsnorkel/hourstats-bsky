@@ -79,7 +79,7 @@ func DefaultConfig() *SparklineConfig {
 		Height:       1080,                           // Set to 1080px for 16:9 aspect ratio
 		Padding:      100,                            // Adjusted padding for 2400x1080 canvas
 		LineWidth:    8.0,                            // Adjusted for 2400x1080 canvas
-		PointRadius:  12.0,                           // Adjusted for 2400x1080 canvas
+		PointRadius:  1.2,                            // 10% of previous size (12.0 → 1.2)
 		Background:   color.RGBA{248, 249, 250, 255}, // Light gray
 		PositiveLine: color.RGBA{40, 167, 69, 255},   // Green
 		NegativeLine: color.RGBA{220, 53, 69, 255},   // Red
