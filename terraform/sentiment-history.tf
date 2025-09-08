@@ -21,8 +21,9 @@ resource "aws_dynamodb_table" "sentiment_history" {
   }
 
   global_secondary_index {
-    name     = "timestamp-index"
-    hash_key = "timestamp"
+    name            = "timestamp-index"
+    hash_key        = "timestamp"
+    projection_type = "ALL"
   }
 
   tags = {
