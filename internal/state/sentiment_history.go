@@ -48,8 +48,8 @@ func NewSentimentHistoryManager(ctx context.Context, tableName string) (*Sentime
 
 // StoreSentimentData stores a sentiment data point
 func (shm *SentimentHistoryManager) StoreSentimentData(ctx context.Context, dataPoint SentimentDataPoint) error {
-	// Set TTL to 7 days for historical data
-	dataPoint.TTL = time.Now().Add(7 * 24 * time.Hour).Unix()
+	// Set TTL to 14 days for historical data
+	dataPoint.TTL = time.Now().Add(14 * 24 * time.Hour).Unix()
 	dataPoint.CreatedAt = time.Now()
 
 	item, err := attributevalue.MarshalMap(dataPoint)

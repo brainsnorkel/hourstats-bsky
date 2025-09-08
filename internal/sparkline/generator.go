@@ -278,5 +278,5 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 		// If font loading fails, continue with default font
 		_ = err
 	}
-	dc.DrawStringAnchored("48-Hour Sentiment Trend", x+width/2, y-10, 0.5, 0)
+	dc.DrawStringAnchored("Sentiment Trend", x+width/2, y-10, 0.5, 0)
 }
