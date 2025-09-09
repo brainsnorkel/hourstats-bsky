@@ -145,6 +145,12 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 	// Draw labels
 	sg.drawLabels(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
 
+	// Draw sentiment zone watermarks
+	sg.drawSentimentWatermarks(dc, drawX, drawY, drawWidth, drawHeight, yRange)
+
+	// Draw branding watermark
+	sg.drawBrandingWatermark(dc, drawX, drawY, drawWidth, drawHeight)
+
 	// Encode as PNG
 	var buf bytes.Buffer
 	if err := dc.EncodePNG(&buf); err != nil {
@@ -215,7 +221,122 @@ func (sg *SparklineGenerator) drawNeutralZone(dc *gg.Context, x, y, width, heigh
 		dc.SetColor(color.RGBA{252, 252, 252, 20}) // Extremely light gray with very low transparency
 		dc.DrawRectangle(x, yMin, width, yMax-yMin)
 		dc.Fill()
+
+		// Draw "Neutral" watermark in the center of the neutral zone
+		sg.drawNeutralWatermark(dc, x, yMin, width, yMax-yMin)
 	}
+}
+
+// drawNeutralWatermark draws a "Neutral" watermark in the neutral zone
+func (sg *SparklineGenerator) drawNeutralWatermark(dc *gg.Context, x, y, width, height float64) {
+	// Only draw watermark if the neutral zone is large enough
+	if height < 50 || width < 200 {
+		return
+	}
+
+	// Calculate font size based on neutral zone size
+	fontSize := height * 0.3 // 30% of neutral zone height
+	if fontSize > 60 {
+		fontSize = 60 // Cap at 60px
+	}
+	if fontSize < 20 {
+		fontSize = 20 // Minimum 20px
+	}
+
+	// Load a larger font for the watermark
+	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
+		// Fallback to default font if Geneva is not available
+		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			_ = fallbackErr
+			return
+		}
+	}
+
+	// Calculate center position
+	centerX := x + width/2
+	centerY := y + height/2
+
+	// Set watermark color - very light gray with low opacity
+	dc.SetColor(color.RGBA{200, 200, 200, 30}) // Light gray with low transparency
+
+	// Draw "Neutral" text centered in the neutral zone
+	dc.DrawStringAnchored("Neutral", centerX, centerY, 0.5, 0.5)
+}
+
+// drawSentimentWatermarks draws "Positive" and "Negative" watermarks in their respective zones
+func (sg *SparklineGenerator) drawSentimentWatermarks(dc *gg.Context, x, y, width, height float64, yRange YRange) {
+	// Calculate font size based on chart height
+	fontSize := height * 0.15 // 15% of chart height
+	if fontSize > 40 {
+		fontSize = 40 // Cap at 40px
+	}
+	if fontSize < 16 {
+		fontSize = 16 // Minimum 16px
+	}
+
+	// Load font for watermarks
+	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
+		// Fallback to default font if Geneva is not available
+		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			_ = fallbackErr
+			return
+		}
+	}
+
+	// Draw "Positive" watermark in the positive zone (above +10%)
+	positiveThreshold := 10.0
+	if yRange.Max > positiveThreshold {
+		// Calculate Y position for +10% line
+		normalizedPositive := (positiveThreshold - yRange.Center) * yRange.Scale / 100.0
+		positiveY := y + height/2 - normalizedPositive*(height/2)
+
+		// Only draw if positive zone is large enough
+		if positiveY < y+height-50 {
+			positiveCenterY := (positiveY + y) / 2
+			dc.SetColor(color.RGBA{40, 167, 69, 60}) // Green with higher opacity
+			dc.DrawStringAnchored("Positive", x+width/2, positiveCenterY, 0.5, 0.5)
+		}
+	}
+
+	// Draw "Negative" watermark in the negative zone (below -10%)
+	negativeThreshold := -10.0
+	if yRange.Min < negativeThreshold {
+		// Calculate Y position for -10% line
+		normalizedNegative := (negativeThreshold - yRange.Center) * yRange.Scale / 100.0
+		negativeY := y + height/2 - normalizedNegative*(height/2)
+
+		// Only draw if negative zone is large enough
+		if negativeY > y+50 {
+			negativeCenterY := (negativeY + y + height) / 2
+			dc.SetColor(color.RGBA{220, 53, 69, 60}) // Red with higher opacity
+			dc.DrawStringAnchored("Negative", x+width/2, negativeCenterY, 0.5, 0.5)
+		}
+	}
+}
+
+// drawBrandingWatermark draws "@hourstats.bsky.social" in the bottom left corner
+func (sg *SparklineGenerator) drawBrandingWatermark(dc *gg.Context, x, y, width, height float64) {
+	// Calculate font size for branding
+	fontSize := 12.0
+
+	// Load font for branding
+	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
+		// Fallback to default font if Geneva is not available
+		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			_ = fallbackErr
+			return
+		}
+	}
+
+	// Position in bottom left corner with small margin
+	brandX := x + 10
+	brandY := y + height - 10
+
+	// Set branding color - dark gray with medium opacity
+	dc.SetColor(color.RGBA{100, 100, 100, 150}) // Dark gray with medium opacity
+
+	// Draw branding text
+	dc.DrawStringAnchored("@hourstats.bsky.social", brandX, brandY, 0, 1)
 }
 
 // drawSentimentLine draws the sentiment line with appropriate colors
@@ -528,8 +649,8 @@ func (sg *SparklineGenerator) drawExtremeLabels(dc *gg.Context, dataPoints []sta
 	normalizedLowestY := (lowest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
 	lowestYPos := y + height/2 - normalizedLowestY*(height/2)
 
-	// Position label below the point
-	lowestLabel := fmt.Sprintf("Low: %.1f%%", lowest.NetSentimentPercent)
+	// Position label below the point with timestamp on new line
+	lowestLabel := fmt.Sprintf("Low: %.1f%%\n%s", lowest.NetSentimentPercent, lowest.Timestamp.Format("Mon 15:04"))
 	dc.SetColor(sg.config.TextColor)
 	dc.DrawStringAnchored(lowestLabel, lowestXPos, lowestYPos+15, 0.5, 0)
 
@@ -539,8 +660,8 @@ func (sg *SparklineGenerator) drawExtremeLabels(dc *gg.Context, dataPoints []sta
 		normalizedHighestY := (highest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
 		highestYPos := y + height/2 - normalizedHighestY*(height/2)
 
-		// Position label above the point
-		highestLabel := fmt.Sprintf("High: %.1f%%", highest.NetSentimentPercent)
+		// Position label above the point with timestamp on new line
+		highestLabel := fmt.Sprintf("High: %.1f%%\n%s", highest.NetSentimentPercent, highest.Timestamp.Format("Mon 15:04"))
 		dc.SetColor(sg.config.TextColor)
 		dc.DrawStringAnchored(highestLabel, highestXPos, highestYPos-15, 0.5, 1)
 	}
