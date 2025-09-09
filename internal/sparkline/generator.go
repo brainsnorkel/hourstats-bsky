@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image/color"
+	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/fogleman/gg"
@@ -78,7 +79,7 @@ func DefaultConfig() *SparklineConfig {
 		Width:        1200,                           // Canvas 1200x800 (3:2 aspect ratio)
 		Height:       800,                            // Canvas 1200x800 (3:2 aspect ratio)
 		Padding:      80,                             // Adjusted padding for 1200x800 canvas
-		LineWidth:    6.0,                            // 75% of 8.0 (8.0 * 0.75)
+		LineWidth:    3.0,                            // 50% of original 6.0
 		PointRadius:  0.8,                            // Reduced to 0.8 for very small dots
 		Background:   color.RGBA{248, 249, 250, 255}, // Light gray
 		PositiveLine: color.RGBA{40, 167, 69, 255},   // Green
@@ -132,8 +133,14 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 	// Draw grid lines
 	sg.drawGrid(dc, drawX, drawY, drawWidth, drawHeight, yRange)
 
+	// Draw neutral zone background (this will cover the center line in the neutral zone)
+	sg.drawNeutralZone(dc, drawX, drawY, drawWidth, drawHeight, yRange)
+
 	// Draw sentiment line
 	sg.drawSentimentLine(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
+
+	// Draw average line
+	sg.drawAverageLine(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
 
 	// Draw labels
 	sg.drawLabels(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
@@ -154,6 +161,11 @@ func (sg *SparklineGenerator) drawGrid(dc *gg.Context, x, y, width, height float
 	// Horizontal grid lines (sentiment levels) - use compressed range
 	levels := []float64{yRange.Min, yRange.Center, yRange.Max}
 	for _, level := range levels {
+		// Skip drawing grid lines within the neutral zone (-10% to +10%) except for 0%
+		if level >= -10.0 && level <= 10.0 && level != 0.0 {
+			continue
+		}
+
 		// Convert to Y position using compressed range
 		normalizedLevel := (level - yRange.Center) * yRange.Scale / 100.0
 		yPos := y + height/2 - normalizedLevel*(height/2)
@@ -161,11 +173,49 @@ func (sg *SparklineGenerator) drawGrid(dc *gg.Context, x, y, width, height float
 		dc.Stroke()
 	}
 
-	// Vertical center line (neutral)
+	// Always draw the 0% line if it's within the visible range
+	if yRange.Min <= 0.0 && yRange.Max >= 0.0 {
+		normalizedZero := (0.0 - yRange.Center) * yRange.Scale / 100.0
+		yZero := y + height/2 - normalizedZero*(height/2)
+		dc.DrawLine(x, yZero, x+width, yZero)
+		dc.Stroke()
+	}
+
+	// Vertical center line (neutral) - only draw if not in neutral zone
 	centerY := y + height/2
 	dc.SetLineWidth(1.0)
 	dc.DrawLine(x, centerY, x+width, centerY)
 	dc.Stroke()
+}
+
+// drawNeutralZone draws a light gray background area for the neutral sentiment zone (-10% to +10%)
+func (sg *SparklineGenerator) drawNeutralZone(dc *gg.Context, x, y, width, height float64, yRange YRange) {
+	// Define neutral zone boundaries
+	neutralMin := -10.0
+	neutralMax := 10.0
+
+	// Convert neutral zone boundaries to Y positions using the same scaling as the data
+	normalizedMin := (neutralMin - yRange.Center) * yRange.Scale / 100.0
+	normalizedMax := (neutralMax - yRange.Center) * yRange.Scale / 100.0
+
+	yMin := y + height/2 - normalizedMax*(height/2)
+	yMax := y + height/2 - normalizedMin*(height/2)
+
+	// Only draw if the neutral zone is visible within the current Y range
+	if yMin < y+height && yMax > y {
+		// Clamp to visible area
+		if yMin < y {
+			yMin = y
+		}
+		if yMax > y+height {
+			yMax = y + height
+		}
+
+		// Draw the neutral zone rectangle
+		dc.SetColor(color.RGBA{252, 252, 252, 20}) // Extremely light gray with very low transparency
+		dc.DrawRectangle(x, yMin, width, yMax-yMin)
+		dc.Fill()
+	}
 }
 
 // drawSentimentLine draws the sentiment line with appropriate colors
@@ -234,6 +284,48 @@ func (sg *SparklineGenerator) drawSentimentLine(dc *gg.Context, dataPoints []sta
 	dc.Fill()
 }
 
+// drawAverageLine draws a dark grey dotted horizontal line showing the average sentiment
+func (sg *SparklineGenerator) drawAverageLine(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64, yRange YRange) {
+	if len(dataPoints) == 0 {
+		return
+	}
+
+	// Calculate the average sentiment
+	var sum float64
+	for _, dp := range dataPoints {
+		sum += dp.NetSentimentPercent
+	}
+	average := sum / float64(len(dataPoints))
+
+	// Convert average to Y position using the same scaling as the data
+	normalizedAverage := (average - yRange.Center) * yRange.Scale / 100.0
+	yPos := y + height/2 - normalizedAverage*(height/2)
+
+	// Only draw if the average line is within the visible range
+	if yPos >= y && yPos <= y+height {
+		// Set up dotted line style
+		dc.SetColor(color.RGBA{80, 80, 80, 255}) // Dark grey
+		dc.SetLineWidth(2.0)
+
+		// Create dotted line pattern
+		dashLength := 8.0
+		gapLength := 4.0
+		currentX := x
+
+		for currentX < x+width {
+			endX := currentX + dashLength
+			if endX > x+width {
+				endX = x + width
+			}
+
+			dc.DrawLine(currentX, yPos, endX, yPos)
+			dc.Stroke()
+
+			currentX = endX + gapLength
+		}
+	}
+}
+
 // drawLabels draws time and sentiment labels
 func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64, yRange YRange) {
 	dc.SetColor(sg.config.TextColor)
@@ -264,7 +356,14 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 		dc.DrawStringAnchored(level.label, x-15, yPos, 1, 0.5)
 	}
 
-	// Draw time labels - show days of the week for 7-day view
+	// Always draw the 0% label if it's within the visible range and different from center
+	if yRange.Min <= 0.0 && yRange.Max >= 0.0 && yRange.Center != 0.0 {
+		normalizedZero := (0.0 - yRange.Center) * yRange.Scale / 100.0
+		yZero := y + height/2 - normalizedZero*(height/2)
+		dc.DrawStringAnchored("0.0%", x-15, yZero, 1, 0.5)
+	}
+
+	// Draw improved time labels with day markers for midnight UTC
 	if len(dataPoints) > 0 {
 		startTime := dataPoints[0].Timestamp
 		endTime := dataPoints[len(dataPoints)-1].Timestamp
@@ -273,19 +372,8 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 		timeRange := endTime.Sub(startTime).Hours() / 24
 
 		if timeRange >= 1 {
-			// For multi-day data, show day labels
-			startLabel := startTime.Format("Mon")
-			endLabel := endTime.Format("Mon")
-
-			dc.DrawStringAnchored(startLabel, x, y+height+15, 0, 0)
-			dc.DrawStringAnchored(endLabel, x+width, y+height+15, 1, 0)
-
-			// Add middle day label if we have enough data
-			if timeRange >= 3 {
-				middleTime := startTime.Add(endTime.Sub(startTime) / 2)
-				middleLabel := middleTime.Format("Mon")
-				dc.DrawStringAnchored(middleLabel, x+width/2, y+height+15, 0.5, 0)
-			}
+			// For multi-day data, show day labels at midnight UTC positions
+			sg.drawDayMarkers(dc, dataPoints, x, y, width, height)
 		} else {
 			// For same-day data, show time labels
 			startLabel := startTime.Format("15:04")
@@ -301,5 +389,159 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 		// If font loading fails, continue with default font
 		_ = err
 	}
-	dc.DrawStringAnchored("Bluesky Compound Sentiment - UTC", x+width/2, y-10, 0.5, 0)
+	dc.DrawStringAnchored("Compound Bluesky Sentiment (UTC)", x+width/2, y-10, 0.5, 0)
+
+	// Draw average line label
+	sg.drawAverageLabel(dc, dataPoints, x, y, width, height, yRange)
+
+	// Draw most recent observation label
+	sg.drawMostRecentLabel(dc, dataPoints, x, y, width, height, yRange)
+
+	// Draw lowest and highest observation labels
+	sg.drawExtremeLabels(dc, dataPoints, x, y, width, height, yRange)
+}
+
+// drawDayMarkers draws day markers for midnight UTC positions
+func (sg *SparklineGenerator) drawDayMarkers(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64) {
+	startTime := dataPoints[0].Timestamp
+	endTime := dataPoints[len(dataPoints)-1].Timestamp
+	timeRange := endTime.Sub(startTime).Seconds()
+
+	// Find all midnight UTC positions within the data range
+	midnightPositions := sg.findMidnightPositions(startTime, endTime)
+
+	// Draw vertical lines and labels for each midnight
+	for _, midnight := range midnightPositions {
+		// Calculate x position for this midnight
+		xPos := x + (midnight.Sub(startTime).Seconds()/timeRange)*width
+
+		// Only draw if within the visible range
+		if xPos >= x && xPos <= x+width {
+			// Draw vertical line for midnight
+			dc.SetColor(sg.config.GridColor)
+			dc.SetLineWidth(0.5)
+			dc.DrawLine(xPos, y, xPos, y+height)
+			dc.Stroke()
+
+			// Draw day label below the chart
+			dayLabel := midnight.Format("Mon")
+			dc.SetColor(sg.config.TextColor)
+			dc.DrawStringAnchored(dayLabel, xPos, y+height+15, 0.5, 0)
+		}
+	}
+}
+
+// findMidnightPositions finds all midnight UTC positions within the given time range
+func (sg *SparklineGenerator) findMidnightPositions(startTime, endTime time.Time) []time.Time {
+	var midnights []time.Time
+
+	// Start from the first midnight after or at startTime
+	firstMidnight := startTime.Truncate(24 * time.Hour)
+	if firstMidnight.Before(startTime) {
+		firstMidnight = firstMidnight.Add(24 * time.Hour)
+	}
+
+	// Add all midnights within the range
+	for current := firstMidnight; !current.After(endTime); current = current.Add(24 * time.Hour) {
+		midnights = append(midnights, current)
+	}
+
+	return midnights
+}
+
+// drawAverageLabel draws a label for the average line
+func (sg *SparklineGenerator) drawAverageLabel(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64, yRange YRange) {
+	if len(dataPoints) == 0 {
+		return
+	}
+
+	// Calculate the average sentiment
+	var sum float64
+	for _, dp := range dataPoints {
+		sum += dp.NetSentimentPercent
+	}
+	average := sum / float64(len(dataPoints))
+
+	// Convert average to Y position using the same scaling as the data
+	normalizedAverage := (average - yRange.Center) * yRange.Scale / 100.0
+	yPos := y + height/2 - normalizedAverage*(height/2)
+
+	// Only draw if the average line is within the visible range
+	if yPos >= y && yPos <= y+height {
+		// Draw label on the right side of the chart
+		label := fmt.Sprintf("Avg: %.1f%%", average)
+		dc.SetColor(sg.config.TextColor)
+		dc.DrawStringAnchored(label, x+width+10, yPos, 0, 0.5)
+	}
+}
+
+// drawMostRecentLabel draws a label for the most recent observation
+func (sg *SparklineGenerator) drawMostRecentLabel(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64, yRange YRange) {
+	if len(dataPoints) == 0 {
+		return
+	}
+
+	// Get the most recent data point
+	lastPoint := dataPoints[len(dataPoints)-1]
+
+	// Calculate position for the most recent point
+	startTime := dataPoints[0].Timestamp
+	endTime := dataPoints[len(dataPoints)-1].Timestamp
+	timeRange := endTime.Sub(startTime).Seconds()
+	xPos := x + (lastPoint.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+	normalizedY := (lastPoint.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
+	yPos := y + height/2 - normalizedY*(height/2)
+
+	// Draw label above the most recent point
+	label := fmt.Sprintf("Latest: %.1f%%", lastPoint.NetSentimentPercent)
+	dc.SetColor(sg.config.TextColor)
+	dc.DrawStringAnchored(label, xPos, yPos-15, 0.5, 1)
+}
+
+// drawExtremeLabels draws labels for the lowest and highest observations
+func (sg *SparklineGenerator) drawExtremeLabels(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64, yRange YRange) {
+	if len(dataPoints) == 0 {
+		return
+	}
+
+	// Find the lowest and highest observations
+	var lowest, highest state.SentimentDataPoint
+	lowest = dataPoints[0]
+	highest = dataPoints[0]
+
+	for _, dp := range dataPoints {
+		if dp.NetSentimentPercent < lowest.NetSentimentPercent {
+			lowest = dp
+		}
+		if dp.NetSentimentPercent > highest.NetSentimentPercent {
+			highest = dp
+		}
+	}
+
+	// Calculate time range for positioning
+	startTime := dataPoints[0].Timestamp
+	endTime := dataPoints[len(dataPoints)-1].Timestamp
+	timeRange := endTime.Sub(startTime).Seconds()
+
+	// Draw lowest observation label
+	lowestXPos := x + (lowest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+	normalizedLowestY := (lowest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
+	lowestYPos := y + height/2 - normalizedLowestY*(height/2)
+
+	// Position label below the point
+	lowestLabel := fmt.Sprintf("Low: %.1f%%", lowest.NetSentimentPercent)
+	dc.SetColor(sg.config.TextColor)
+	dc.DrawStringAnchored(lowestLabel, lowestXPos, lowestYPos+15, 0.5, 0)
+
+	// Draw highest observation label (only if different from lowest)
+	if highest.NetSentimentPercent != lowest.NetSentimentPercent {
+		highestXPos := x + (highest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		normalizedHighestY := (highest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
+		highestYPos := y + height/2 - normalizedHighestY*(height/2)
+
+		// Position label above the point
+		highestLabel := fmt.Sprintf("High: %.1f%%", highest.NetSentimentPercent)
+		dc.SetColor(sg.config.TextColor)
+		dc.DrawStringAnchored(highestLabel, highestXPos, highestYPos-15, 0.5, 1)
+	}
 }
