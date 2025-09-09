@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image/color"
+	"strings"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/state"
@@ -639,30 +640,60 @@ func (sg *SparklineGenerator) drawExtremeLabels(dc *gg.Context, dataPoints []sta
 		}
 	}
 
+	// Get the latest observation to check for duplicates
+	latestPoint := dataPoints[len(dataPoints)-1]
+
 	// Calculate time range for positioning
 	startTime := dataPoints[0].Timestamp
 	endTime := dataPoints[len(dataPoints)-1].Timestamp
 	timeRange := endTime.Sub(startTime).Seconds()
 
-	// Draw lowest observation label
-	lowestXPos := x + (lowest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
-	normalizedLowestY := (lowest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
-	lowestYPos := y + height/2 - normalizedLowestY*(height/2)
+	// Draw lowest observation label (only if not the latest observation)
+	if !(lowest.Timestamp.Equal(latestPoint.Timestamp) && lowest.NetSentimentPercent == latestPoint.NetSentimentPercent) {
+		lowestXPos := x + (lowest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		normalizedLowestY := (lowest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
+		lowestYPos := y + height/2 - normalizedLowestY*(height/2)
 
-	// Position label below the point with timestamp on new line
-	lowestLabel := fmt.Sprintf("Low: %.1f%%\n%s", lowest.NetSentimentPercent, lowest.Timestamp.Format("Mon 15:04"))
-	dc.SetColor(sg.config.TextColor)
-	dc.DrawStringAnchored(lowestLabel, lowestXPos, lowestYPos+15, 0.5, 0)
+		// Position label below the point with timestamp on separate line
+		lowestLabel := fmt.Sprintf("Low: %.1f%%\n%s", lowest.NetSentimentPercent, lowest.Timestamp.Format("Mon 15:04"))
+		dc.SetColor(sg.config.TextColor)
+		sg.drawMultilineStringAnchored(dc, lowestLabel, lowestXPos, lowestYPos+15, 0.5, 0)
+	}
 
-	// Draw highest observation label (only if different from lowest)
-	if highest.NetSentimentPercent != lowest.NetSentimentPercent {
+	// Draw highest observation label (only if different from lowest and not the latest observation)
+	if highest.NetSentimentPercent != lowest.NetSentimentPercent &&
+		!(highest.Timestamp.Equal(latestPoint.Timestamp) && highest.NetSentimentPercent == latestPoint.NetSentimentPercent) {
 		highestXPos := x + (highest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
 		normalizedHighestY := (highest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
 		highestYPos := y + height/2 - normalizedHighestY*(height/2)
 
-		// Position label above the point with timestamp on new line
+		// Position label above the point with timestamp on separate line
 		highestLabel := fmt.Sprintf("High: %.1f%%\n%s", highest.NetSentimentPercent, highest.Timestamp.Format("Mon 15:04"))
 		dc.SetColor(sg.config.TextColor)
-		dc.DrawStringAnchored(highestLabel, highestXPos, highestYPos-15, 0.5, 1)
+		sg.drawMultilineStringAnchored(dc, highestLabel, highestXPos, highestYPos-15, 0.5, 1)
+	}
+}
+
+// drawMultilineStringAnchored draws multi-line text with proper anchoring
+func (sg *SparklineGenerator) drawMultilineStringAnchored(dc *gg.Context, text string, x, y, anchorX, anchorY float64) {
+	lines := strings.Split(text, "\n")
+	lineHeight := 14.0 // Font height for 12pt font
+
+	// Calculate total height of all lines
+	totalHeight := float64(len(lines)-1) * lineHeight
+
+	// Calculate starting Y position based on anchor
+	startY := y
+	if anchorY == 0.5 { // Center anchor
+		startY = y - totalHeight/2
+	} else if anchorY == 1.0 { // Top anchor
+		startY = y - totalHeight
+	}
+	// For bottom anchor (anchorY == 0.0), startY remains as y
+
+	// Draw each line
+	for i, line := range lines {
+		lineY := startY + float64(i)*lineHeight
+		dc.DrawStringAnchored(line, x, lineY, anchorX, 0.5)
 	}
 }
