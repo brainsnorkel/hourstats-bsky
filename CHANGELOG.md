@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2025-09-10] - Comprehensive Watermark System for Sparkline
+
+### Added
+- **Sentiment Zone Watermarks**: "Positive", "Negative", and "Neutral" watermarks in their respective zones
+- **Branding Watermark**: "@hourstats.bsky.social" in bottom left corner for consistent attribution
+- **Multiline Extreme Labels**: Latest, lowest, and highest observations with timestamps on new lines
+- **Responsive Watermark Sizing**: Font sizes adapt to chart dimensions automatically
+- **Smart Watermark Positioning**: Watermarks only appear when zones are large enough
+
+### Changed
+- **Enhanced Label Format**: Timestamps now appear on separate lines without "UTC" text
+- **Darkened Watermarks**: Increased opacity for positive and negative watermarks for better visibility
+- **Improved Visual Hierarchy**: Better organization of chart elements with proper drawing order
+
+### Technical
+- **New Watermark Functions**: `drawSentimentWatermarks()`, `drawBrandingWatermark()`, `drawNeutralWatermark()`
+- **Conditional Rendering**: Smart logic to show watermarks only when appropriate
+- **Color Coordination**: Watermarks match sentiment zone colors for visual consistency
+
 ## [2025-09-10] - Enhanced Sparkline Visualization
 
 ### Added
