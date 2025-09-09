@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2025-09-10] - Enhanced Sparkline Visualization
+
+### Added
+- **Day Markers on X-Axis**: Added day names (Mon, Tue, Wed, etc.) for midnight UTC positions
+- **Ultra-Light Neutral Zone**: Added subtle background area for -10% to +10% sentiment range
+- **Average Line**: Dark grey dotted horizontal line showing calculated average sentiment
+- **0% Y-Axis Line**: Added 0% reference line for better sentiment context
+- **Comprehensive Labels**: Added labels for latest, lowest, and highest observations
+- **Smart Label Positioning**: Labels positioned to avoid overlaps and provide clear context
+
+### Changed
+- **Line Width**: Reduced sentiment line width to 50% for cleaner appearance
+- **Title**: Updated to "Compound Bluesky Sentiment (UTC)" for consistency
+- **Grid Lines**: Removed black borders from neutral zone area for cleaner look
+
+### Technical
+- **Enhanced drawLabels()**: Added multiple new label drawing functions
+- **Improved Grid Drawing**: Smart filtering to avoid lines in neutral zone
+- **Better Visual Hierarchy**: Optimized drawing order for clean appearance
+
 ## [2025-09-06] - Cursor Limit Detection & Production Optimization
 
 ### Added
