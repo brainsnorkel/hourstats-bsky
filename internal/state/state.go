@@ -68,6 +68,16 @@ type PostItem struct {
 	TTL       int64     `json:"ttl" dynamodbav:"ttl"`
 }
 
+// PostBatch represents a batch of posts stored together in DynamoDB for cost efficiency
+type PostBatch struct {
+	RunID     string    `json:"runId" dynamodbav:"runId"`
+	Step      string    `json:"step" dynamodbav:"step"`     // Required for DynamoDB composite key
+	PostID    string    `json:"postId" dynamodbav:"postId"` // runId#batchIndex
+	Posts     []Post    `json:"posts" dynamodbav:"posts"`
+	CreatedAt time.Time `json:"createdAt" dynamodbav:"createdAt"`
+	TTL       int64     `json:"ttl" dynamodbav:"ttl"`
+}
+
 // StateManager handles DynamoDB state operations
 type StateManager struct {
 	client    *dynamodb.Client
@@ -177,7 +187,7 @@ func (sm *StateManager) GetLatestRun(ctx context.Context, runID string) (*RunSta
 	return sm.GetRun(ctx, runID, "orchestrator")
 }
 
-// AddPosts adds posts to the run state by storing them separately
+// AddPosts adds posts to the run state by storing them in batches for cost efficiency
 func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post) error {
 	// Try to get fetcher step first, fall back to orchestrator step
 	state, err := sm.GetRun(ctx, runID, "fetcher")
@@ -189,46 +199,42 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 		}
 	}
 
-	// Store posts using batch write for efficiency (up to 25 items per batch)
-	const batchSize = 25
-	for i := 0; i < len(posts); i += batchSize {
-		end := i + batchSize
+	// Store posts in batches of 100 for cost efficiency
+	// This reduces the number of DynamoDB items by 99% (100 posts per item vs 1 post per item)
+	const postsPerBatch = 100
+	batchIndex := 0
+	
+	for i := 0; i < len(posts); i += postsPerBatch {
+		end := i + postsPerBatch
 		if end > len(posts) {
 			end = len(posts)
 		}
 
-		var writeRequests []types.WriteRequest
-		for j := i; j < end; j++ {
-			postItem := PostItem{
-				RunID:     runID,
-				Step:      "fetcher", // All posts are stored under the fetcher step
-				PostID:    fmt.Sprintf("%s#%d", runID, state.TotalPostsRetrieved+j),
-				Post:      posts[j],
-				CreatedAt: time.Now(),
-				TTL:       time.Now().Add(2 * 24 * time.Hour).Unix(), // 2 days TTL
-			}
-
-			item, err := attributevalue.MarshalMap(postItem)
-			if err != nil {
-				return fmt.Errorf("failed to marshal post item: %w", err)
-			}
-
-			writeRequests = append(writeRequests, types.WriteRequest{
-				PutRequest: &types.PutRequest{
-					Item: item,
-				},
-			})
+		// Create a batch of posts
+		postBatch := PostBatch{
+			RunID:     runID,
+			Step:      "fetcher", // All posts are stored under the fetcher step
+			PostID:    fmt.Sprintf("%s#batch%d", runID, batchIndex),
+			Posts:     posts[i:end],
+			CreatedAt: time.Now(),
+			TTL:       time.Now().Add(2 * 24 * time.Hour).Unix(), // 2 days TTL
 		}
 
-		// Execute batch write
-		_, err = sm.client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
-			RequestItems: map[string][]types.WriteRequest{
-				sm.tableName: writeRequests,
-			},
+		item, err := attributevalue.MarshalMap(postBatch)
+		if err != nil {
+			return fmt.Errorf("failed to marshal post batch: %w", err)
+		}
+
+		// Store the batch as a single item
+		_, err = sm.client.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName: aws.String(sm.tableName),
+			Item:      item,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to batch write posts: %w", err)
+			return fmt.Errorf("failed to store post batch: %w", err)
 		}
+
+		batchIndex++
 	}
 
 	// Update the run state with new totals
@@ -262,14 +268,24 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 
 	var posts []Post
 	for _, item := range result.Items {
+		// Try to unmarshal as PostBatch first (new format)
+		var postBatch PostBatch
+		err := attributevalue.UnmarshalMap(item, &postBatch)
+		if err == nil && strings.Contains(postBatch.PostID, "#batch") {
+			// This is a batched post item
+			posts = append(posts, postBatch.Posts...)
+			continue
+		}
+
+		// Fallback to individual PostItem (legacy format)
 		var postItem PostItem
-		err := attributevalue.UnmarshalMap(item, &postItem)
+		err = attributevalue.UnmarshalMap(item, &postItem)
 		if err != nil {
 			log.Printf("Warning: failed to unmarshal post item: %v", err)
 			continue
 		}
 		// Only include posts that have a postId with # (filter out run state items)
-		if strings.Contains(postItem.PostID, "#") {
+		if strings.Contains(postItem.PostID, "#") && !strings.Contains(postItem.PostID, "#batch") {
 			posts = append(posts, postItem.Post)
 		}
 	}
