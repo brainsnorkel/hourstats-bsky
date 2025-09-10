@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -35,6 +35,15 @@ type PostBatch struct {
 	TTL       int64     `json:"ttl" dynamodbav:"ttl"`
 }
 
+type PostItem struct {
+	RunID     string    `json:"runId" dynamodbav:"runId"`
+	Step      string    `json:"step" dynamodbav:"step"`
+	PostID    string    `json:"postId" dynamodbav:"postId"`
+	Post      Post      `json:"post" dynamodbav:"post"`
+	CreatedAt string    `json:"createdAt" dynamodbav:"createdAt"`
+	TTL       int64     `json:"ttl" dynamodbav:"ttl"`
+}
+
 func main() {
 	ctx := context.Background()
 	
@@ -49,7 +58,9 @@ func main() {
 	tableName := "hourstats-state"
 
 	// Query for the latest run's posts
-	runID := "run-1757470589119553493"
+	runID := "run-1757471737499127873"
+	
+	fmt.Printf("Querying for run: %s\n", runID)
 	
 	result, err := client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(tableName),
@@ -66,19 +77,15 @@ func main() {
 
 	fmt.Printf("Found %d items\n", len(result.Items))
 
+	var allPosts []Post
 	for i, item := range result.Items {
 		fmt.Printf("\n=== Item %d ===\n", i)
 		
-		// Print raw DynamoDB item
-		itemJSON, _ := json.MarshalIndent(item, "", "  ")
-		fmt.Printf("Raw DynamoDB item:\n%s\n", itemJSON)
-		
-		// Try to unmarshal as PostBatch
+		// Try to unmarshal as PostBatch first (new format)
 		var postBatch PostBatch
 		err := attributevalue.UnmarshalMap(item, &postBatch)
-		if err != nil {
-			fmt.Printf("Failed to unmarshal as PostBatch: %v\n", err)
-		} else {
+		if err == nil && strings.Contains(postBatch.PostID, "#batch") {
+			// This is a batched post item
 			fmt.Printf("Successfully unmarshaled as PostBatch:\n")
 			fmt.Printf("  RunID: %s\n", postBatch.RunID)
 			fmt.Printf("  PostID: %s\n", postBatch.PostID)
@@ -87,11 +94,32 @@ func main() {
 				fmt.Printf("  First post author: %s\n", postBatch.Posts[0].Author)
 				fmt.Printf("  First post text: %s\n", postBatch.Posts[0].Text[:min(50, len(postBatch.Posts[0].Text))])
 			}
+			allPosts = append(allPosts, postBatch.Posts...)
+			continue
 		}
-		
-		if i >= 2 { // Only check first 3 items
-			break
+
+		// Fallback to individual PostItem (legacy format)
+		var postItem PostItem
+		err = attributevalue.UnmarshalMap(item, &postItem)
+		if err != nil {
+			fmt.Printf("Failed to unmarshal as PostItem: %v\n", err)
+			continue
 		}
+		// Only include posts that have a postId with # (filter out run state items)
+		if strings.Contains(postItem.PostID, "#") && !strings.Contains(postItem.PostID, "#batch") {
+			fmt.Printf("Successfully unmarshaled as PostItem:\n")
+			fmt.Printf("  RunID: %s\n", postItem.RunID)
+			fmt.Printf("  PostID: %s\n", postItem.PostID)
+			fmt.Printf("  Post author: %s\n", postItem.Post.Author)
+			allPosts = append(allPosts, postItem.Post)
+		}
+	}
+	
+	fmt.Printf("\n=== SUMMARY ===\n")
+	fmt.Printf("Total posts found: %d\n", len(allPosts))
+	if len(allPosts) > 0 {
+		fmt.Printf("First post author: %s\n", allPosts[0].Author)
+		fmt.Printf("First post text: %s\n", allPosts[0].Text[:min(50, len(allPosts[0].Text))])
 	}
 }
 

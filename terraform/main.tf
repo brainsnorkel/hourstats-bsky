@@ -198,7 +198,7 @@ resource "aws_dynamodb_table" "hourstats_state" {
     hash_key           = "runId"
     range_key          = "postId"
     projection_type    = "INCLUDE"
-    non_key_attributes = ["post", "createdAt", "ttl"]
+    non_key_attributes = ["post", "posts", "createdAt", "ttl"]
   }
 
   # Global Secondary Index for efficient run listing
