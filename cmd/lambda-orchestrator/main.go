@@ -78,7 +78,7 @@ func (h *OrchestratorHandler) handleStartWorkflow(ctx context.Context, event Eve
 	log.Printf("Starting new analysis run: %s", runID)
 
 	// Create new run state with the analysis interval from the event
-	analysisIntervalMinutes := 15 // Default to 15 minutes
+	analysisIntervalMinutes := 30 // Default to 30 minutes
 	if event.AnalysisIntervalMinutes > 0 {
 		analysisIntervalMinutes = event.AnalysisIntervalMinutes
 	}
