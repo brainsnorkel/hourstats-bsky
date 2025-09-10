@@ -74,19 +74,17 @@ func (shm *SentimentHistoryManager) GetSentimentHistory(ctx context.Context, dur
 	// Calculate the start time for the query
 	startTime := time.Now().Add(-duration)
 
-	// Use Query on timestamp-index GSI for efficient time-range queries
-	// This is much more cost-effective than scanning the entire table
-	result, err := shm.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(shm.tableName),
-		IndexName:              aws.String("timestamp-index"),
-		KeyConditionExpression: aws.String("#timestamp >= :startTime"),
+	// Use Scan with filter for time-range queries
+	// Note: This is less efficient than Query but necessary for timestamp range filtering
+	result, err := shm.client.Scan(ctx, &dynamodb.ScanInput{
+		TableName:        aws.String(shm.tableName),
+		FilterExpression: aws.String("#timestamp >= :startTime"),
 		ExpressionAttributeNames: map[string]string{
 			"#timestamp": "timestamp",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":startTime": &types.AttributeValueMemberS{Value: startTime.Format(time.RFC3339)},
 		},
-		ScanIndexForward: aws.Bool(true), // Sort by timestamp ascending
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query sentiment history: %w", err)
