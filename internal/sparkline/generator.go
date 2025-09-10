@@ -248,8 +248,8 @@ func (sg *SparklineGenerator) drawNeutralWatermark(dc *gg.Context, x, y, width, 
 	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
 		// Fallback to default font if Geneva is not available
 		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			// If both fail, try to continue with existing font
 			_ = fallbackErr
-			return
 		}
 	}
 
@@ -279,8 +279,8 @@ func (sg *SparklineGenerator) drawSentimentWatermarks(dc *gg.Context, x, y, widt
 	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
 		// Fallback to default font if Geneva is not available
 		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			// If both fail, try to continue with existing font
 			_ = fallbackErr
-			return
 		}
 	}
 
@@ -324,8 +324,8 @@ func (sg *SparklineGenerator) drawBrandingWatermark(dc *gg.Context, x, y, width,
 	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
 		// Fallback to default font if Geneva is not available
 		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			// If both fail, try to continue with existing font
 			_ = fallbackErr
-			return
 		}
 	}
 
@@ -590,10 +590,10 @@ func (sg *SparklineGenerator) drawAverageLabel(dc *gg.Context, dataPoints []stat
 
 	// Only draw if the average line is within the visible range
 	if yPos >= y && yPos <= y+height {
-		// Draw label on the right side of the chart
+		// Draw label above the middle of the average line
 		label := fmt.Sprintf("Avg: %.1f%%", average)
 		dc.SetColor(sg.config.TextColor)
-		dc.DrawStringAnchored(label, x+width+10, yPos, 0, 0.5)
+		dc.DrawStringAnchored(label, x+width/2, yPos-15, 0.5, 1)
 	}
 }
 
