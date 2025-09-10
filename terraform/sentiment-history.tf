@@ -23,6 +23,7 @@ resource "aws_dynamodb_table" "sentiment_history" {
   global_secondary_index {
     name               = "timestamp-index"
     hash_key           = "timestamp"
+    range_key          = "runId"
     projection_type    = "INCLUDE"
     non_key_attributes = ["netSentimentPercent", "sentimentCategory", "totalPosts", "averageCompoundScore"]
   }
