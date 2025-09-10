@@ -33,6 +33,7 @@ type Response struct {
 type SparklinePosterHandler struct {
 	sentimentHistoryManager *state.SentimentHistoryManager
 	sparklineGenerator      *sparkline.SparklineGenerator
+	stateManager            *state.StateManager
 	ssmClient               *ssm.Client
 }
 
@@ -47,6 +48,12 @@ func NewSparklinePosterHandler(ctx context.Context) (*SparklinePosterHandler, er
 	// Initialize sparkline generator
 	sparklineGenerator := sparkline.NewSparklineGenerator(nil) // Use default config
 
+	// Initialize state manager
+	stateManager, err := state.NewStateManager(ctx, "hourstats-state")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create state manager: %w", err)
+	}
+
 	// Initialize AWS clients
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
@@ -58,6 +65,7 @@ func NewSparklinePosterHandler(ctx context.Context) (*SparklinePosterHandler, er
 	return &SparklinePosterHandler{
 		sentimentHistoryManager: sentimentHistoryManager,
 		sparklineGenerator:      sparklineGenerator,
+		stateManager:            stateManager,
 		ssmClient:               ssmClient,
 	}, nil
 }
@@ -141,12 +149,26 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 		postText += "\n\n" + extremeMessage
 	}
 	altText := "Seven day sentiment trend chart showing community mood over time"
-	if err := blueskyClient.PostWithImage(ctx, postText, imageData, altText); err != nil {
-		log.Printf("Failed to post sparkline with embedded image: %v", err)
-		return Response{
-			StatusCode: 500,
-			Body:       "Failed to post sparkline: " + err.Error(),
-		}, err
+
+	// Get the top post URI to reply to
+	runState, err := h.stateManager.GetLatestRun(ctx, event.RunID)
+	if err != nil {
+		log.Printf("Failed to get run state for top post URI: %v", err)
+		// Fall back to standalone posting if we can't get the top post URI
+		return h.postStandaloneSparkline(ctx, blueskyClient, postText, imageData, altText)
+	}
+
+	// Check if we have a top post URI to reply to
+	if runState.TopPostURI != "" && runState.TopPostCID != "" {
+		log.Printf("Posting sparkline as reply to top post: %s", runState.TopPostURI)
+		if err := blueskyClient.PostWithImageAsReply(ctx, postText, imageData, altText, runState.TopPostURI, runState.TopPostCID); err != nil {
+			log.Printf("Failed to post sparkline as reply: %v", err)
+			// Fall back to standalone posting
+			return h.postStandaloneSparkline(ctx, blueskyClient, postText, imageData, altText)
+		}
+	} else {
+		log.Printf("No top post URI available, posting sparkline standalone")
+		return h.postStandaloneSparkline(ctx, blueskyClient, postText, imageData, altText)
 	}
 
 	log.Printf("Successfully posted sparkline for run: %s", event.RunID)
@@ -287,6 +309,24 @@ func (h *SparklinePosterHandler) postInsufficientDataMessage(ctx context.Context
 	return Response{
 		StatusCode: 200,
 		Body:       "Insufficient data message posted",
+		Posted:     true,
+	}, nil
+}
+
+// postStandaloneSparkline posts the sparkline as a standalone post (fallback when reply fails)
+func (h *SparklinePosterHandler) postStandaloneSparkline(ctx context.Context, blueskyClient *client.BlueskyClient, postText string, imageData []byte, altText string) (Response, error) {
+	if err := blueskyClient.PostWithImage(ctx, postText, imageData, altText); err != nil {
+		log.Printf("Failed to post sparkline with embedded image: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body:       "Failed to post sparkline: " + err.Error(),
+		}, err
+	}
+
+	log.Printf("Successfully posted sparkline as standalone post")
+	return Response{
+		StatusCode: 200,
+		Body:       "Sparkline posted successfully (standalone)",
 		Posted:     true,
 	}, nil
 }

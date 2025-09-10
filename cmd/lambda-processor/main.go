@@ -424,7 +424,20 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 	}
 
 	// Post the summary
-	return h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage/100.0)
+	postedURI, postedCID, err := h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage/100.0)
+	if err != nil {
+		return err
+	}
+
+	// Store the posted URI and CID for reply functionality
+	if err := h.stateManager.SetTopPostURI(context.Background(), runState.RunID, postedURI, postedCID); err != nil {
+		log.Printf("Failed to store top post URI: %v", err)
+		// Don't fail the entire operation for this
+	} else {
+		log.Printf("Successfully stored top post URI: %s", postedURI)
+	}
+
+	return nil
 }
 
 // deduplicatePostsByURI removes duplicate posts by URI, keeping the one with highest engagement score
