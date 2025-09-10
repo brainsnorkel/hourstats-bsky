@@ -248,8 +248,8 @@ func (sg *SparklineGenerator) drawNeutralWatermark(dc *gg.Context, x, y, width, 
 	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
 		// Fallback to default font if Geneva is not available
 		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			// If both fail, try to continue with existing font
 			_ = fallbackErr
-			return
 		}
 	}
 
@@ -279,8 +279,8 @@ func (sg *SparklineGenerator) drawSentimentWatermarks(dc *gg.Context, x, y, widt
 	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
 		// Fallback to default font if Geneva is not available
 		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			// If both fail, try to continue with existing font
 			_ = fallbackErr
-			return
 		}
 	}
 
@@ -324,8 +324,8 @@ func (sg *SparklineGenerator) drawBrandingWatermark(dc *gg.Context, x, y, width,
 	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
 		// Fallback to default font if Geneva is not available
 		if fallbackErr := dc.LoadFontFace("", fontSize); fallbackErr != nil {
+			// If both fail, try to continue with existing font
 			_ = fallbackErr
-			return
 		}
 	}
 
