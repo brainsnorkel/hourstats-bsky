@@ -74,7 +74,7 @@ type PostBatch struct {
 	Step      string    `json:"step" dynamodbav:"step"`     // Required for DynamoDB composite key
 	PostID    string    `json:"postId" dynamodbav:"postId"` // runId#batchIndex
 	Posts     []Post    `json:"posts" dynamodbav:"posts"`
-	CreatedAt time.Time `json:"createdAt" dynamodbav:"createdAt"`
+	CreatedAt string    `json:"createdAt" dynamodbav:"createdAt"`
 	TTL       int64     `json:"ttl" dynamodbav:"ttl"`
 }
 
@@ -216,7 +216,7 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 			Step:      "fetcher", // All posts are stored under the fetcher step
 			PostID:    fmt.Sprintf("%s#batch%d", runID, batchIndex),
 			Posts:     posts[i:end],
-			CreatedAt: time.Now(),
+			CreatedAt: time.Now().Format(time.RFC3339),
 			TTL:       time.Now().Add(2 * 24 * time.Hour).Unix(), // 2 days TTL
 		}
 
