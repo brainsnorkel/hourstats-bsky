@@ -451,7 +451,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 	return posts, nil
 }
 
-func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentimentPercentage float64) error {
+func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentimentPercentage float64) (string, string, error) {
 	ctx := context.Background()
 
 	// Convert client posts to formatter posts
@@ -509,18 +509,22 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	}
 
 	// Post the record
-	_, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+	result, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
 		Repo:       c.handle, // Use the handle from the client
 		Collection: "app.bsky.feed.post",
 		Record:     &util.LexiconTypeDecoder{Val: postRecord},
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to post to Bluesky: %w", err)
+		return "", "", fmt.Errorf("failed to post to Bluesky: %w", err)
 	}
 
-	log.Printf("Successfully posted to Bluesky!")
-	return nil
+	// Extract the posted URI and CID from the result
+	postedURI := result.Uri
+	postedCID := result.Cid
+
+	log.Printf("Successfully posted to Bluesky! URI: %s, CID: %s", postedURI, postedCID)
+	return postedURI, postedCID, nil
 }
 
 // createEmbedCard creates an embed card for a post
@@ -783,6 +787,54 @@ func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageDat
 	}
 
 	log.Printf("Successfully posted with embedded image: %s", text[:min(50, len(text))])
+	return nil
+}
+
+// PostWithImageAsReply posts a text with an embedded image as a reply to another post
+func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, imageData []byte, altText string, replyToURI, replyToCID string) error {
+	if c.client == nil {
+		return fmt.Errorf("client not authenticated")
+	}
+
+	// Upload the image first
+	imageRef, err := c.UploadImage(ctx, imageData, altText)
+	if err != nil {
+		return fmt.Errorf("failed to upload image: %w", err)
+	}
+
+	// Create the post with image embed and reply structure
+	postRecord := &bsky.FeedPost{
+		Text:      text,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Embed: &bsky.FeedPost_Embed{
+			EmbedImages: &bsky.EmbedImages{
+				Images: []*bsky.EmbedImages_Image{imageRef},
+			},
+		},
+		Reply: &bsky.FeedPost_ReplyRef{
+			Root: &atproto.RepoStrongRef{
+				Uri: replyToURI,
+				Cid: replyToCID,
+			},
+			Parent: &atproto.RepoStrongRef{
+				Uri: replyToURI,
+				Cid: replyToCID,
+			},
+		},
+	}
+
+	// Post the record
+	_, err = atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+		Repo:       c.handle,
+		Collection: "app.bsky.feed.post",
+		Record:     &util.LexiconTypeDecoder{Val: postRecord},
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to post reply with image: %w", err)
+	}
+
+	log.Printf("Successfully posted reply with embedded image: %s (replying to: %s)", text[:min(50, len(text))], replyToURI)
 	return nil
 }
 

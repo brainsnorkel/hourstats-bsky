@@ -181,12 +181,21 @@ func (h *PosterHandler) HandleRequest(ctx context.Context, event StepFunctionsEv
 	clientPosts := h.convertToClientPosts(runState.TopPosts)
 
 	// Post the summary using compound score
-	if err := blueskyClient.PostTrendingSummary(clientPosts, runState.OverallSentiment, event.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage); err != nil {
+	postedURI, postedCID, err := blueskyClient.PostTrendingSummary(clientPosts, runState.OverallSentiment, event.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
+	if err != nil {
 		log.Printf("Failed to post summary: %v", err)
 		return Response{
 			StatusCode: 500,
 			Body:       "Failed to post summary: " + err.Error(),
 		}, err
+	}
+
+	// Store the posted URI and CID for reply functionality
+	if err := h.stateManager.SetTopPostURI(ctx, event.RunID, postedURI, postedCID); err != nil {
+		log.Printf("Failed to store top post URI: %v", err)
+		// Don't fail the entire operation for this
+	} else {
+		log.Printf("Successfully stored top post URI: %s", postedURI)
 	}
 
 	// Trigger sparkline poster (async)
