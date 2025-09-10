@@ -27,7 +27,14 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 	moodWord := getMoodWord100(netSentiment)
 
 	// Generate the post content with new format (mood word as hashtag + debug info)
-	content := fmt.Sprintf("Bluesky is #%s\n%.1f%% sentiment\n\n", moodWord, netSentiment)
+	// Always show + or - sign for sentiment percentage
+	var sentimentSign string
+	if netSentiment >= 0 {
+		sentimentSign = "+"
+	} else {
+		sentimentSign = "-"
+	}
+	content := fmt.Sprintf("Bluesky is #%s\n%s%.1f%% sentiment\n\n", moodWord, sentimentSign, netSentiment)
 
 	for i, post := range topPosts {
 		sentimentSymbol := getSentimentSymbol(post.Sentiment)
