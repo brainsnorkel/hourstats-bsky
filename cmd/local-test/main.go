@@ -359,7 +359,7 @@ func (m *MockLambdaClient) runProcessor(ctx context.Context, runID string, analy
 		}
 
 		// Post to Bluesky with facets and embed cards
-		err = blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, analysisIntervalMinutes, len(deduplicatedPosts), netSentimentPercentage)
+		_, _, err = blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, analysisIntervalMinutes, len(deduplicatedPosts), netSentimentPercentage)
 		if err != nil {
 			return fmt.Errorf("failed to post to Bluesky: %w", err)
 		}

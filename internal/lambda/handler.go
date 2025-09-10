@@ -88,7 +88,8 @@ func (h *HourStatsAnalyzer) RunAnalysis(ctx context.Context) (*AnalysisResult, e
 
 	// Post the results (skip if dry run)
 	if !h.config.Settings.DryRun {
-		if err := h.client.PostTrendingSummary(clientTopPosts, overallSentiment, h.config.Settings.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage); err != nil {
+		_, _, err := h.client.PostTrendingSummary(clientTopPosts, overallSentiment, h.config.Settings.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
+		if err != nil {
 			return &AnalysisResult{
 				Success:      false,
 				ErrorMessage: "Failed to post trending summary: " + err.Error(),
