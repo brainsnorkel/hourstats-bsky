@@ -194,10 +194,11 @@ resource "aws_dynamodb_table" "hourstats_state" {
 
   # Global Secondary Index for querying posts
   global_secondary_index {
-    name            = "posts-index"
-    hash_key        = "runId"
-    range_key       = "postId"
-    projection_type = "ALL"
+    name               = "posts-index"
+    hash_key           = "runId"
+    range_key          = "postId"
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["post", "createdAt", "ttl"]
   }
 
   # Global Secondary Index for efficient run listing

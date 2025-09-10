@@ -74,18 +74,19 @@ func (shm *SentimentHistoryManager) GetSentimentHistory(ctx context.Context, dur
 	// Calculate the start time for the query
 	startTime := time.Now().Add(-duration)
 
-	// Query using the timestamp-index GSI
-	// Since timestamp is the hash key in the GSI, we need to use a different approach
-	// We'll scan the table and filter by timestamp
-	result, err := shm.client.Scan(ctx, &dynamodb.ScanInput{
-		TableName:        aws.String(shm.tableName),
-		FilterExpression: aws.String("#timestamp >= :startTime"),
+	// Use Query on timestamp-index GSI for efficient time-range queries
+	// This is much more cost-effective than scanning the entire table
+	result, err := shm.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(shm.tableName),
+		IndexName:              aws.String("timestamp-index"),
+		KeyConditionExpression: aws.String("#timestamp >= :startTime"),
 		ExpressionAttributeNames: map[string]string{
 			"#timestamp": "timestamp",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":startTime": &types.AttributeValueMemberS{Value: startTime.Format(time.RFC3339)},
 		},
+		ScanIndexForward: aws.Bool(true), // Sort by timestamp ascending
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query sentiment history: %w", err)
@@ -101,7 +102,8 @@ func (shm *SentimentHistoryManager) GetSentimentHistory(ctx context.Context, dur
 		dataPoints = append(dataPoints, dataPoint)
 	}
 
-	// Sort by timestamp to ensure chronological order
+	// Data is already sorted by timestamp due to ScanIndexForward: true
+	// But we'll keep the sort as a safety measure
 	sort.Slice(dataPoints, func(i, j int) bool {
 		return dataPoints[i].Timestamp.Before(dataPoints[j].Timestamp)
 	})
