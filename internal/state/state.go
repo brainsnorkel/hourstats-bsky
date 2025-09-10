@@ -28,6 +28,8 @@ type RunState struct {
 	OverallSentiment        string    `json:"overallSentiment,omitempty" dynamodbav:"overallSentiment,omitempty"`
 	NetSentimentPercentage  float64   `json:"netSentimentPercentage,omitempty" dynamodbav:"netSentimentPercentage,omitempty"`
 	TopPosts                []Post    `json:"topPosts,omitempty" dynamodbav:"topPosts,omitempty"`
+	TopPostURI              string    `json:"topPostURI,omitempty" dynamodbav:"topPostURI,omitempty"`
+	TopPostCID              string    `json:"topPostCID,omitempty" dynamodbav:"topPostCID,omitempty"`
 	CreatedAt               time.Time `json:"createdAt" dynamodbav:"createdAt"`
 	UpdatedAt               time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
 	TTL                     int64     `json:"ttl" dynamodbav:"ttl"`
@@ -338,6 +340,19 @@ func (sm *StateManager) SetPostingComplete(ctx context.Context, runID string) er
 
 	state.Step = "poster"
 	state.Status = "completed"
+
+	return sm.UpdateRun(ctx, state)
+}
+
+// SetTopPostURI stores the URI and CID of the main summary post for reply functionality
+func (sm *StateManager) SetTopPostURI(ctx context.Context, runID, postURI, postCID string) error {
+	state, err := sm.GetLatestRun(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("failed to get current state: %w", err)
+	}
+
+	state.TopPostURI = postURI
+	state.TopPostCID = postCID
 
 	return sm.UpdateRun(ctx, state)
 }

@@ -83,7 +83,8 @@ func (s *Scheduler) runAnalysis() error {
 	clientTopPosts := s.convertToClientPosts(topPosts)
 
 	// Post the results
-	if err := s.client.PostTrendingSummary(clientTopPosts, overallSentiment, s.config.Settings.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage); err != nil {
+	_, _, err := s.client.PostTrendingSummary(clientTopPosts, overallSentiment, s.config.Settings.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
+	if err != nil {
 		return err
 	}
 
