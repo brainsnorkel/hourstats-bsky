@@ -271,9 +271,9 @@ func (h *SparklinePosterHandler) generateDetailedAltText(dataPoints []state.Sent
 	// Calculate statistics
 	stats := h.calculateSentimentStats(dataPoints)
 
-	// Format timestamps for readability
+	// Format timestamps for readability (UTC)
 	formatTime := func(t time.Time) string {
-		return t.Format("Jan 2, 3:04 PM")
+		return t.UTC().Format("Jan 2, 3:04 PM UTC")
 	}
 
 	// Build comprehensive alt text
