@@ -142,13 +142,15 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 
 	// Analyze sentiment extremes
 	extremeMessage := h.analyzeSentimentExtremes(dataPoints)
-	
+
+	// Generate comprehensive alt text
+	altText := h.generateDetailedAltText(dataPoints)
+
 	// Post sparkline with embedded image to Bluesky
 	postText := "📊 Seven day Bluesky sentiment"
 	if extremeMessage != "" {
 		postText += "\n\n" + extremeMessage
 	}
-	altText := "Seven day sentiment trend chart showing community mood over time"
 
 	// Get the top post URI to reply to
 	runState, err := h.stateManager.GetLatestRun(ctx, event.RunID)
@@ -230,14 +232,14 @@ func (h *SparklinePosterHandler) analyzeSentimentExtremes(dataPoints []state.Sen
 	if len(dataPoints) < 2 {
 		return ""
 	}
-	
+
 	// Get the latest sentiment (last data point)
 	latestSentiment := dataPoints[len(dataPoints)-1].NetSentimentPercent
-	
+
 	// Find min and max sentiment values
 	minSentiment := dataPoints[0].NetSentimentPercent
 	maxSentiment := dataPoints[0].NetSentimentPercent
-	
+
 	for _, point := range dataPoints {
 		if point.NetSentimentPercent < minSentiment {
 			minSentiment = point.NetSentimentPercent
@@ -246,18 +248,127 @@ func (h *SparklinePosterHandler) analyzeSentimentExtremes(dataPoints []state.Sen
 			maxSentiment = point.NetSentimentPercent
 		}
 	}
-	
+
 	// Check if latest sentiment is the lowest (with small tolerance for floating point comparison)
 	if latestSentiment <= minSentiment+0.01 {
 		return "* Lowest sentiment for the charted period"
 	}
-	
+
 	// Check if latest sentiment is the highest (with small tolerance for floating point comparison)
 	if latestSentiment >= maxSentiment-0.01 {
 		return "* Highest sentiment for the charted period"
 	}
-	
+
 	return ""
+}
+
+// generateDetailedAltText creates comprehensive alt text for the sparkline chart
+func (h *SparklinePosterHandler) generateDetailedAltText(dataPoints []state.SentimentDataPoint) string {
+	if len(dataPoints) < 2 {
+		return "Seven day sentiment trend chart showing community mood over time"
+	}
+
+	// Calculate statistics
+	stats := h.calculateSentimentStats(dataPoints)
+
+	// Format timestamps for readability
+	formatTime := func(t time.Time) string {
+		return t.Format("Jan 2, 3:04 PM")
+	}
+
+	// Build comprehensive alt text
+	altText := "Seven day Bluesky sentiment trend chart. "
+
+	// Add current sentiment
+	altText += fmt.Sprintf("Current sentiment: %.1f%% (%s). ",
+		stats.Current, formatTime(stats.CurrentTime))
+
+	// Add highest sentiment
+	altText += fmt.Sprintf("Highest sentiment: %.1f%% (%s). ",
+		stats.Highest, formatTime(stats.HighestTime))
+
+	// Add lowest sentiment
+	altText += fmt.Sprintf("Lowest sentiment: %.1f%% (%s). ",
+		stats.Lowest, formatTime(stats.LowestTime))
+
+	// Add average sentiment
+	altText += fmt.Sprintf("Average sentiment: %.1f%%. ", stats.Average)
+
+	// Add trend information
+	if stats.Trend > 0 {
+		altText += "Trending positive over the period."
+	} else if stats.Trend < 0 {
+		altText += "Trending negative over the period."
+	} else {
+		altText += "Stable sentiment over the period."
+	}
+
+	return altText
+}
+
+// SentimentStats holds calculated sentiment statistics
+type SentimentStats struct {
+	Current     float64
+	CurrentTime time.Time
+	Highest     float64
+	HighestTime time.Time
+	Lowest      float64
+	LowestTime  time.Time
+	Average     float64
+	Trend       float64
+}
+
+// calculateSentimentStats calculates comprehensive sentiment statistics
+func (h *SparklinePosterHandler) calculateSentimentStats(dataPoints []state.SentimentDataPoint) SentimentStats {
+	if len(dataPoints) == 0 {
+		return SentimentStats{}
+	}
+
+	// Initialize with first data point
+	stats := SentimentStats{
+		Current:     dataPoints[0].NetSentimentPercent,
+		CurrentTime: dataPoints[0].Timestamp,
+		Highest:     dataPoints[0].NetSentimentPercent,
+		HighestTime: dataPoints[0].Timestamp,
+		Lowest:      dataPoints[0].NetSentimentPercent,
+		LowestTime:  dataPoints[0].Timestamp,
+	}
+
+	// Calculate sum for average
+	sum := 0.0
+	for _, point := range dataPoints {
+		sentiment := point.NetSentimentPercent
+		sum += sentiment
+
+		// Track highest
+		if sentiment > stats.Highest {
+			stats.Highest = sentiment
+			stats.HighestTime = point.Timestamp
+		}
+
+		// Track lowest
+		if sentiment < stats.Lowest {
+			stats.Lowest = sentiment
+			stats.LowestTime = point.Timestamp
+		}
+	}
+
+	// Calculate average
+	stats.Average = sum / float64(len(dataPoints))
+
+	// Get current (most recent) sentiment
+	latest := dataPoints[len(dataPoints)-1]
+	stats.Current = latest.NetSentimentPercent
+	stats.CurrentTime = latest.Timestamp
+
+	// Calculate trend (simple linear trend: first vs last)
+	if len(dataPoints) > 1 {
+		first := dataPoints[0].NetSentimentPercent
+		last := dataPoints[len(dataPoints)-1].NetSentimentPercent
+		stats.Trend = last - first
+	}
+
+	return stats
 }
 
 // postInsufficientDataMessage posts a message about insufficient data
