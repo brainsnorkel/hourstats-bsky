@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image/color"
+	"math"
 	"strings"
 	"time"
 
@@ -139,6 +140,9 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 
 	// Draw sentiment line
 	sg.drawSentimentLine(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
+
+	// Draw Gaussian smoothed trend line
+	sg.drawGaussianTrendLine(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
 
 	// Draw average line
 	sg.drawAverageLine(dc, dataPoints, drawX, drawY, drawWidth, drawHeight, yRange)
@@ -696,4 +700,72 @@ func (sg *SparklineGenerator) drawMultilineStringAnchored(dc *gg.Context, text s
 		lineY := startY + float64(i)*lineHeight
 		dc.DrawStringAnchored(line, x, lineY, anchorX, 0.5)
 	}
+}
+
+// gaussianSmoothing applies Gaussian smoothing to sentiment data
+func gaussianSmoothing(data []float64, sigma float64) []float64 {
+	if len(data) == 0 {
+		return data
+	}
+
+	smoothed := make([]float64, len(data))
+
+	for i := 0; i < len(data); i++ {
+		sum := 0.0
+		weightSum := 0.0
+
+		for j := 0; j < len(data); j++ {
+			distance := math.Abs(float64(j - i))
+			weight := math.Exp(-(distance * distance) / (2 * sigma * sigma))
+
+			sum += data[j] * weight
+			weightSum += weight
+		}
+
+		smoothed[i] = sum / weightSum
+	}
+
+	return smoothed
+}
+
+// drawGaussianTrendLine draws a thin dashed blue Gaussian smoothed trend line
+func (sg *SparklineGenerator) drawGaussianTrendLine(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64, yRange YRange) {
+	if len(dataPoints) < 2 {
+		return
+	}
+
+	// Extract sentiment values for smoothing
+	sentimentValues := make([]float64, len(dataPoints))
+	for i, dp := range dataPoints {
+		sentimentValues[i] = dp.NetSentimentPercent
+	}
+
+	// Apply Gaussian smoothing
+	smoothedData := gaussianSmoothing(sentimentValues, 2.0)
+
+	// Calculate time range
+	startTime := dataPoints[0].Timestamp
+	endTime := dataPoints[len(dataPoints)-1].Timestamp
+	timeRange := endTime.Sub(startTime).Seconds()
+
+	// Draw as thin dashed blue line
+	dc.SetColor(color.RGBA{0, 123, 255, 255}) // Blue color
+	dc.SetLineWidth(1.5)                      // Thin line
+	dc.SetDash(4, 3)                          // Dashed pattern
+
+	for i := 0; i < len(smoothedData)-1; i++ {
+		// Calculate positions using time-based positioning
+		x1 := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		normalizedY1 := (smoothedData[i] - yRange.Center) * yRange.Scale / 100.0
+		y1 := y + height/2 - normalizedY1*(height/2)
+
+		x2 := x + (dataPoints[i+1].Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		normalizedY2 := (smoothedData[i+1] - yRange.Center) * yRange.Scale / 100.0
+		y2 := y + height/2 - normalizedY2*(height/2)
+
+		dc.DrawLine(x1, y1, x2, y2)
+		dc.Stroke()
+	}
+
+	dc.SetDash() // Reset dash pattern
 }
