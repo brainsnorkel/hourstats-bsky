@@ -740,8 +740,9 @@ func (sg *SparklineGenerator) drawGaussianTrendLine(dc *gg.Context, dataPoints [
 		sentimentValues[i] = dp.NetSentimentPercent
 	}
 
-	// Apply Gaussian smoothing
-	smoothedData := gaussianSmoothing(sentimentValues, 2.0)
+	// Apply Gaussian smoothing with higher sigma for longer period smoothing
+	// Sigma=4.0 provides smooth trend over ~8 data points (roughly 16 hours for 2-hour intervals)
+	smoothedData := gaussianSmoothing(sentimentValues, 4.0)
 
 	// Calculate time range
 	startTime := dataPoints[0].Timestamp
