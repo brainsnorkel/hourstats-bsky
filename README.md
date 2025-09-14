@@ -33,7 +33,38 @@ Bluesky is #satisfied
 - **Adult content filtering**: Uses Bluesky's official moderation labels
 - **Deduplication**: Removes duplicate posts, keeping highest engagement version
 - **48-Hour Sentiment Sparkline**: Visual chart showing sentiment trends over the last 48 hours
+- **Yearly Sentiment Analysis**: Monthly charts showing 365 days of daily sentiment averages
+- **Daily Sentiment Aggregation**: Automatic daily averaging of 30-minute sentiment data
+- **3-Year Data Retention**: Historical sentiment data preserved for long-term analysis
 
+## Yearly Sentiment Feature
+
+The bot now includes a comprehensive yearly sentiment analysis system:
+
+### Daily Aggregation
+- **Schedule**: Runs daily at midnight UTC
+- **Process**: Calculates average, minimum, and maximum sentiment from all 30-minute runs during the previous 24 hours
+- **Storage**: Stores daily sentiment data in DynamoDB with 3-year TTL
+- **Data Quality**: Handles missing data gracefully and logs data quality metrics
+
+### Yearly Visualization
+- **Schedule**: Posts monthly on the 1st day at 1:00 AM UTC
+- **Canvas Size**: 25% larger than weekly sparklines (1500x1000 vs 1200x800)
+- **Features**: 
+  - Month markers on horizontal axis
+  - Gaussian trend lines for smooth visualization
+  - Average sentiment line with dotted styling
+  - Sentiment zone watermarks (Positive/Neutral/Negative)
+  - Comprehensive alt text for accessibility
+- **Content**: "Yearly Sentiment (UTC)" title and analysis
+- **Data Requirements**: Minimum 30 days of daily data (graceful fallback for insufficient data)
+
+### Technical Implementation
+- **New Lambda Functions**: `hourstats-daily-aggregator` and `hourstats-yearly-poster`
+- **New DynamoDB Table**: `hourstats-daily-sentiment` with optimized indexes
+- **Enhanced Sparkline Generator**: Yearly-specific visualization with month markers
+- **EventBridge Scheduling**: Automated daily and monthly triggers
+- **Cost Impact**: ~$4.50-8.50/month additional AWS costs
 
 ## Project Status
 
@@ -71,6 +102,9 @@ Bluesky is #satisfied
 - [x] Historical sentiment data storage in DynamoDB
 - [x] Embedded image posting to Bluesky (no external links)
 - [x] Smart fallback for insufficient historical data
+- [x] Daily sentiment aggregation with 3-year data retention
+- [x] Yearly sentiment charts with 25% larger canvas (1500x1000)
+- [x] Monthly yearly posting with month markers and trend analysis
 
 
 ## Tech Stack
@@ -348,6 +382,28 @@ graph TD
   - Posts sparkline charts to Bluesky with embedded images
   - Handles fallback for insufficient historical data
 
+#### 7. **Daily Aggregator Lambda** (`hourstats-daily-aggregator`)
+- **Purpose**: Calculates daily sentiment averages from 30-minute runs
+- **Duration**: ~1 minute
+- **Memory**: 256MB
+- **Schedule**: Daily at midnight UTC
+- **Responsibilities**:
+  - Queries 24 hours of sentiment history data
+  - Calculates daily average, minimum, and maximum sentiment
+  - Stores daily sentiment records in DynamoDB
+  - Handles missing data and edge cases gracefully
+
+#### 8. **Yearly Poster Lambda** (`hourstats-yearly-poster`)
+- **Purpose**: Generates and posts yearly sentiment charts
+- **Duration**: ~3 minutes
+- **Memory**: 512MB
+- **Schedule**: Monthly on 1st day at 1:00 AM UTC
+- **Responsibilities**:
+  - Retrieves 365 days of daily sentiment data
+  - Generates yearly sparkline charts (1500x1000 canvas)
+  - Posts yearly charts to Bluesky with month markers
+  - Handles insufficient data scenarios gracefully
+
 ### DynamoDB State Management
 
 The system uses DynamoDB to store and manage state across Lambda invocations:
@@ -520,6 +576,9 @@ hourstats-bsky/
 │   ├── lambda-aggregator/    # Aggregator Lambda function
 │   ├── lambda-poster/        # Poster Lambda function
 │   ├── lambda-processor/     # Legacy processor (deprecated)
+│   ├── lambda-sparkline-poster/ # Sparkline poster Lambda function
+│   ├── lambda-daily-aggregator/ # Daily sentiment aggregator Lambda function
+│   ├── lambda-yearly-poster/ # Yearly sentiment poster Lambda function
 │   ├── local-test/           # Local testing utility
 │   └── query-runs/           # Query utility for analyzing runs
 ├── internal/                 # Shared packages and business logic
@@ -527,6 +586,7 @@ hourstats-bsky/
 │   ├── analyzer/             # Emotion-based sentiment analysis
 │   ├── formatter/            # Post formatting and display logic
 │   ├── scheduler/            # Analysis scheduling logic
+│   ├── sparkline/            # Sparkline chart generation (weekly and yearly)
 │   ├── config/               # Configuration management
 │   ├── lambda/               # Lambda-specific utilities
 │   └── state/                # DynamoDB state management
@@ -534,6 +594,8 @@ hourstats-bsky/
 │   ├── main.tf               # AWS infrastructure definition
 │   ├── backend.tf            # Terraform backend configuration
 │   ├── state-backend.tf      # State backend configuration
+│   ├── sentiment-history.tf  # Sentiment history DynamoDB table
+│   ├── daily-sentiment.tf    # Daily sentiment DynamoDB table and Lambda functions
 │   └── step-functions-definition.json  # Step Functions workflow
 ├── .github/workflows/        # CI/CD pipeline
 │   └── deploy-lambda.yml     # GitHub Actions deployment
@@ -542,7 +604,8 @@ hourstats-bsky/
 │   └── query-runs.sh         # Query runs utility script
 ├── docs/                     # Documentation
 │   ├── CID_IMPLEMENTATION.md # CID implementation documentation
-│   └── SEQUENCE_DIAGRAMS.md  # Detailed sequence diagrams
+│   ├── SEQUENCE_DIAGRAMS.md  # Detailed sequence diagrams
+│   └── YEARLY_SENTIMENT_DESIGN.md # Yearly sentiment feature design document
 ├── config.example.yaml       # Configuration template
 ├── Makefile                  # Build and run commands
 ├── Makefile.lambda          # Lambda-specific build commands
