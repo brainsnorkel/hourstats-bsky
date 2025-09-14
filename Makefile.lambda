@@ -11,7 +11,7 @@ GOOS = linux
 GOARCH = amd64
 CGO_ENABLED = 0
 
-.PHONY: help build-lambda build-sparkline-poster deploy-lambda destroy-lambda clean-lambda test-lambda
+.PHONY: help build-lambda build-sparkline-poster build-daily-aggregator build-yearly-poster deploy-lambda destroy-lambda clean-lambda test-lambda
 
 help: ## Show this help message
 	@echo "Available targets:"
@@ -35,6 +35,27 @@ build-sparkline-poster: ## Build the sparkline poster Lambda function
 	rm -f bootstrap
 	@echo "Sparkline poster Lambda function built and packaged as lambda-sparkline-poster.zip"
 
+build-daily-aggregator: ## Build the daily aggregator Lambda function
+	@echo "Building daily aggregator Lambda function..."
+	@cd cmd/lambda-daily-aggregator && \
+	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=$(CGO_ENABLED) go build -o bootstrap . && \
+	zip lambda-daily-aggregator.zip bootstrap && \
+	mv lambda-daily-aggregator.zip ../../$(TERRAFORM_DIR)/ && \
+	rm -f bootstrap
+	@echo "Daily aggregator Lambda function built and packaged as lambda-daily-aggregator.zip"
+
+build-yearly-poster: ## Build the yearly poster Lambda function
+	@echo "Building yearly poster Lambda function..."
+	@cd cmd/lambda-yearly-poster && \
+	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=$(CGO_ENABLED) go build -o bootstrap . && \
+	zip lambda-yearly-poster.zip bootstrap && \
+	mv lambda-yearly-poster.zip ../../$(TERRAFORM_DIR)/ && \
+	rm -f bootstrap
+	@echo "Yearly poster Lambda function built and packaged as lambda-yearly-poster.zip"
+
+build-all-lambdas: build-lambda build-sparkline-poster build-daily-aggregator build-yearly-poster ## Build all Lambda functions
+	@echo "All Lambda functions built successfully"
+
 deploy-lambda: build-lambda ## Deploy the Lambda function to AWS
 	@echo "Deploying Lambda function to AWS..."
 	@cd $(TERRAFORM_DIR) && \
@@ -52,7 +73,13 @@ destroy-lambda: ## Destroy the Lambda function and related resources
 clean-lambda: ## Clean up build artifacts
 	@echo "Cleaning up build artifacts..."
 	@rm -f $(TERRAFORM_DIR)/hourstats.zip
+	@rm -f $(TERRAFORM_DIR)/lambda-sparkline-poster.zip
+	@rm -f $(TERRAFORM_DIR)/lambda-daily-aggregator.zip
+	@rm -f $(TERRAFORM_DIR)/lambda-yearly-poster.zip
 	@rm -f $(LAMBDA_DIR)/main
+	@rm -f cmd/lambda-sparkline-poster/bootstrap
+	@rm -f cmd/lambda-daily-aggregator/bootstrap
+	@rm -f cmd/lambda-yearly-poster/bootstrap
 	@echo "Build artifacts cleaned up"
 
 test-lambda: ## Test the Lambda function locally
