@@ -40,6 +40,7 @@ func TestYearlySparklineGenerator(t *testing.T) {
 
 	if generator == nil {
 		t.Error("Expected generator to be created, got nil")
+		return
 	}
 
 	if generator.config == nil {
