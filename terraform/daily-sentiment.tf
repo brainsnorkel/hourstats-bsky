@@ -15,6 +15,11 @@ resource "aws_dynamodb_table" "daily_sentiment" {
     type = "S"
   }
 
+  attribute {
+    name = "createdAt"
+    type = "S"
+  }
+
   ttl {
     attribute_name = "ttl"
     enabled        = true
@@ -25,14 +30,6 @@ resource "aws_dynamodb_table" "daily_sentiment" {
     hash_key           = "date"
     range_key          = "createdAt"
     projection_type    = "ALL"
-  }
-
-  global_secondary_index {
-    name               = "sentiment-range-index"
-    hash_key           = "sentimentRange"
-    range_key          = "date"
-    projection_type    = "INCLUDE"
-    non_key_attributes = ["averageSentiment", "minSentiment", "maxSentiment"]
   }
 
   tags = {
