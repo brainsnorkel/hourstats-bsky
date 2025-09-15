@@ -144,8 +144,9 @@ jobs:
         run: |
           cd terraform
           # Import existing S3 bucket and DynamoDB table if they exist
-          terraform import aws_s3_bucket.terraform_state hourstats-terraform-state || true
-          terraform import aws_dynamodb_table.terraform_locks hourstats-terraform-locks || true
+          # These may already be managed by Terraform, so we ignore errors
+          terraform import aws_s3_bucket.terraform_state hourstats-terraform-state 2>/dev/null || echo "S3 bucket already managed or doesn't exist"
+          terraform import aws_dynamodb_table.terraform_locks hourstats-terraform-locks 2>/dev/null || echo "DynamoDB table already managed or doesn't exist"
 
       - name: Terraform Plan
         run: |
