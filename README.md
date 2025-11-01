@@ -640,6 +640,16 @@ make test
 make fmt
 ```
 
+### Code Linting
+
+**⚠️ Important: Always run the linter before merging to main or pushing main to the remote.**
+
+```bash
+make lint
+```
+
+This runs `golangci-lint` with the same configuration used in GitHub Actions. Fix any linting errors before pushing to avoid CI failures.
+
 ## Deployment
 
 The system is deployed using GitHub Actions and Terraform:
