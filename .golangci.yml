@@ -1,10 +1,9 @@
-version: 2
+version: "2"
 
 run:
   timeout: 5m
 
 linters:
-  disable-all: true
   enable:
     - errcheck
     - govet
@@ -13,7 +12,8 @@ linters:
     - unused
 
 issues:
-  exclude-rules:
+  exclude-use-default: false
+  rules:
     - path: internal/config/config\.go
       linters:
         - typecheck
