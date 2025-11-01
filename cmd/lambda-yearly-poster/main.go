@@ -249,27 +249,6 @@ func (h *YearlyPosterHandler) getBlueskyCredentials(ctx context.Context) (string
 	return handle, password, nil
 }
 
-// generateWikipediaLink generates a Wikipedia link for a given date
-func (h *YearlyPosterHandler) generateWikipediaLink(dateStr string) string {
-	// Parse the date
-	date, err := time.Parse("2006-01-02", dateStr)
-	if err != nil {
-		return ""
-	}
-
-	// Format date as Month_Day for Wikipedia URL
-	// Example: 2025-09-18 -> September_2025#2025_September_18
-	monthName := date.Format("January")
-	year := date.Year()
-	day := date.Day()
-
-	// Wikipedia URL format: https://en.wikipedia.org/wiki/Portal:Current_events/September_2025#2025_September_18
-	url := fmt.Sprintf("https://en.wikipedia.org/wiki/Portal:Current_events/%s_%d#%d_%s_%d",
-		monthName, year, year, monthName, day)
-
-	return url
-}
-
 // analyzeYearlySentimentExtremes checks for notable sentiment patterns in the yearly data
 func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.YearlySparklineDataPoint) string {
 	if len(dataPoints) < 30 {
