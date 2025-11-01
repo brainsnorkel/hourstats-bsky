@@ -135,11 +135,11 @@ resource "aws_cloudwatch_event_target" "daily_aggregation_target" {
   })
 }
 
-# EventBridge Rule for Yearly Posting (runs monthly on 1st at 1:00 AM UTC)
+# EventBridge Rule for Yearly Posting (runs daily at 1:00 AM UTC)
 resource "aws_cloudwatch_event_rule" "yearly_posting_schedule" {
   name                = "hourstats-yearly-posting-schedule"
-  description         = "Trigger yearly sentiment posting on 1st of month at 1:00 AM UTC"
-  schedule_expression = "cron(0 1 1 * ? *)"
+  description         = "Trigger yearly sentiment posting daily at 1:00 AM UTC"
+  schedule_expression = "cron(0 1 * * ? *)"
 
   tags = {
     Name        = "hourstats-yearly-posting-schedule"
