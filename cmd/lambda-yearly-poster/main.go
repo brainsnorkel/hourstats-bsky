@@ -314,26 +314,13 @@ func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.
 
 	// Always include highest and lowest sentiment with Wikipedia links
 	// Format dates for display as "Jan 2" format
-	// The date + "events" text will be linked via facets, URLs are stored separately for facet creation
-	type linkInfo struct {
-		text string
-		url  string
-	}
-	var linkInfos []linkInfo
-	
+	// The date + "events" text will be linked via facets
 	if minDate != "" {
 		if date, err := time.Parse("2006-01-02", minDate); err == nil {
 			minDateDisplay := date.Format("Jan 2")
-			// Generate Wikipedia URL for the facet
-			minWikiLink := h.generateWikipediaLink(minDate)
-			if minWikiLink != "" {
-				// Format as "Sep 18 events" which will be linked via facets
-				linkText := fmt.Sprintf("%s events", minDateDisplay)
-				insights = append(insights, fmt.Sprintf("Lowest: %.1f%% %s", minSentiment, linkText))
-				linkInfos = append(linkInfos, linkInfo{text: linkText, url: minWikiLink})
-			} else {
-				insights = append(insights, fmt.Sprintf("Lowest: %.1f%% %s", minSentiment, minDateDisplay))
-			}
+			// Format as "Sep 18 events" which will be linked via facets
+			linkText := fmt.Sprintf("%s events", minDateDisplay)
+			insights = append(insights, fmt.Sprintf("Lowest: %.1f%% %s", minSentiment, linkText))
 		} else {
 			insights = append(insights, fmt.Sprintf("Lowest: %.1f%%", minSentiment))
 		}
@@ -342,16 +329,9 @@ func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.
 	if maxDate != "" {
 		if date, err := time.Parse("2006-01-02", maxDate); err == nil {
 			maxDateDisplay := date.Format("Jan 2")
-			// Generate Wikipedia URL for the facet
-			maxWikiLink := h.generateWikipediaLink(maxDate)
-			if maxWikiLink != "" {
-				// Format as "Oct 10 events" which will be linked via facets
-				linkText := fmt.Sprintf("%s events", maxDateDisplay)
-				insights = append(insights, fmt.Sprintf("Highest: %.1f%% %s", maxSentiment, linkText))
-				linkInfos = append(linkInfos, linkInfo{text: linkText, url: maxWikiLink})
-			} else {
-				insights = append(insights, fmt.Sprintf("Highest: %.1f%% %s", maxSentiment, maxDateDisplay))
-			}
+			// Format as "Oct 10 events" which will be linked via facets
+			linkText := fmt.Sprintf("%s events", maxDateDisplay)
+			insights = append(insights, fmt.Sprintf("Highest: %.1f%% %s", maxSentiment, linkText))
 		} else {
 			insights = append(insights, fmt.Sprintf("Highest: %.1f%%", maxSentiment))
 		}

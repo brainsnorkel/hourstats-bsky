@@ -158,9 +158,6 @@ func main() {
 
 	log.Println("✅ Authenticated with Bluesky")
 
-	// Create facets for Wikipedia URLs to make them clickable
-	wikipediaFacets := client.CreateWikipediaLinkFacets(postText)
-
 	// Truncate post text to 300 graphemes (Bluesky limit)
 	// We need to be careful because facets reference byte positions, so we truncate before creating facets
 	maxGraphemes := 300
@@ -183,8 +180,8 @@ func main() {
 		}
 	}
 
-	// Recreate facets based on truncated text
-	wikipediaFacets = client.CreateWikipediaLinkFacets(truncatedPostText)
+	// Create facets for Wikipedia URLs to make them clickable (based on truncated text)
+	wikipediaFacets := client.CreateWikipediaLinkFacets(truncatedPostText)
 
 	// Post the chart
 	var postURI, postCID string
