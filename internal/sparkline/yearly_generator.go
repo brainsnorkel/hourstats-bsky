@@ -818,12 +818,13 @@ func (yg *YearlySparklineGenerator) drawYearlyMultilineStringAnchored(dc *gg.Con
 
 	// Calculate starting Y position based on anchor
 	startY := y
-	if anchorY == 0.5 { // Center anchor
+	switch anchorY {
+	case 0.5: // Center anchor
 		startY = y - totalHeight/2
-	} else if anchorY == 1.0 { // Top anchor
+	case 1.0: // Top anchor
 		startY = y - totalHeight
+	// For bottom anchor (anchorY == 0.0), startY remains as y (default case)
 	}
-	// For bottom anchor (anchorY == 0.0), startY remains as y
 
 	// Draw each line
 	for i, line := range lines {
