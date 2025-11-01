@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -140,6 +141,12 @@ func (dsm *DailySentimentManager) GetYearlySentimentData(ctx context.Context) ([
 			NetSentimentPercent: daily.AverageSentiment, // Alias for compatibility
 		})
 	}
+
+	// Sort by timestamp to ensure chronological order
+	// This is critical for proper graph rendering
+	sort.Slice(yearlyData, func(i, j int) bool {
+		return yearlyData[i].Timestamp.Before(yearlyData[j].Timestamp)
+	})
 
 	return yearlyData, nil
 }

@@ -131,20 +131,53 @@ func (h *YearlyPosterHandler) HandleRequest(ctx context.Context, event Event) (R
 		}, err
 	}
 
-	// Analyze yearly sentiment extremes
+	// Analyze yearly sentiment extremes with Wikipedia links
 	extremeMessage := h.analyzeYearlySentimentExtremes(yearlyData)
 
 	// Generate comprehensive alt text
 	altText := h.generateYearlyAltText(yearlyData)
 
 	// Post yearly sparkline with embedded image to Bluesky
-	postText := "📊 Yearly Sentiment (UTC)"
+	// Format: "Bluesky Sentiment {start date} - {end date}"
+	var postText string
+	if len(yearlyData) > 0 {
+		startDate := yearlyData[0].Timestamp.Format("2006-01-02")
+		endDate := yearlyData[len(yearlyData)-1].Timestamp.Format("2006-01-02")
+		postText = fmt.Sprintf("Bluesky Sentiment %s - %s", startDate, endDate)
+	} else {
+		postText = "Bluesky Sentiment"
+	}
 	if extremeMessage != "" {
 		postText += "\n\n" + extremeMessage
 	}
 
-	// Post the yearly chart
-	err = blueskyClient.PostWithImage(ctx, postText, imageData, altText)
+	// Truncate post text to 300 graphemes (Bluesky limit)
+	maxGraphemes := 300
+	truncatedPostText := postText
+	if len([]rune(postText)) > maxGraphemes {
+		runes := []rune(postText)
+		if len(runes) > maxGraphemes {
+			truncated := string(runes[:maxGraphemes])
+			lastNewline := strings.LastIndex(truncated, "\n")
+			if lastNewline > maxGraphemes/2 {
+				truncatedPostText = truncated[:lastNewline]
+			} else {
+				truncatedPostText = truncated
+			}
+			log.Printf("Post text truncated from %d to %d graphemes", len(runes), len([]rune(truncatedPostText)))
+		}
+	}
+
+	// Create facets for Wikipedia URLs to make them clickable (based on truncated text)
+	wikipediaFacets := client.CreateWikipediaLinkFacets(truncatedPostText)
+
+	// Post the yearly chart and get post URI/CID
+	var postURI, postCID string
+	if len(wikipediaFacets) > 0 {
+		postURI, postCID, err = blueskyClient.PostWithImage(ctx, truncatedPostText, imageData, altText, wikipediaFacets)
+	} else {
+		postURI, postCID, err = blueskyClient.PostWithImage(ctx, truncatedPostText, imageData, altText)
+	}
 	if err != nil {
 		log.Printf("Failed to post yearly sparkline: %v", err)
 		return Response{
@@ -153,9 +186,14 @@ func (h *YearlyPosterHandler) HandleRequest(ctx context.Context, event Event) (R
 		}, err
 	}
 
-	// Note: Pinning functionality would be implemented here when available
-	// For now, we'll just log that we would pin the post
-	log.Printf("Yearly sentiment chart posted successfully (pinning not yet implemented)")
+	// Pin the post to the account profile
+	err = blueskyClient.PinPost(ctx, postURI, postCID)
+	if err != nil {
+		log.Printf("Failed to pin yearly post: %v (post was successful)", err)
+		// Don't fail the entire operation if pinning fails
+	} else {
+		log.Printf("Yearly sentiment chart posted and pinned successfully")
+	}
 
 	log.Printf("Successfully posted yearly sentiment chart with %d days of data", len(yearlyData))
 	return Response{
@@ -211,6 +249,27 @@ func (h *YearlyPosterHandler) getBlueskyCredentials(ctx context.Context) (string
 	return handle, password, nil
 }
 
+// generateWikipediaLink generates a Wikipedia link for a given date
+func (h *YearlyPosterHandler) generateWikipediaLink(dateStr string) string {
+	// Parse the date
+	date, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return ""
+	}
+
+	// Format date as Month_Day for Wikipedia URL
+	// Example: 2025-09-18 -> September_2025#2025_September_18
+	monthName := date.Format("January")
+	year := date.Year()
+	day := date.Day()
+
+	// Wikipedia URL format: https://en.wikipedia.org/wiki/Portal:Current_events/September_2025#2025_September_18
+	url := fmt.Sprintf("https://en.wikipedia.org/wiki/Portal:Current_events/%s_%d#%d_%s_%d",
+		monthName, year, year, monthName, day)
+
+	return url
+}
+
 // analyzeYearlySentimentExtremes checks for notable sentiment patterns in the yearly data
 func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.YearlySparklineDataPoint) string {
 	if len(dataPoints) < 30 {
@@ -253,21 +312,48 @@ func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.
 		insights = append(insights, "Currently below yearly average")
 	}
 
-	// Add extreme dates if they're recent (within last 30 days)
-	now := time.Now()
-	for _, point := range dataPoints {
-		date, err := time.Parse("2006-01-02", point.Date)
-		if err != nil {
-			continue
+	// Always include highest and lowest sentiment with Wikipedia links
+	// Format dates for display as "Jan 2" format
+	// The date + "events" text will be linked via facets, URLs are stored separately for facet creation
+	type linkInfo struct {
+		text string
+		url  string
+	}
+	var linkInfos []linkInfo
+	
+	if minDate != "" {
+		if date, err := time.Parse("2006-01-02", minDate); err == nil {
+			minDateDisplay := date.Format("Jan 2")
+			// Generate Wikipedia URL for the facet
+			minWikiLink := h.generateWikipediaLink(minDate)
+			if minWikiLink != "" {
+				// Format as "Sep 18 events" which will be linked via facets
+				linkText := fmt.Sprintf("%s events", minDateDisplay)
+				insights = append(insights, fmt.Sprintf("Lowest: %.1f%% %s", minSentiment, linkText))
+				linkInfos = append(linkInfos, linkInfo{text: linkText, url: minWikiLink})
+			} else {
+				insights = append(insights, fmt.Sprintf("Lowest: %.1f%% %s", minSentiment, minDateDisplay))
+			}
+		} else {
+			insights = append(insights, fmt.Sprintf("Lowest: %.1f%%", minSentiment))
 		}
+	}
 
-		if now.Sub(date).Hours() < 24*30 { // Within last 30 days
-			if point.AverageSentiment == minSentiment {
-				insights = append(insights, fmt.Sprintf("Lowest sentiment this year: %.1f%% (%s)", minSentiment, minDate))
+	if maxDate != "" {
+		if date, err := time.Parse("2006-01-02", maxDate); err == nil {
+			maxDateDisplay := date.Format("Jan 2")
+			// Generate Wikipedia URL for the facet
+			maxWikiLink := h.generateWikipediaLink(maxDate)
+			if maxWikiLink != "" {
+				// Format as "Oct 10 events" which will be linked via facets
+				linkText := fmt.Sprintf("%s events", maxDateDisplay)
+				insights = append(insights, fmt.Sprintf("Highest: %.1f%% %s", maxSentiment, linkText))
+				linkInfos = append(linkInfos, linkInfo{text: linkText, url: maxWikiLink})
+			} else {
+				insights = append(insights, fmt.Sprintf("Highest: %.1f%% %s", maxSentiment, maxDateDisplay))
 			}
-			if point.AverageSentiment == maxSentiment {
-				insights = append(insights, fmt.Sprintf("Highest sentiment this year: %.1f%% (%s)", maxSentiment, maxDate))
-			}
+		} else {
+			insights = append(insights, fmt.Sprintf("Highest: %.1f%%", maxSentiment))
 		}
 	}
 

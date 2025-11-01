@@ -426,7 +426,8 @@ func (h *SparklinePosterHandler) postInsufficientDataMessage(ctx context.Context
 
 // postStandaloneSparkline posts the sparkline as a standalone post (fallback when reply fails)
 func (h *SparklinePosterHandler) postStandaloneSparkline(ctx context.Context, blueskyClient *client.BlueskyClient, postText string, imageData []byte, altText string) (Response, error) {
-	if err := blueskyClient.PostWithImage(ctx, postText, imageData, altText); err != nil {
+	_, _, err := blueskyClient.PostWithImage(ctx, postText, imageData, altText)
+	if err != nil {
 		log.Printf("Failed to post sparkline with embedded image: %v", err)
 		return Response{
 			StatusCode: 500,
