@@ -191,9 +191,23 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
 		}
 
+		// Don't stop just because this batch had 0 posts within the time window
+		// Continue searching until we either find posts or confirm we're past the time window
 		if len(posts) == 0 {
-			log.Printf("📭 FETCHER: No posts retrieved in iteration %d, stopping", iteration)
-			break
+			log.Printf("📭 FETCHER: No posts within time window in iteration %d (cutoff: %s)", iteration, cutoffTime.Format("2006-01-02 15:04:05 UTC"))
+			// Continue to next iteration unless we've confirmed we're past the time window
+			if shouldStop {
+				log.Printf("⏰ FETCHER: Confirmed past time window, stopping at iteration %d", iteration)
+				break
+			}
+			// Prepare for next iteration - but only continue if we haven't exceeded max iterations
+			if iteration >= maxIterations {
+				log.Printf("⚠️ FETCHER: Reached max iterations (%d) without finding posts, stopping", maxIterations)
+				break
+			}
+			currentCursor = fmt.Sprintf("%d", iteration*1000)
+			log.Printf("➡️ FETCHER: Continuing search - preparing next iteration with cursor: %s", currentCursor)
+			continue
 		}
 
 		// Count duplicates in this iteration
