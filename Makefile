@@ -117,8 +117,14 @@ test-multi-lambda:
 fmt:
 	go fmt ./...
 
-# Lint code
+# Lint code (requires golangci-lint: https://golangci-lint.run/usage/install/)
 lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "Error: golangci-lint is not installed."; \
+		echo "Install it with: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin latest"; \
+		echo "Or on macOS: brew install golangci-lint"; \
+		exit 1; \
+	}
 	golangci-lint run
 
 # Help
