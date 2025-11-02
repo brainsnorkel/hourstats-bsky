@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **CRITICAL**: Fixed missing DynamoDB pagination in `GetAllPosts` causing only first page of results (~100 posts) to be retrieved instead of all posts (800+)
+- Fixed missing pagination in `GetSentimentHistory` and `GetSentimentHistoryForRun` functions
+- Added proper pagination handling using `LastEvaluatedKey` and `ExclusiveStartKey` for all DynamoDB queries and scans
+- Added logging to track pagination progress (page count and items per page)
+
+### Technical Details
+- DynamoDB Query/Scan operations return up to 1MB of data per request
+- When results exceed 1MB, DynamoDB paginates results using `LastEvaluatedKey`
+- Previously, only the first page was retrieved, causing ~90% of posts to be missing
+- Fix implements proper pagination loop to retrieve all pages until `LastEvaluatedKey` is nil
+- Fix affects: `GetAllPosts`, `GetSentimentHistory`, `GetSentimentHistoryForRun`
+
 ## [2025-01-05] - Yearly Sentiment Analysis Feature
 
 ### Added
