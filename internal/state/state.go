@@ -256,47 +256,71 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 }
 
 // GetAllPosts retrieves all posts for a run
+// Handles pagination to retrieve all posts across multiple DynamoDB pages
 func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, error) {
+	var allPosts []Post
+	var lastEvaluatedKey map[string]types.AttributeValue
+	pageCount := 0
 
-	// Query all posts for this run using the posts-index GSI
-	result, err := sm.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(sm.tableName),
-		IndexName:              aws.String("posts-index"),
-		KeyConditionExpression: aws.String("runId = :runId AND begins_with(postId, :postIdPrefix)"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":runId":        &types.AttributeValueMemberS{Value: runID},
-			":postIdPrefix": &types.AttributeValueMemberS{Value: runID + "#"},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to query posts: %w", err)
-	}
-
-	var posts []Post
-	for _, item := range result.Items {
-		// Try to unmarshal as PostBatch first (new format)
-		var postBatch PostBatch
-		err := attributevalue.UnmarshalMap(item, &postBatch)
-		if err == nil && strings.Contains(postBatch.PostID, "#batch") {
-			// This is a batched post item
-			posts = append(posts, postBatch.Posts...)
-			continue
+	for {
+		// Query all posts for this run using the posts-index GSI
+		queryInput := &dynamodb.QueryInput{
+			TableName:              aws.String(sm.tableName),
+			IndexName:              aws.String("posts-index"),
+			KeyConditionExpression: aws.String("runId = :runId AND begins_with(postId, :postIdPrefix)"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":runId":        &types.AttributeValueMemberS{Value: runID},
+				":postIdPrefix": &types.AttributeValueMemberS{Value: runID + "#"},
+			},
 		}
 
-		// Fallback to individual PostItem (legacy format)
-		var postItem PostItem
-		err = attributevalue.UnmarshalMap(item, &postItem)
+		// Add pagination token if we're continuing from a previous page
+		if lastEvaluatedKey != nil {
+			queryInput.ExclusiveStartKey = lastEvaluatedKey
+		}
+
+		result, err := sm.client.Query(ctx, queryInput)
 		if err != nil {
-			log.Printf("Warning: failed to unmarshal post item: %v", err)
-			continue
+			return nil, fmt.Errorf("failed to query posts: %w", err)
 		}
-		// Only include posts that have a postId with # (filter out run state items)
-		if strings.Contains(postItem.PostID, "#") && !strings.Contains(postItem.PostID, "#batch") {
-			posts = append(posts, postItem.Post)
+
+		pageCount++
+		log.Printf("GetAllPosts: Retrieved page %d with %d items", pageCount, len(result.Items))
+
+		// Process items from this page
+		for _, item := range result.Items {
+			// Try to unmarshal as PostBatch first (new format)
+			var postBatch PostBatch
+			err := attributevalue.UnmarshalMap(item, &postBatch)
+			if err == nil && strings.Contains(postBatch.PostID, "#batch") {
+				// This is a batched post item
+				allPosts = append(allPosts, postBatch.Posts...)
+				continue
+			}
+
+			// Fallback to individual PostItem (legacy format)
+			var postItem PostItem
+			err = attributevalue.UnmarshalMap(item, &postItem)
+			if err != nil {
+				log.Printf("Warning: failed to unmarshal post item: %v", err)
+				continue
+			}
+			// Only include posts that have a postId with # (filter out run state items)
+			if strings.Contains(postItem.PostID, "#") && !strings.Contains(postItem.PostID, "#batch") {
+				allPosts = append(allPosts, postItem.Post)
+			}
 		}
+
+		// Check if there are more pages to retrieve
+		if result.LastEvaluatedKey == nil || len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+
+		lastEvaluatedKey = result.LastEvaluatedKey
 	}
 
-	return posts, nil
+	log.Printf("GetAllPosts: Retrieved %d total posts across %d pages", len(allPosts), pageCount)
+	return allPosts, nil
 }
 
 // UpdateCursor updates the cursor for the next fetch
