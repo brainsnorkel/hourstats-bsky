@@ -122,6 +122,121 @@ The bot now includes a comprehensive yearly sentiment analysis system:
 - **Image Storage**: S3 with public read access
 - **Infrastructure**: Terraform with S3 remote state
 
+## DynamoDB Backup and Restore
+
+The project includes utilities for backing up and restoring DynamoDB tables to/from S3 or local filesystem.
+
+### Building the Utilities
+
+```bash
+# Build both backup and restore utilities
+make build-backup-tools
+
+# Or build individually
+make build-backup
+make build-restore
+```
+
+This creates executables in the `bin/` directory:
+- `bin/dynamodb-backup` - Backup utility
+- `bin/dynamodb-restore` - Restore utility
+
+### Backup Utility
+
+Backs up DynamoDB tables to local files or S3.
+
+**Usage:**
+```bash
+# Backup to local directory
+./bin/dynamodb-backup --tables hourstats-state,hourstats-sentiment-history,hourstats-daily-sentiment --output ./backups
+
+# Backup to local and upload to S3
+./bin/dynamodb-backup \
+  --tables hourstats-state,hourstats-sentiment-history \
+  --output ./backups \
+  --s3-bucket hourstats-backups \
+  --s3-prefix backups/
+
+# With compression
+./bin/dynamodb-backup --tables hourstats-state --output ./backups --compress
+
+# Verbose output
+./bin/dynamodb-backup --tables hourstats-state --output ./backups --verbose
+```
+
+**Options:**
+- `--tables` (required): Comma-separated list of table names to backup
+- `--output` (default: `./backups`): Output directory for backups
+- `--s3-bucket` (optional): S3 bucket name - if provided, backup will be uploaded
+- `--s3-prefix` (default: `hourstats-backup`): S3 prefix for backup files
+- `--compress`: Compress backup files with gzip
+- `--verbose`: Enable verbose logging with progress updates
+
+**Backup Format:**
+- Creates a directory: `backup-{timestamp}/`
+- Contains:
+  - `manifest.json` - Backup metadata (timestamp, tables, item counts, checksums)
+  - `{table-name}.jsonl` - One DynamoDB item per line in JSON format
+  - `{table-name}.metadata.json` - Table schema and GSI information
+
+### Restore Utility
+
+Restores DynamoDB tables from backup files.
+
+**Usage:**
+```bash
+# Restore from local directory
+./bin/dynamodb-restore \
+  --input ./backups/backup-2025-11-02T10-30-00Z \
+  --tables hourstats-state
+
+# Restore all tables from local backup
+./bin/dynamodb-restore \
+  --input ./backups/backup-2025-11-02T10-30-00Z
+
+# Restore from S3
+./bin/dynamodb-restore \
+  --s3-bucket hourstats-backups \
+  --s3-prefix backups/backup-2025-11-02T10-30-00Z \
+  --tables hourstats-state
+
+# Dry run (preview what would be restored)
+./bin/dynamodb-restore \
+  --input ./backups/backup-2025-11-02T10-30-00Z \
+  --tables hourstats-state \
+  --dry-run
+
+# Verbose output
+./bin/dynamodb-restore \
+  --input ./backups/backup-2025-11-02T10-30-00Z \
+  --tables hourstats-state \
+  --verbose
+```
+
+**Options:**
+- `--input`: Input path to backup directory (required if not using S3)
+- `--s3-bucket`: S3 bucket name (required if not using local input)
+- `--s3-prefix`: S3 prefix for backup files (required if using S3)
+- `--tables`: Comma-separated list of table names to restore (empty = restore all tables)
+- `--clear-first`: Clear table before restore (WARNING: deletes existing data)
+- `--dry-run`: Dry run mode - show what would be restored without actually restoring
+- `--verbose`: Enable verbose logging with progress updates
+
+**Important Notes:**
+- Restore uses batch writes (25 items per batch) for efficiency
+- TTL values are preserved during backup/restore
+- Items that have expired (past TTL) are not included in backups (DynamoDB doesn't return expired items)
+- Restore will merge with existing data unless `--clear-first` is used (clear-first is not fully implemented)
+- The restore process includes retry logic for throttling errors
+
+### Backup Best Practices
+
+1. **Regular Backups**: Schedule regular backups of all application tables
+2. **S3 Storage**: Use S3 for long-term backup storage with versioning enabled
+3. **Compression**: Use `--compress` for large tables to save storage space
+4. **Verification**: Use `--dry-run` before restoring to verify backup integrity
+5. **TTL Awareness**: Remember that TTL-expired items won't be in backups
+
 ## Long-Term Expectations
 
 ### Data Volume & Processing Requirements
