@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -281,117 +280,6 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 
 	log.Printf("🏁 FETCHER: Sequential fetch complete - Total posts: %d across %d iterations", totalPosts, iteration)
 	return totalPosts, nil
-}
-
-// fetchBatchInParallel makes 10 parallel API calls and returns combined results
-func (h *FetcherHandler) fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient, startCursor string, cutoffTime time.Time) ([]bskyclient.Post, bool, error) {
-	// Define cursors for 10 parallel calls (100 posts each = 1000 total)
-	cursors := []string{
-		startCursor,
-		addToCursor(startCursor, 100),
-		addToCursor(startCursor, 200),
-		addToCursor(startCursor, 300),
-		addToCursor(startCursor, 400),
-		addToCursor(startCursor, 500),
-		addToCursor(startCursor, 600),
-		addToCursor(startCursor, 700),
-		addToCursor(startCursor, 800),
-		addToCursor(startCursor, 900),
-	}
-	log.Printf("🚀 FETCHER: Making 10 parallel API calls with cursors: %v", cursors)
-
-	var allPosts []bskyclient.Post
-	var oldestPostTime *time.Time
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	// Launch 10 goroutines for parallel fetching with 1-second delays
-	for i, cursor := range cursors {
-		wg.Add(1)
-		go func(cursorIndex int, cursorValue string) {
-			defer wg.Done()
-
-			// Add 1-second delay between goroutine starts to reduce API load
-			time.Sleep(time.Duration(cursorIndex) * time.Second)
-
-			log.Printf("📡 FETCHER: Starting parallel call %d with cursor: %s", cursorIndex+1, cursorValue)
-
-			// Fetch posts with the given cursor
-			posts, _, _, err := client.GetTrendingPostsBatch(ctx, cursorValue, cutoffTime)
-
-			if err != nil {
-				log.Printf("❌ FETCHER: Parallel call %d failed: %v", cursorIndex+1, err)
-				return
-			}
-
-			log.Printf("✅ FETCHER: Parallel call %d completed - Retrieved %d posts", cursorIndex+1, len(posts))
-
-			// Find the oldest post in this batch to track the true boundary
-			var localOldestTime *time.Time
-			if len(posts) > 0 {
-				// Find the oldest post in this batch (posts are sorted by most recent first)
-				oldestPost := posts[len(posts)-1]
-				postTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
-				if err == nil {
-					localOldestTime = &postTime
-
-					// Convert to Unix timestamps for clean comparison
-					postUnixTime := postTime.Unix()
-					cutoffUnixTime := cutoffTime.Unix()
-
-					log.Printf("🎯 FETCHER: Parallel call %d - Oldest post Unix: %d, Cutoff Unix: %d (diff: %d seconds)",
-						cursorIndex+1, postUnixTime, cutoffUnixTime, postUnixTime-cutoffUnixTime)
-
-					if postUnixTime < cutoffUnixTime {
-						log.Printf("🎯 FETCHER: Parallel call %d found posts before cutoff time (oldest: %d < cutoff: %d)",
-							cursorIndex+1, postUnixTime, cutoffUnixTime)
-					}
-				}
-			}
-
-			// Thread-safe accumulation and boundary tracking
-			mu.Lock()
-			allPosts = append(allPosts, posts...)
-
-			// Track the oldest post time across all goroutines
-			if localOldestTime != nil {
-				if oldestPostTime == nil || localOldestTime.Before(*oldestPostTime) {
-					oldestPostTime = localOldestTime
-				}
-			}
-			mu.Unlock()
-		}(i, cursor)
-	}
-
-	// Wait for all goroutines to complete
-	wg.Wait()
-
-	// Determine if we should stop based on the oldest post across all goroutines
-	shouldStop := false
-	if oldestPostTime != nil && oldestPostTime.Before(cutoffTime) {
-		shouldStop = true
-		log.Printf("⏰ FETCHER: Found posts before cutoff time across all goroutines (oldest: %s < cutoff: %s)",
-			oldestPostTime.Format("2006-01-02 15:04:05"), cutoffTime.Format("2006-01-02 15:04:05"))
-	}
-
-	log.Printf("🎯 FETCHER: Parallel batch complete - Total posts: %d, Should stop: %t", len(allPosts), shouldStop)
-	return allPosts, shouldStop, nil
-}
-
-// addToCursor adds a number to a cursor string (handles empty string case)
-func addToCursor(cursor string, add int) string {
-	if cursor == "" {
-		return fmt.Sprintf("%d", add)
-	}
-
-	// Parse current cursor as number and add
-	var current int
-	if _, err := fmt.Sscanf(cursor, "%d", &current); err != nil {
-		// If parsing fails, return the addition value
-		return fmt.Sprintf("%d", add)
-	}
-
-	return fmt.Sprintf("%d", current+add)
 }
 
 // convertToStatePosts converts client posts to state posts
