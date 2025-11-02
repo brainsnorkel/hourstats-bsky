@@ -1,18 +1,12 @@
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
-  disable-all: true
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
-
-issues:
-  exclude-rules:
-    - path: internal/config/config\.go
-      linters:
-        - typecheck

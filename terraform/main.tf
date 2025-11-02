@@ -107,6 +107,24 @@ resource "aws_iam_policy" "lambda_policy" {
       {
         Effect = "Allow"
         Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+        Resource = aws_dynamodb_table.daily_sentiment.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+        Resource = "${aws_dynamodb_table.daily_sentiment.arn}/index/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "dynamodb:Query"
         ]
         Resource = "${aws_dynamodb_table.hourstats_state.arn}/index/*"
@@ -130,7 +148,9 @@ resource "aws_iam_policy" "lambda_policy" {
           aws_lambda_function.hourstats_orchestrator.arn,
           aws_lambda_function.hourstats_fetcher.arn,
           aws_lambda_function.hourstats_processor.arn,
-          aws_lambda_function.hourstats_sparkline_poster.arn
+          aws_lambda_function.hourstats_sparkline_poster.arn,
+          aws_lambda_function.hourstats_daily_aggregator.arn,
+          aws_lambda_function.hourstats_yearly_poster.arn
         ]
       }
     ]
@@ -152,6 +172,12 @@ resource "aws_iam_role_policy_attachment" "lambda_policy" {
 resource "aws_iam_role_policy_attachment" "sentiment_history_policy" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = aws_iam_policy.sentiment_history_access.arn
+}
+
+# Attach daily sentiment policy to role
+resource "aws_iam_role_policy_attachment" "daily_sentiment_policy" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.daily_sentiment_access.arn
 }
 
 # Note: S3 sparkline policy attachment removed - using embedded images instead

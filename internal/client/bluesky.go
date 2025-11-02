@@ -783,16 +783,17 @@ func (c *BlueskyClient) UploadImage(ctx context.Context, imageData []byte, altTe
 	return imageRef, nil
 }
 
-// PostWithImage posts a text with an embedded image
-func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageData []byte, altText string) error {
+// PostWithImage posts a text with an embedded image and returns the post URI and CID
+// Optional facets can be provided to make URLs or other text clickable
+func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageData []byte, altText string, facets ...[]*bsky.RichtextFacet) (string, string, error) {
 	if c.client == nil {
-		return fmt.Errorf("client not authenticated")
+		return "", "", fmt.Errorf("client not authenticated")
 	}
 
 	// Upload the image first
 	imageRef, err := c.UploadImage(ctx, imageData, altText)
 	if err != nil {
-		return fmt.Errorf("failed to upload image: %w", err)
+		return "", "", fmt.Errorf("failed to upload image: %w", err)
 	}
 
 	// Create the post with image embed
@@ -806,19 +807,26 @@ func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageDat
 		},
 	}
 
+	// Add facets if provided
+	if len(facets) > 0 && len(facets[0]) > 0 {
+		postRecord.Facets = facets[0]
+	}
+
 	// Post the record
-	_, err = atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+	result, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
 		Repo:       c.handle,
 		Collection: "app.bsky.feed.post",
 		Record:     &util.LexiconTypeDecoder{Val: postRecord},
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to post with image: %w", err)
+		return "", "", fmt.Errorf("failed to post with image: %w", err)
 	}
 
-	log.Printf("Successfully posted with embedded image: %s", text[:min(50, len(text))])
-	return nil
+	postedURI := result.Uri
+	postedCID := result.Cid
+	log.Printf("Successfully posted with embedded image: %s (URI: %s, CID: %s)", text[:min(50, len(text))], postedURI, postedCID)
+	return postedURI, postedCID, nil
 }
 
 // PostWithImageAsReply posts a text with an embedded image as a reply to another post
@@ -866,6 +874,91 @@ func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, i
 	}
 
 	log.Printf("Successfully posted reply with embedded image: %s (replying to: %s)", text[:min(50, len(text))], replyToURI)
+	return nil
+}
+
+// PinPost pins a post to the account's profile
+func (c *BlueskyClient) PinPost(ctx context.Context, postURI string, postCID string) error {
+	if c.client == nil {
+		return fmt.Errorf("client not authenticated")
+	}
+
+	// Get the DID from the authenticated client
+	// The authenticated APIClient has an AccountDID field that may be populated after login
+	handle := strings.Trim(c.handle, `"`)
+	
+	var did string
+	
+	// Check if authenticated client has AccountDID (set after login)
+	if c.client != nil && c.client.AccountDID != nil {
+		did = c.client.AccountDID.String()
+		log.Printf("Using AccountDID from authenticated client: %s", did)
+	} else {
+		// Fallback: resolve handle to DID
+		log.Printf("AccountDID not available, resolving handle %s to DID...", handle)
+		resolution, err := atproto.IdentityResolveHandle(ctx, c.client, handle)
+		if err != nil {
+			return fmt.Errorf("failed to resolve handle to DID: %w", err)
+		}
+		did = resolution.Did
+		log.Printf("Resolved handle %s to DID: %s", handle, did)
+	}
+
+	// Use DID for RepoGetRecord (DID is more reliable than handle for repo operations)
+	// Function signature: RepoGetRecord(ctx, client, cid, collection, repo, rkey)
+	// Parameters: ctx, client, "" (cid - empty for latest), collection, repo (DID/handle), rkey ("self")
+	log.Printf("Attempting RepoGetRecord with DID: %s", did)
+	profile, err := atproto.RepoGetRecord(ctx, c.client, "", "app.bsky.actor.profile", did, "self")
+	if err != nil {
+		// Log the full error for debugging
+		errMsg := err.Error()
+		log.Printf("RepoGetRecord with DID failed: %s", errMsg)
+		log.Printf("Full error details: %+v", err)
+		
+		// Try with handle as fallback
+		log.Printf("Attempting RepoGetRecord with handle as fallback: %s", handle)
+		profile, err = atproto.RepoGetRecord(ctx, c.client, "", "app.bsky.actor.profile", handle, "self")
+		if err != nil {
+			log.Printf("RepoGetRecord with handle also failed: %s", err.Error())
+			log.Printf("Full error details: %+v", err)
+			return fmt.Errorf("failed to get current profile (tried DID %s and handle %s): %w", did, handle, err)
+		}
+		log.Printf("Successfully retrieved profile using handle (fallback)")
+	} else {
+		log.Printf("Successfully retrieved profile using DID")
+	}
+
+	// Parse the existing profile record
+	// The profile record should already contain all existing fields
+	recordVal := profile.Value.Val
+	profileRecord, ok := recordVal.(*bsky.ActorProfile)
+	if !ok {
+		return fmt.Errorf("failed to parse profile record as ActorProfile")
+	}
+
+	// Create pinned post reference
+	pinnedPost := &atproto.RepoStrongRef{
+		Uri: postURI,
+		Cid: postCID,
+	}
+
+	// Update profile with pinned post (preserves all other fields)
+	profileRecord.PinnedPost = pinnedPost
+
+	// Update the profile record - use DID as the repo identifier
+	_, err = atproto.RepoPutRecord(ctx, c.client, &atproto.RepoPutRecord_Input{
+		Repo:       did,
+		Collection: "app.bsky.actor.profile",
+		Rkey:       "self",
+		Record:     &util.LexiconTypeDecoder{Val: profileRecord},
+		SwapRecord: profile.Cid,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to pin post: %w", err)
+	}
+
+	log.Printf("Successfully pinned post: %s", postURI)
 	return nil
 }
 

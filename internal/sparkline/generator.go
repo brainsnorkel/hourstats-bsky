@@ -688,12 +688,13 @@ func (sg *SparklineGenerator) drawMultilineStringAnchored(dc *gg.Context, text s
 
 	// Calculate starting Y position based on anchor
 	startY := y
-	if anchorY == 0.5 { // Center anchor
+	switch anchorY {
+	case 0.5: // Center anchor
 		startY = y - totalHeight/2
-	} else if anchorY == 1.0 { // Top anchor
+	case 1.0: // Top anchor
 		startY = y - totalHeight
+	// For bottom anchor (anchorY == 0.0), startY remains as y (default case)
 	}
-	// For bottom anchor (anchorY == 0.0), startY remains as y
 
 	// Draw each line
 	for i, line := range lines {
@@ -740,8 +741,9 @@ func (sg *SparklineGenerator) drawGaussianTrendLine(dc *gg.Context, dataPoints [
 		sentimentValues[i] = dp.NetSentimentPercent
 	}
 
-	// Apply Gaussian smoothing
-	smoothedData := gaussianSmoothing(sentimentValues, 2.0)
+	// Apply Gaussian smoothing with higher sigma for longer period smoothing
+	// Sigma=4.0 provides smooth trend over ~8 data points (roughly 16 hours for 2-hour intervals)
+	smoothedData := gaussianSmoothing(sentimentValues, 4.0)
 
 	// Calculate time range
 	startTime := dataPoints[0].Timestamp
