@@ -10,6 +10,17 @@ setup:
 build:
 	go build -o bin/trendjournal cmd/trendjournal/main.go
 
+# Build DynamoDB backup utility
+build-backup:
+	go build -o bin/dynamodb-backup cmd/dynamodb-backup/main.go
+
+# Build DynamoDB restore utility
+build-restore:
+	go build -o bin/dynamodb-restore cmd/dynamodb-restore/main.go
+
+# Build both backup and restore utilities
+build-backup-tools: build-backup build-restore
+
 # Run the application locally
 run:
 	go run cmd/trendjournal/main.go
@@ -21,6 +32,7 @@ test:
 # Clean build artifacts
 clean:
 	rm -rf bin/
+	rm -f bin/dynamodb-backup bin/dynamodb-restore
 
 # Install dependencies
 deps:
@@ -142,6 +154,9 @@ help:
 	@echo "  test-lambdas    - Test individual Lambda functions locally"
 	@echo "  test-workflow   - Test complete Step Functions workflow (requires AWS)"
 	@echo "  test-multi-lambda - Test NEW multi-Lambda workflow with dry-run mode (requires AWS)"
+	@echo "  build-backup  - Build DynamoDB backup utility"
+	@echo "  build-restore - Build DynamoDB restore utility"
+	@echo "  build-backup-tools - Build both backup and restore utilities"
 	@echo "  fmt          - Format code"
 	@echo "  lint         - Lint code"
 	@echo "  help         - Show this help message"
