@@ -312,7 +312,7 @@ func (sm *StateManager) GetAllPosts(ctx context.Context, runID string) ([]Post, 
 		}
 
 		// Check if there are more pages to retrieve
-		if result.LastEvaluatedKey == nil || len(result.LastEvaluatedKey) == 0 {
+		if len(result.LastEvaluatedKey) == 0 {
 			break
 		}
 
