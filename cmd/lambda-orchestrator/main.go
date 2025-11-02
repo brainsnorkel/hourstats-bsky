@@ -83,15 +83,16 @@ func (h *OrchestratorHandler) handleStartWorkflow(ctx context.Context, event Eve
 		analysisIntervalMinutes = event.AnalysisIntervalMinutes
 	}
 
-	// Calculate and log the time range for this analysis
-	now := time.Now()
+	// Calculate and log the time range for this analysis (use UTC to match API timestamps)
+	now := time.Now().UTC()
 	cutoffTime := now.Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
 	log.Printf("📅 ORCHESTRATOR: Analysis time range - From: %s, To: %s (interval: %d minutes)",
 		cutoffTime.Format("2006-01-02 15:04:05 UTC"),
 		now.Format("2006-01-02 15:04:05 UTC"),
 		analysisIntervalMinutes)
 
-	_, err := h.stateManager.CreateRun(ctx, runID, analysisIntervalMinutes)
+	// Pass the cutoffTime to CreateRun to ensure consistency (cutoff calculated once at start)
+	_, err := h.stateManager.CreateRun(ctx, runID, analysisIntervalMinutes, cutoffTime)
 	if err != nil {
 		log.Printf("Failed to create run state: %v", err)
 		return Response{
