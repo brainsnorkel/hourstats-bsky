@@ -102,8 +102,8 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 		}, err
 	}
 
-	// Calculate time period details
-	now := time.Now()
+	// Calculate time period details (use UTC to match API timestamps)
+	now := time.Now().UTC()
 	timeWindow := now.Sub(runState.CutoffTime)
 
 	// Log detailed time range information
@@ -158,12 +158,14 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 // fetchAllPostsInParallel fetches all posts using parallel API calls and internal loops
 func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bskyclient.BlueskyClient, cutoffTime time.Time, runID string) (int, error) {
 	var totalPosts int
-	currentCursor := ""
+	currentCursor := "" // Start with empty cursor to get most recent posts
 	iteration := 0
-	maxIterations := 20 // Safety limit to prevent infinite loops
+	maxIterations := 100 // Increased for sequential pagination (100 pages * 100 posts = 10,000 posts max)
 
 	// Track URIs to detect duplicates per iteration
 	seenURIs := make(map[string]bool)
+
+	log.Printf("🔄 FETCHER: Starting sequential fetch for posts since %s (sort=latest)", cutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
 	for {
 		iteration++
@@ -172,28 +174,50 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 			break
 		}
 
-		// Check if we've reached the cursor limit (end fetching at 9000)
-		var cursorNum int
-		if currentCursor != "" {
-			if _, parseErr := fmt.Sscanf(currentCursor, "%d", &cursorNum); parseErr == nil {
-				if cursorNum >= 9000 {
-					log.Printf("🚨 FETCHER: Cursor limit reached at %d, ending fetch phase", cursorNum)
-					break
-				}
-			}
-		}
+		log.Printf("🔄 FETCHER: Starting iteration %d with cursor: '%s'", iteration, currentCursor)
 
-		log.Printf("🔄 FETCHER: Starting iteration %d with cursor: %s", iteration, currentCursor)
-
-		// Make 10 parallel API calls for this iteration
-		posts, shouldStop, err := h.fetchBatchInParallel(ctx, client, currentCursor, cutoffTime)
+		// Make a single API call with proper cursor-based pagination
+		posts, nextCursor, hasMore, err := client.GetTrendingPostsBatch(ctx, currentCursor, cutoffTime)
 		if err != nil {
-			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
+			return totalPosts, fmt.Errorf("failed to fetch batch at iteration %d: %w", iteration, err)
 		}
 
+		log.Printf("📊 FETCHER: Iteration %d - API returned %d posts (nextCursor: '%s', hasMore: %v)",
+			iteration, len(posts), nextCursor, hasMore)
+
+		// HEURISTIC: If the first call (cursor="") returns 0 posts, something is wrong with API parameters
+		if iteration == 1 && currentCursor == "" && len(posts) == 0 {
+			log.Printf("🚨 FETCHER: HEURISTIC FAILED - First API call with empty cursor returned 0 posts!")
+			log.Printf("🚨 FETCHER: This indicates a problem with API parameters (since/sort) or no posts exist in time window")
+			log.Printf("🚨 FETCHER: Cutoff time: %s (UTC)", cutoffTime.Format("2006-01-02 15:04:05 UTC"))
+			log.Printf("🚨 FETCHER: Current time: %s (UTC)", time.Now().UTC().Format("2006-01-02 15:04:05 UTC"))
+			log.Printf("🚨 FETCHER: Time window: %d minutes", int(time.Since(cutoffTime).Minutes()))
+			// Continue anyway to see if subsequent calls return posts, but log the issue
+		}
+
+		// Determine if we should stop based on whether posts are before cutoff time
+		shouldStop := false
 		if len(posts) == 0 {
-			log.Printf("📭 FETCHER: No posts retrieved in iteration %d, stopping", iteration)
-			break
+			// If we got 0 posts and there are no more pages, stop
+			if !hasMore || nextCursor == "" {
+				log.Printf("📄 FETCHER: No posts and no more pages, stopping")
+				break
+			}
+			// Otherwise continue to next page
+			currentCursor = nextCursor
+			continue
+		}
+
+		// Check if oldest post is before cutoff time
+		if len(posts) > 0 {
+			oldestPost := posts[len(posts)-1] // Posts sorted by most recent first
+			oldestTime, err := time.Parse(time.RFC3339, oldestPost.CreatedAt)
+			if err == nil && oldestTime.Before(cutoffTime) {
+				shouldStop = true
+				log.Printf("⏰ FETCHER: Oldest post (%s) is before cutoff (%s), stopping",
+					oldestTime.Format("2006-01-02 15:04:05 UTC"),
+					cutoffTime.Format("2006-01-02 15:04:05 UTC"))
+			}
 		}
 
 		// Count duplicates in this iteration
@@ -239,18 +263,23 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 
 		log.Printf("✅ FETCHER: Iteration %d complete - Retrieved %d posts (Total: %d)", iteration, len(posts), totalPosts)
 
-		// Check if we've reached posts before our time window
+		// Check if we've reached posts before our time window or no more pages
 		if shouldStop {
 			log.Printf("⏰ FETCHER: Found posts before time window, stopping at iteration %d", iteration)
 			break
 		}
 
-		// Prepare for next iteration - advance by 1000 posts (10 parallel calls * 100 posts each)
-		currentCursor = fmt.Sprintf("%d", iteration*1000)
-		log.Printf("➡️ FETCHER: Preparing next iteration with cursor: %s", currentCursor)
+		if !hasMore || nextCursor == "" {
+			log.Printf("📄 FETCHER: No more pages available, stopping at iteration %d", iteration)
+			break
+		}
+
+		// Use the API's returned cursor for the next iteration
+		currentCursor = nextCursor
+		log.Printf("➡️ FETCHER: Preparing next iteration with API cursor: '%s'", currentCursor)
 	}
 
-	log.Printf("🏁 FETCHER: Parallel fetch complete - Total posts: %d across %d iterations", totalPosts, iteration)
+	log.Printf("🏁 FETCHER: Sequential fetch complete - Total posts: %d across %d iterations", totalPosts, iteration)
 	return totalPosts, nil
 }
 
