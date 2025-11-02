@@ -208,7 +208,62 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 	// Store posts in batches of 100 for cost efficiency
 	// This reduces the number of DynamoDB items by 99% (100 posts per item vs 1 post per item)
 	const postsPerBatch = 100
-	batchIndex := 0
+	
+	// CRITICAL FIX: Calculate starting batchIndex from existing batches to avoid overwriting
+	// Query existing batches to find the highest batch index (handle pagination)
+	maxBatchIndex := -1
+	var lastEvaluatedKey map[string]types.AttributeValue
+	
+	for {
+		existingBatchesQuery := &dynamodb.QueryInput{
+			TableName:              aws.String(sm.tableName),
+			IndexName:              aws.String("posts-index"),
+			KeyConditionExpression: aws.String("runId = :runId AND begins_with(postId, :postIdPrefix)"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":runId":        &types.AttributeValueMemberS{Value: runID},
+				":postIdPrefix": &types.AttributeValueMemberS{Value: runID + "#batch"},
+			},
+			ProjectionExpression: aws.String("postId"),
+		}
+		
+		if lastEvaluatedKey != nil {
+			existingBatchesQuery.ExclusiveStartKey = lastEvaluatedKey
+		}
+		
+		result, err := sm.client.Query(ctx, existingBatchesQuery)
+		if err != nil {
+			log.Printf("Warning: Failed to query existing batches: %v, starting from batch 0", err)
+			break
+		}
+		
+		// Parse batch indices from existing PostIDs
+		for _, item := range result.Items {
+			var batch PostBatch
+			if err := attributevalue.UnmarshalMap(item, &batch); err == nil {
+				// Extract batch number from PostID like "runId#batch42"
+				var batchNum int
+				if _, parseErr := fmt.Sscanf(batch.PostID, runID+"#batch%d", &batchNum); parseErr == nil {
+					if batchNum > maxBatchIndex {
+						maxBatchIndex = batchNum
+					}
+				}
+			}
+		}
+		
+		// Check if there are more pages
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		lastEvaluatedKey = result.LastEvaluatedKey
+	}
+	
+	// Start from the next batch index after the highest existing one
+	batchIndex := maxBatchIndex + 1
+	if maxBatchIndex >= 0 {
+		log.Printf("AddPosts: Found existing batches up to index %d, starting from batch %d", maxBatchIndex, batchIndex)
+	} else {
+		log.Printf("AddPosts: No existing batches found, starting from batch 0")
+	}
 	
 	for i := 0; i < len(posts); i += postsPerBatch {
 		end := i + postsPerBatch

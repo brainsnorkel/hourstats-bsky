@@ -115,13 +115,14 @@ func (h *AnalyzerHandler) HandleRequest(ctx context.Context, event StepFunctions
 	}
 
 	// Store sentiment data for historical tracking
+	// Use TotalPostsRetrieved to show the actual number of posts collected, not just analyzed
 	sentimentDataPoint := state.SentimentDataPoint{
 		RunID:                event.RunID,
 		Timestamp:            time.Now(),
 		AverageCompoundScore: netSentimentPercentage / 100.0, // Convert percentage back to compound score
 		NetSentimentPercent:  netSentimentPercentage,
 		SentimentCategory:    overallSentiment,
-		TotalPosts:           len(filteredPosts),
+		TotalPosts:           runState.TotalPostsRetrieved,
 	}
 
 	if err := h.sentimentHistoryManager.StoreSentimentData(ctx, sentimentDataPoint); err != nil {

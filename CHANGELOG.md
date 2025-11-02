@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **CRITICAL**: Fixed batch overwrite bug in `AddPosts` function where `batchIndex` always started at 0, causing each fetcher iteration to overwrite previous batches. This resulted in only ~97 posts being stored instead of thousands (99% data loss). Fix queries existing batches to find highest index and starts new batches from next available index.
 - **CRITICAL**: Fixed missing DynamoDB pagination in `GetAllPosts` causing only first page of results (~100 posts) to be retrieved instead of all posts (800+)
 - Fixed missing pagination in `GetSentimentHistory` and `GetSentimentHistoryForRun` functions
 - Added proper pagination handling using `LastEvaluatedKey` and `ExclusiveStartKey` for all DynamoDB queries and scans
 - Added logging to track pagination progress (page count and items per page)
+- Updated sentiment observations to use `TotalPostsRetrieved` instead of filtered post count for accurate reporting
 
 ### Technical Details
 - DynamoDB Query/Scan operations return up to 1MB of data per request
