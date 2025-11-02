@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2025-01-05] - Yearly Sentiment Analysis Feature
+
+### Added
+- **Daily Sentiment Aggregation**: Automatic daily averaging of 30-minute sentiment data
+- **Yearly Sentiment Charts**: Monthly charts showing 365 days of daily sentiment averages
+- **Enhanced Sparkline Generator**: Yearly-specific visualization with 25% larger canvas (1500x1000)
+- **Month Markers**: Horizontal axis shows month boundaries for yearly charts
+- **3-Year Data Retention**: Daily sentiment data preserved for long-term analysis
+- **New Lambda Functions**: `hourstats-daily-aggregator` and `hourstats-yearly-poster`
+- **New DynamoDB Table**: `hourstats-daily-sentiment` with optimized indexes
+- **EventBridge Scheduling**: Automated daily (midnight UTC) and monthly (1st at 1:00 AM UTC) triggers
+- **Comprehensive Testing**: Unit tests for daily sentiment and yearly sparkline functionality
+- **Design Documentation**: Complete technical specification in `docs/YEARLY_SENTIMENT_DESIGN.md`
+
+### Technical Details
+- **Daily Aggregation**: Calculates average, minimum, and maximum sentiment from 24 hours of 30-minute runs
+- **Yearly Visualization**: Gaussian trend lines, average sentiment line, and sentiment zone watermarks
+- **Data Quality**: Handles missing data gracefully with comprehensive error handling
+- **Cost Impact**: ~$4.50-8.50/month additional AWS costs
+- **Accessibility**: Comprehensive alt text for yearly charts
+- **Fallback Handling**: Graceful degradation when insufficient data is available
+
 ## [2025-09-10] - Comprehensive Watermark System for Sparkline
 
 ### Added
