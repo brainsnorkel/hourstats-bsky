@@ -119,7 +119,7 @@ func (shm *SentimentHistoryManager) GetSentimentHistory(ctx context.Context, dur
 		}
 
 		// Check if there are more pages to retrieve
-		if result.LastEvaluatedKey == nil || len(result.LastEvaluatedKey) == 0 {
+		if len(result.LastEvaluatedKey) == 0 {
 			break
 		}
 
@@ -182,7 +182,7 @@ func (shm *SentimentHistoryManager) GetSentimentHistoryForRun(ctx context.Contex
 		}
 
 		// Check if there are more pages to retrieve
-		if result.LastEvaluatedKey == nil || len(result.LastEvaluatedKey) == 0 {
+		if len(result.LastEvaluatedKey) == 0 {
 			break
 		}
 
