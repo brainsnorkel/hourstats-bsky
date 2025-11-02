@@ -267,11 +267,8 @@ func fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient,
 
 	wg.Wait()
 
-	// Determine shouldStop
-	shouldStop := false
-	if oldestPostTime != nil && oldestPostTime.Before(cutoffTime) {
-		shouldStop = true
-	}
+	// Determine shouldStop - merge conditional into variable declaration
+	shouldStop := oldestPostTime != nil && oldestPostTime.Before(cutoffTime)
 
 	return allPosts, shouldStop, nil
 }
