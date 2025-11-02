@@ -66,8 +66,9 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 	var err error
 
 	for retries := 0; retries < 3; retries++ {
-		// Search for all public posts
-		log.Printf("Making API request with cursor: '%s'", cursor)
+		// Search for all public posts - matching original working code (no sort, no since)
+		// The API will return posts sorted by engagement (default), and we'll filter by time client-side
+		log.Printf("Making API request with cursor: '%s' (default sort, no time filter)", cursor)
 		searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", nil, "", "")
 		if err == nil {
 			break
@@ -114,6 +115,36 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 
 	if err != nil {
 		return nil, "", false, fmt.Errorf("failed to search public posts after 3 retries: %w", err)
+	}
+
+	// DEBUG: Log API response details
+	log.Printf("📊 API Response: Received %d posts from API (cursor: %s)", len(searchResult.Posts), cursor)
+	if len(searchResult.Posts) > 0 {
+		firstPost := searchResult.Posts[0]
+		lastPost := searchResult.Posts[len(searchResult.Posts)-1]
+		log.Printf("📊 First post IndexedAt: %s", firstPost.IndexedAt)
+		log.Printf("📊 Last post IndexedAt: %s", lastPost.IndexedAt)
+		log.Printf("📊 Cutoff time: %s", cutoffTime.Format(time.RFC3339))
+		
+		// Parse and compare timestamps
+		if firstPost.IndexedAt != "" {
+			firstTime, err := time.Parse(time.RFC3339, firstPost.IndexedAt)
+			if err == nil {
+				diff := firstTime.Sub(cutoffTime)
+				log.Printf("📊 First post is %s %s the cutoff", 
+					diff.Abs().Round(time.Second),
+					map[bool]string{true: "after", false: "before"}[diff >= 0])
+			}
+		}
+		if lastPost.IndexedAt != "" {
+			lastTime, err := time.Parse(time.RFC3339, lastPost.IndexedAt)
+			if err == nil {
+				diff := lastTime.Sub(cutoffTime)
+				log.Printf("📊 Last post is %s %s the cutoff", 
+					diff.Abs().Round(time.Second),
+					map[bool]string{true: "after", false: "before"}[diff >= 0])
+			}
+		}
 	}
 
 	// Convert to our Post format and filter by time
@@ -248,8 +279,8 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		var err error
 
 		for retries := 0; retries < 3; retries++ {
-			// Search for all public posts
-			log.Printf("Making API request with cursor: '%s'", cursor)
+			// Search for all public posts - matching original working code (no sort, no since)
+			log.Printf("Making API request with cursor: '%s' (default sort, no time filter)", cursor)
 			searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", nil, "", "")
 			if err == nil {
 				break

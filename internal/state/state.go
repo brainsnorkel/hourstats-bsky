@@ -100,12 +100,16 @@ func NewStateManager(ctx context.Context, tableName string) (*StateManager, erro
 }
 
 // CreateRun creates a new analysis run state
-func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisIntervalMinutes int) (*RunState, error) {
-	now := time.Now()
+// cutoffTime should be the cutoff time calculated at the start of the workflow
+// If cutoffTime is zero, it will be calculated from analysisIntervalMinutes
+func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisIntervalMinutes int, cutoffTime time.Time) (*RunState, error) {
+	now := time.Now().UTC() // Use UTC to match API timestamps
 	ttl := now.Add(2 * 24 * time.Hour).Unix() // 2 days TTL
 
-	// Calculate cutoff time once for consistency across all processes
-	cutoffTime := now.Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
+	// Use provided cutoffTime, or calculate it if not provided (for backward compatibility)
+	if cutoffTime.IsZero() {
+		cutoffTime = now.Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
+	}
 
 	state := &RunState{
 		RunID:                   runID,

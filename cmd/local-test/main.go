@@ -41,15 +41,27 @@ type MockProcessorEvent struct {
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run cmd/local-test/main.go <test-interval-minutes> [live] [super-debug]")
+		fmt.Println("   OR: go run cmd/local-test/main.go validate")
 		fmt.Println("Example: go run cmd/local-test/main.go 5")
 		fmt.Println("Example: go run cmd/local-test/main.go 60 live")
 		fmt.Println("Example: go run cmd/local-test/main.go 2 super-debug")
+		fmt.Println("Example: go run cmd/local-test/main.go validate")
 		fmt.Println("")
 		fmt.Println("Options:")
 		fmt.Println("  <test-interval-minutes>  Number of minutes to analyze (1-60)")
 		fmt.Println("  live                     Run in live mode: process all posts and post to Bluesky")
 		fmt.Println("  super-debug              Print detailed info for each post (handle, URI, timestamp, analysis window)")
+		fmt.Println("  validate                 Run fetcher validation test (fetches 30 minutes, validates posts)")
 		os.Exit(1)
+	}
+
+	// Check if validation mode
+	if os.Args[1] == "validate" {
+		if err := TestFetcherValidation(); err != nil {
+			log.Fatalf("Validation test failed: %v", err)
+		}
+		fmt.Println("\n✅ All validation tests passed!")
+		return
 	}
 
 	// Parse test interval
@@ -152,7 +164,8 @@ func (m *MockLambdaClient) createRunState(ctx context.Context, runID string, ana
 	// Calculate cutoff time in UTC to match API timestamps
 	cutoffTime := now.UTC().Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
 
-	_, err := m.stateManager.CreateRun(ctx, runID, analysisIntervalMinutes)
+	// Pass cutoffTime to CreateRun to ensure consistency
+	_, err := m.stateManager.CreateRun(ctx, runID, analysisIntervalMinutes, cutoffTime)
 	if err != nil {
 		return fmt.Errorf("failed to create run: %w", err)
 	}
@@ -464,7 +477,7 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 	var totalPosts int
 	currentCursor := ""
 	iteration := 0
-	maxIterations := 3 // Limit iterations for testing
+	maxIterations := 10 // Allow more iterations for testing (increased from 3)
 	if liveMode {
 		maxIterations = 20 // Allow more iterations in live mode
 	}
@@ -507,9 +520,23 @@ func (m *MockLambdaClient) fetchAllPostsInParallel(ctx context.Context, client *
 			return totalPosts, fmt.Errorf("failed to fetch batch: %w", err)
 		}
 
+		// Don't stop just because this batch had 0 posts within the time window
+		// Continue searching until we either find posts or confirm we're past the time window
 		if len(posts) == 0 {
-			fmt.Printf("    📭 No posts retrieved in iteration %d, stopping\n", iteration)
-			break
+			fmt.Printf("    📭 No posts within time window in iteration %d (cutoff: %s)\n", iteration, cutoffTime.Format("2006-01-02 15:04:05 UTC"))
+			// Continue to next iteration unless we've confirmed we're past the time window
+			if shouldStop {
+				fmt.Printf("    ⏰ Confirmed past time window, stopping at iteration %d\n", iteration)
+				break
+			}
+			// Prepare for next iteration - but only continue if we haven't exceeded max iterations
+			if iteration >= maxIterations {
+				fmt.Printf("    ⚠️ Reached max iterations (%d) without finding posts, stopping\n", maxIterations)
+				break
+			}
+			currentCursor = fmt.Sprintf("%d", iteration*1000)
+			fmt.Printf("    ➡️ Continuing search - preparing next iteration with cursor: %s\n", currentCursor)
+			continue
 		}
 
 		// Count duplicates in this iteration

@@ -136,8 +136,9 @@ func (h *AggregatorHandler) filterPostsByCutoffTime(posts []state.Post, cutoffTi
 			continue
 		}
 
-		// Only include posts after the cutoff time
-		if postTime.After(cutoffTime) {
+		// Only include posts from the cutoff time onwards (>= cutoffTime)
+		// Use !Before instead of After to include posts exactly at cutoffTime
+		if !postTime.Before(cutoffTime) {
 			filteredPosts = append(filteredPosts, post)
 		}
 	}
