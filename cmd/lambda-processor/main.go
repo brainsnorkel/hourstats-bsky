@@ -206,8 +206,9 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	log.Printf("Successfully processed %d posts and posted summary for run: %s", len(analyzedPosts), event.RunID)
 
 	// Store sentiment data for sparkline generation
+	// Use TotalPostsRetrieved to show the actual number of posts collected, not just analyzed
 	log.Printf("Storing sentiment data for sparkline generation")
-	err = h.storeSentimentData(event.RunID, overallSentiment, netSentimentPercentage, len(analyzedPosts))
+	err = h.storeSentimentData(event.RunID, overallSentiment, netSentimentPercentage, runState.TotalPostsRetrieved)
 	if err != nil {
 		log.Printf("Failed to store sentiment data: %v", err)
 		// Don't fail the main process if sentiment storage fails
