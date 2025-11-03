@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	awslambda "github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 )
 
@@ -169,8 +170,9 @@ func (h *OrchestratorHandler) dispatchFetcher(ctx context.Context, runID string,
 	}
 
 	_, err = h.lambdaClient.Invoke(ctx, &awslambda.InvokeInput{
-		FunctionName: aws.String("hourstats-fetcher"),
-		Payload:      payloadBytes,
+		FunctionName:  aws.String("hourstats-fetcher"),
+		Payload:       payloadBytes,
+		InvocationType: types.InvocationTypeEvent, // Asynchronous invocation
 	})
 
 	if err != nil {
