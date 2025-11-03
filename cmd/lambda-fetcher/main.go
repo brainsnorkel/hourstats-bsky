@@ -164,6 +164,11 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	// Track URIs to detect duplicates per iteration
 	seenURIs := make(map[string]bool)
 
+	// Track start time for early-stop logic (stop at 14 minutes to allow 1 min for dispatch)
+	startTime := time.Now()
+	earlyStopTime := 14 * time.Minute // Stop at 14 minutes to leave 1 minute for dispatch
+	minPostsForEarlyStop := 1000      // Minimum posts needed for early stop
+
 	log.Printf("🔄 FETCHER: Starting sequential fetch for posts since %s (sort=latest)", cutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
 	for {
@@ -261,6 +266,21 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 		}
 
 		log.Printf("✅ FETCHER: Iteration %d complete - Retrieved %d posts (Total: %d)", iteration, len(posts), totalPosts)
+
+		// Early stop check: If we're at 14 minutes and have enough posts, stop to ensure dispatch
+		elapsed := time.Since(startTime)
+		if elapsed >= earlyStopTime && totalPosts >= minPostsForEarlyStop {
+			log.Printf("⏰ FETCHER: Early stop triggered - Elapsed: %s, Posts: %d (≥%d)", elapsed.Round(time.Second), totalPosts, minPostsForEarlyStop)
+			log.Printf("⏰ FETCHER: Stopping early to ensure processor dispatch before timeout (leaving 1 minute buffer)")
+			break
+		}
+
+		// Log time remaining if we're getting close
+		if elapsed >= 12*time.Minute && elapsed < earlyStopTime {
+			remaining := earlyStopTime - elapsed
+			log.Printf("⏱️  FETCHER: Time check - Elapsed: %s, Remaining before early stop: %s, Posts: %d",
+				elapsed.Round(time.Second), remaining.Round(time.Second), totalPosts)
+		}
 
 		// Check if we've reached posts before our time window or no more pages
 		if shouldStop {
