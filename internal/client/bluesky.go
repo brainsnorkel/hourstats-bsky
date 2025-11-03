@@ -69,7 +69,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		// Search for all public posts - matching original working code (no sort, no since)
 		// The API will return posts sorted by engagement (default), and we'll filter by time client-side
 		log.Printf("Making API request with cursor: '%s' (default sort, no time filter)", cursor)
-		searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 200, "", "*", "", "", nil, "", "")
+		searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", "", "", nil, "", "")
 		if err == nil {
 			break
 		}
