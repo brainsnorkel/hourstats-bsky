@@ -172,6 +172,14 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	log.Printf("🔄 FETCHER: Starting sequential fetch for posts since %s (sort=latest)", cutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
 	for {
+		// Check time before starting new iteration - don't start if we're at 14 minutes and have enough posts
+		elapsed := time.Since(startTime)
+		if elapsed >= earlyStopTime && totalPosts > minPostsForEarlyStop {
+			log.Printf("⏰ FETCHER: Early stop triggered before iteration - Elapsed: %s, Posts: %d (>%d)", elapsed.Round(time.Second), totalPosts, minPostsForEarlyStop)
+			log.Printf("⏰ FETCHER: Stopping early to ensure processor dispatch before timeout (leaving 1 minute buffer)")
+			break
+		}
+
 		iteration++
 		if iteration > maxIterations {
 			log.Printf("⚠️ FETCHER: Reached max iterations (%d), stopping", maxIterations)
@@ -267,10 +275,10 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 
 		log.Printf("✅ FETCHER: Iteration %d complete - Retrieved %d posts (Total: %d)", iteration, len(posts), totalPosts)
 
-		// Early stop check: If we're at 14 minutes and have enough posts, stop to ensure dispatch
-		elapsed := time.Since(startTime)
-		if elapsed >= earlyStopTime && totalPosts >= minPostsForEarlyStop {
-			log.Printf("⏰ FETCHER: Early stop triggered - Elapsed: %s, Posts: %d (≥%d)", elapsed.Round(time.Second), totalPosts, minPostsForEarlyStop)
+		// Early stop check after iteration: If we're at 14 minutes and have enough posts, stop to ensure dispatch
+		elapsed = time.Since(startTime)
+		if elapsed >= earlyStopTime && totalPosts > minPostsForEarlyStop {
+			log.Printf("⏰ FETCHER: Early stop triggered after iteration - Elapsed: %s, Posts: %d (>%d)", elapsed.Round(time.Second), totalPosts, minPostsForEarlyStop)
 			log.Printf("⏰ FETCHER: Stopping early to ensure processor dispatch before timeout (leaving 1 minute buffer)")
 			break
 		}
