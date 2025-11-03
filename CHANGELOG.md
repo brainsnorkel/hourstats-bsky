@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **CRITICAL**: Fixed orchestrator Lambda timeout issue causing runs to stop. Orchestrator was using synchronous Lambda invocation which caused it to timeout after 15 minutes while waiting for the fetcher Lambda to complete. Changed to asynchronous invocation (`InvocationType: Event`) so orchestrator dispatches fetcher and returns immediately, allowing fetcher to complete without blocking orchestrator.
+- **CRITICAL**: Fixed fetcher failing completely on API timeout errors, preventing processor and poster from running. Added graceful error handling for Bluesky API timeout errors:
+  - API client now retries timeout errors with exponential backoff (10s, 20s, 30s)
+  - For high cursor values (>8000) that timeout, fetcher skips the problematic cursor and continues
+  - Fetcher now completes successfully with collected posts even if some cursors timeout
+  - This ensures processor and poster are always invoked even when API timeouts occur
 - **CRITICAL**: Fixed batch overwrite bug in `AddPosts` function where `batchIndex` always started at 0, causing each fetcher iteration to overwrite previous batches. This resulted in only ~97 posts being stored instead of thousands (99% data loss). Fix queries existing batches to find highest index and starts new batches from next available index.
 - **CRITICAL**: Fixed missing DynamoDB pagination in `GetAllPosts` causing only first page of results (~100 posts) to be retrieved instead of all posts (800+)
 - Fixed missing pagination in `GetSentimentHistory` and `GetSentimentHistoryForRun` functions

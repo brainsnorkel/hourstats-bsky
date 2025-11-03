@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -178,6 +179,24 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 		// Make a single API call with proper cursor-based pagination
 		posts, nextCursor, hasMore, err := client.GetTrendingPostsBatch(ctx, currentCursor, cutoffTime)
 		if err != nil {
+			// Handle timeout errors gracefully - skip this cursor and continue
+			if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "timeout") {
+				log.Printf("⚠️ FETCHER: Timeout error at iteration %d with cursor '%s', skipping this cursor and continuing", iteration, currentCursor)
+				// Try to advance cursor if we have one, otherwise stop
+				if currentCursor != "" {
+					var cursorNum int
+					if _, parseErr := fmt.Sscanf(currentCursor, "%d", &cursorNum); parseErr == nil {
+						// Try next cursor value
+						currentCursor = fmt.Sprintf("%d", cursorNum+100)
+						log.Printf("🔄 FETCHER: Advancing to next cursor: '%s'", currentCursor)
+						continue
+					}
+				}
+				// If we can't advance cursor, stop gracefully with what we have
+				log.Printf("⚠️ FETCHER: Cannot advance cursor after timeout, stopping with %d posts collected", totalPosts)
+				break
+			}
+			// For other errors, return immediately
 			return totalPosts, fmt.Errorf("failed to fetch batch at iteration %d: %w", iteration, err)
 		}
 

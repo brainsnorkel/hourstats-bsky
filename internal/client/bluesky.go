@@ -81,6 +81,31 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			continue
 		}
 
+		// Check for timeout errors - these are retriable
+		if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "timeout") {
+			log.Printf("⚠️ API timeout detected (attempt %d/3): %v", retries+1, err)
+			if retries < 2 {
+				// Wait longer before retrying timeout errors
+				waitTime := time.Duration(retries+1) * 10 * time.Second
+				log.Printf("⏳ Waiting %v before retry...", waitTime)
+				time.Sleep(waitTime)
+				continue
+			}
+			// After 3 retries, if it's a timeout at a high cursor, skip this cursor
+			if cursor != "" {
+				var cursorNum int
+				if _, parseErr := fmt.Sscanf(cursor, "%d", &cursorNum); parseErr == nil {
+					if cursorNum > 8000 {
+						log.Printf("⚠️ Timeout at high cursor %d, skipping this cursor and continuing", cursorNum)
+						// Return empty result but indicate we should continue with next cursor
+						return nil, "", true, nil
+					}
+				}
+			}
+			// For other timeouts, return error but fetcher can handle it
+			return nil, "", false, fmt.Errorf("API request timed out after 3 retries: %w", err)
+		}
+
 		// Check for cursor pagination limits (HTTP 400 InvalidRequest)
 		if strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "InvalidRequest") {
 			log.Printf("HTTP 400 InvalidRequest error details: %+v", err)
@@ -102,7 +127,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 				}
 			}
 
-			// For HTTP 400 errors, don't retry - likely a permanent issue
+			// For HTTP 400 errors that aren't timeouts, don't retry - likely a permanent issue
 			return nil, "", false, fmt.Errorf("API request failed with HTTP 400: %w", err)
 		}
 
