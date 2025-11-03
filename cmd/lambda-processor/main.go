@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awslambda "github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/config"
@@ -511,10 +512,11 @@ func (h *ProcessorHandler) triggerSparklinePoster(runID string) error {
 		return fmt.Errorf("failed to marshal sparkline poster payload: %w", err)
 	}
 
-	// Invoke the sparkline poster Lambda
+	// Invoke the sparkline poster Lambda asynchronously
 	_, err = h.lambdaClient.Invoke(context.Background(), &awslambda.InvokeInput{
-		FunctionName: aws.String("hourstats-sparkline-poster"),
-		Payload:      payloadBytes,
+		FunctionName:  aws.String("hourstats-sparkline-poster"),
+		Payload:       payloadBytes,
+		InvocationType: types.InvocationTypeEvent, // Asynchronous invocation
 	})
 
 	if err != nil {

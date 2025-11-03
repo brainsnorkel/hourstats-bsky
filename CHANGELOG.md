@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fetcher now completes successfully with collected posts even if some cursors timeout
   - This ensures processor and poster are always invoked even when API timeouts occur
 - **Reverted**: API batch size reverted from 200 back to 100 posts per request (API rejected limit=200)
+- **Fixed**: Changed sparkline poster invocation from synchronous to asynchronous. Processor was blocking waiting for sparkline poster to complete, which could cause timeouts. Now uses `InvocationType: Event` so processor completes immediately.
 - **CRITICAL**: Fixed batch overwrite bug in `AddPosts` function where `batchIndex` always started at 0, causing each fetcher iteration to overwrite previous batches. This resulted in only ~97 posts being stored instead of thousands (99% data loss). Fix queries existing batches to find highest index and starts new batches from next available index.
 - **CRITICAL**: Fixed missing DynamoDB pagination in `GetAllPosts` causing only first page of results (~100 posts) to be retrieved instead of all posts (800+)
 - Fixed missing pagination in `GetSentimentHistory` and `GetSentimentHistoryForRun` functions
