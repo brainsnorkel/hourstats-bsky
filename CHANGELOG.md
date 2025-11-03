@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - For high cursor values (>8000) that timeout, fetcher skips the problematic cursor and continues
   - Fetcher now completes successfully with collected posts even if some cursors timeout
   - This ensures processor and poster are always invoked even when API timeouts occur
+- **Performance**: Increased API batch size from 100 to 200 posts per request, reducing API calls by 50% and improving fetch speed while reducing rate limit risk
 - **CRITICAL**: Fixed batch overwrite bug in `AddPosts` function where `batchIndex` always started at 0, causing each fetcher iteration to overwrite previous batches. This resulted in only ~97 posts being stored instead of thousands (99% data loss). Fix queries existing batches to find highest index and starts new batches from next available index.
 - **CRITICAL**: Fixed missing DynamoDB pagination in `GetAllPosts` causing only first page of results (~100 posts) to be retrieved instead of all posts (800+)
 - Fixed missing pagination in `GetSentimentHistory` and `GetSentimentHistoryForRun` functions
