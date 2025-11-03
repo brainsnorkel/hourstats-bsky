@@ -254,7 +254,7 @@ resource "aws_lambda_function" "hourstats_orchestrator" {
   handler         = "bootstrap"
   source_code_hash = filebase64sha256("lambda-orchestrator.zip")
   runtime         = "provided.al2023"
-  timeout         = 900  # 15 minutes
+  timeout         = 900  # 15 minutes (AWS Lambda maximum)
   memory_size     = 128
 
   environment {
@@ -277,7 +277,7 @@ resource "aws_lambda_function" "hourstats_fetcher" {
   handler         = "bootstrap"
   source_code_hash = filebase64sha256("lambda-fetcher.zip")
   runtime         = "provided.al2023"
-  timeout         = 900  # 15 minutes
+  timeout         = 900  # 15 minutes (AWS Lambda maximum)
   memory_size     = 128
 
   environment {
