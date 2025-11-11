@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Removed 10% engagement boost for positive posts. Posts are now ranked purely by raw engagement metrics (replies + likes + reposts) without any sentiment-based adjustment.
+
 ### Fixed
 - **CRITICAL**: Added early-stop logic to fetcher to prevent timeout and ensure posts are made. Fetcher now runs for up to 14 minutes and stops immediately if it has collected >1000 posts, leaving 1 minute buffer before the 15-minute Lambda timeout to ensure processor dispatch. Early-stop check happens both before starting new iterations and after completing iterations to avoid wasting time. This prevents fetcher from timing out and ensures reports are always posted even when fetching takes longer than expected.
 - **CRITICAL**: Fixed orchestrator Lambda timeout issue causing runs to stop. Orchestrator was using synchronous Lambda invocation which caused it to timeout after 15 minutes while waiting for the fetcher Lambda to complete. Changed to asynchronous invocation (`InvocationType: Event`) so orchestrator dispatches fetcher and returns immediately, allowing fetcher to complete without blocking orchestrator.
