@@ -157,14 +157,7 @@ func (sa *SentimentAnalyzer) calculateEngagementScore(post Post, sentimentScore 
 	// Engagement score calculation based on replies + likes + reposts
 	// This matches the README specification for ranking posts
 
-	baseScore := float64(post.Replies + post.Likes + post.Reposts)
-
-	// Boost positive sentiment posts slightly
-	if sentimentScore > 0 {
-		baseScore *= 1.1
-	}
-
-	return baseScore
+	return float64(post.Replies + post.Likes + post.Reposts)
 }
 
 // analyzeKeywordSentiment performs simple keyword-based sentiment analysis
