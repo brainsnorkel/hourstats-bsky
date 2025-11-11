@@ -191,6 +191,18 @@ hourstats-bsky/
 4. Add tests for new functionality
 5. Submit a pull request
 
+## Acknowledgements
+
+This project uses the following open-source libraries:
+
+- **[VADER Sentiment](https://github.com/cjhutto/vaderSentiment)** - The original Python implementation of VADER (Valence Aware Dictionary and sEntiment Reasoner) by C.J. Hutto. VADER is specifically attuned to sentiments expressed in social media.
+
+- **[GoVader](https://github.com/jonreiter/govader)** - Go port of VADER Sentiment by Jon Reiter. This project uses GoVader for sentiment analysis.
+
+- **[Bluesky indigo](https://github.com/bluesky-social/indigo)** - Official Go library for the AT Protocol/Bluesky by the Bluesky team. Used for Bluesky API integration.
+
+- **[gg](https://github.com/fogleman/gg)** - 2D graphics library for Go by Michael Fogleman. Used for generating sentiment sparkline charts.
+
 ## License
 
 MIT License - Copyright (c) 2025 Chris Gentle FlatMapIT Pty Ltd - @xop.co on Bluesky
