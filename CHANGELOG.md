@@ -11,7 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed 10% engagement boost for positive posts. Posts are now ranked purely by raw engagement metrics (replies + likes + reposts) without any sentiment-based adjustment.
 
 ### Fixed
+- **CRITICAL**: Fixed fetcher "starvation" issue where runs were consistently retrieving 0 posts. Added `since` time filter to `bsky.FeedSearchPosts` API call to ensure only recent posts are returned, preventing the fetcher from stopping early on old "top" posts.
+- **CRITICAL**: Fixed double-scaling bug in sentiment calculation where sentiment percentage was being multiplied by 100 twice, resulting in astronomical values (e.g., +1099%). Unified scaling in `internal/formatter/post_formatter.go`.
 - **CRITICAL**: Added early-stop logic to fetcher to prevent timeout and ensure posts are made. Fetcher now runs for up to 14 minutes and stops immediately if it has collected >1000 posts, leaving 1 minute buffer before the 15-minute Lambda timeout to ensure processor dispatch. Early-stop check happens both before starting new iterations and after completing iterations to avoid wasting time. This prevents fetcher from timing out and ensures reports are always posted even when fetching takes longer than expected.
+- **Data Cleanup**: Manually removed anomalous sentiment data points from DynamoDB that were caused by the low-volume runs and double-scaling bug.
+- **Improved Monitoring**: Updated diagnostics tool to handle large result sets better.
+- **Dependency Updates**: Updated AWS SDK and other major direct dependencies to their latest versions.
 - **CRITICAL**: Fixed orchestrator Lambda timeout issue causing runs to stop. Orchestrator was using synchronous Lambda invocation which caused it to timeout after 15 minutes while waiting for the fetcher Lambda to complete. Changed to asynchronous invocation (`InvocationType: Event`) so orchestrator dispatches fetcher and returns immediately, allowing fetcher to complete without blocking orchestrator.
 - **CRITICAL**: Fixed fetcher failing completely on API timeout errors, preventing processor and poster from running. Added graceful error handling for Bluesky API timeout errors:
   - API client now retries timeout errors with exponential backoff (10s, 20s, 30s)

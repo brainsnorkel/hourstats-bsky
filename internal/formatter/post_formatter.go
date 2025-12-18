@@ -17,12 +17,7 @@ type Post struct {
 }
 
 // FormatPostContent generates the post content that will be posted to Bluesky
-func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, averageCompoundScore float64) string {
-	// Scale compound score to percentage range for 100-word system
-	// Vader compound score: -1.0 to +1.0
-	// Scale to percentage: -100% to +100%
-	netSentiment := averageCompoundScore * 100.0
-
+func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentiment float64) string {
 	// Get descriptive word for sentiment using 100-word scale with normal curve
 	moodWord := getMoodWord100(netSentiment)
 

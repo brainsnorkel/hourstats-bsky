@@ -39,7 +39,7 @@ Bluesky is #satisfied
 The bot runs on AWS Lambda with the following components:
 
 - **Orchestrator**: Initiates analysis runs every 30 minutes via EventBridge
-- **Fetcher**: Collects posts from Bluesky API (stops at 14 minutes if >1000 posts collected)
+- **Fetcher**: Collects posts from Bluesky API using `since` time filter (stops at 14 minutes if >1000 posts collected)
 - **Processor**: Analyzes sentiment and ranks posts
 - **Poster**: Publishes summaries to Bluesky
 - **Sparkline Poster**: Generates and posts 48-hour sentiment charts
@@ -61,7 +61,7 @@ State is managed in DynamoDB, and sparkline images are stored in S3.
 
 ### Prerequisites
 
-- Go 1.25 or later
+- Go 1.24 or later
 - A Bluesky account
 - Bluesky app password (not your regular password)
 
@@ -208,3 +208,4 @@ This project uses the following open-source libraries:
 MIT License - Copyright (c) 2025 Chris Gentle FlatMapIT Pty Ltd - @xop.co on Bluesky
 
 See [LICENSE](LICENSE) for details.
+****
