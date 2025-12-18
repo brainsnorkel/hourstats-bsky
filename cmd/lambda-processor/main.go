@@ -410,7 +410,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 		}
 	}
 
-	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage/100.0)
+	postContent := formatter.FormatPostContent(formatterPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
 	characterCount := len(postContent)
 	blueskyLimit := 300
 	remainingChars := blueskyLimit - characterCount
@@ -426,7 +426,7 @@ func (h *ProcessorHandler) postSummary(runState *state.RunState, topPosts []stat
 	}
 
 	// Post the summary
-	postedURI, postedCID, err := h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage/100.0)
+	postedURI, postedCID, err := h.blueskyClient.PostTrendingSummary(clientPosts, overallSentiment, runState.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
 	if err != nil {
 		return err
 	}
