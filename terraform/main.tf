@@ -374,19 +374,12 @@ resource "aws_lambda_permission" "allow_eventbridge_orchestrator" {
 }
 
 # SSM Parameters
-resource "aws_ssm_parameter" "bluesky_handle" {
-  name  = "/hourstats/bluesky/handle"
-  type  = "String"
-  value = "your-handle.bsky.social"
-
-  tags = {
-    Name        = "${var.function_name}-bluesky-handle"
-    Environment = "production"
-  }
+# Note: The bluesky handle and password should be set manually via AWS CLI or Console
+# These data sources reference existing parameters without managing them
+data "aws_ssm_parameter" "bluesky_handle" {
+  name = "/hourstats/bluesky/handle"
 }
 
-# Note: The bluesky password should be set manually via AWS CLI or Console
-# This data source references the existing parameter without managing it
 data "aws_ssm_parameter" "bluesky_password" {
   name = "/hourstats/bluesky/password"
 }
