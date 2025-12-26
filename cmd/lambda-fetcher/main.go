@@ -169,6 +169,7 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	startTime := time.Now()
 	earlyStopTime := 14 * time.Minute // Stop at 14 minutes to leave 1 minute for dispatch
 	minPostsForEarlyStop := 1000      // Minimum posts needed for early stop
+	minPostsRequired := 250           // Minimum posts required before stopping (prevents starvation)
 
 	log.Printf("🔄 FETCHER: Starting sequential fetch for posts since %s (sort=latest)", cutoffTime.Format("2006-01-02 15:04:05 UTC"))
 
@@ -229,9 +230,24 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 		// Determine if we should stop based on whether posts are before cutoff time
 		shouldStop := false
 		if len(posts) == 0 {
-			// If we got 0 posts and there are no more pages, stop
+			// If we got 0 posts and there are no more pages, check if we have minimum required
 			if !hasMore || nextCursor == "" {
-				log.Printf("📄 FETCHER: No posts and no more pages, stopping")
+				if totalPosts < minPostsRequired {
+					log.Printf("⚠️ FETCHER: No posts returned and API says no more pages, but only have %d posts (need %d). Attempting to continue with next cursor.", totalPosts, minPostsRequired)
+					// Try to advance cursor manually if possible to continue searching
+					if currentCursor != "" {
+						var cursorNum int
+						if _, parseErr := fmt.Sscanf(currentCursor, "%d", &cursorNum); parseErr == nil {
+							// Try next cursor value to continue searching
+							currentCursor = fmt.Sprintf("%d", cursorNum+100)
+							log.Printf("🔄 FETCHER: Manually advancing cursor to '%s' to continue search", currentCursor)
+							continue
+						}
+					}
+					log.Printf("⚠️ FETCHER: Cannot advance cursor, but only have %d posts (need %d). Stopping anyway.", totalPosts, minPostsRequired)
+				} else {
+					log.Printf("📄 FETCHER: No posts and no more pages, stopping (have %d posts, need %d)", totalPosts, minPostsRequired)
+				}
 				break
 			}
 			// Otherwise continue to next page
@@ -311,13 +327,47 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 
 		// Check if we've reached posts before our time window or no more pages
 		if shouldStop {
-			log.Printf("⏰ FETCHER: Found posts before time window, stopping at iteration %d", iteration)
-			break
+			// Only stop if we have minimum required posts
+			if totalPosts >= minPostsRequired {
+				log.Printf("⏰ FETCHER: Found posts before time window, stopping at iteration %d (have %d posts, need %d)", iteration, totalPosts, minPostsRequired)
+				break
+			} else {
+				log.Printf("⚠️ FETCHER: Found posts before time window, but only have %d posts (need %d). Continuing search...", totalPosts, minPostsRequired)
+				// Try to continue by advancing cursor
+				if currentCursor != "" {
+					var cursorNum int
+					if _, parseErr := fmt.Sscanf(currentCursor, "%d", &cursorNum); parseErr == nil {
+						currentCursor = fmt.Sprintf("%d", cursorNum+100)
+						log.Printf("🔄 FETCHER: Advancing cursor to '%s' to continue search", currentCursor)
+						continue
+					}
+				}
+				// If we can't advance, stop anyway
+				log.Printf("⏰ FETCHER: Cannot continue, stopping at iteration %d with %d posts", iteration, totalPosts)
+				break
+			}
 		}
 
 		if !hasMore || nextCursor == "" {
-			log.Printf("📄 FETCHER: No more pages available, stopping at iteration %d", iteration)
-			break
+			// Only stop if we have minimum required posts
+			if totalPosts >= minPostsRequired {
+				log.Printf("📄 FETCHER: No more pages available, stopping at iteration %d (have %d posts, need %d)", iteration, totalPosts, minPostsRequired)
+				break
+			} else {
+				log.Printf("⚠️ FETCHER: API says no more pages, but only have %d posts (need %d). Attempting to continue...", totalPosts, minPostsRequired)
+				// Try to advance cursor manually to continue searching
+				if currentCursor != "" {
+					var cursorNum int
+					if _, parseErr := fmt.Sscanf(currentCursor, "%d", &cursorNum); parseErr == nil {
+						currentCursor = fmt.Sprintf("%d", cursorNum+100)
+						log.Printf("🔄 FETCHER: Manually advancing cursor to '%s' to continue search", currentCursor)
+						continue
+					}
+				}
+				// If we can't advance, stop anyway
+				log.Printf("📄 FETCHER: Cannot continue, stopping at iteration %d with %d posts", iteration, totalPosts)
+				break
+			}
 		}
 
 		// Use the API's returned cursor for the next iteration
@@ -326,6 +376,12 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	}
 
 	log.Printf("🏁 FETCHER: Sequential fetch complete - Total posts: %d across %d iterations", totalPosts, iteration)
+	
+	// Final check: warn if we didn't get minimum required posts
+	if totalPosts < minPostsRequired {
+		log.Printf("⚠️ FETCHER: WARNING - Only retrieved %d posts (minimum required: %d). This may indicate API issues or low activity.", totalPosts, minPostsRequired)
+	}
+	
 	return totalPosts, nil
 }
 
