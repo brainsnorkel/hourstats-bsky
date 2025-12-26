@@ -147,6 +147,16 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 		}, nil
 	}
 
+	// Minimum post count check: don't post if we have fewer than 250 posts
+	minPostsRequired := 250
+	if len(filteredPosts) < minPostsRequired {
+		log.Printf("⚠️ PROCESSOR: Only %d posts found (minimum required: %d). Skipping analysis and posting to avoid low-quality data.", len(filteredPosts), minPostsRequired)
+		return Response{
+			StatusCode: 200,
+			Body:       fmt.Sprintf("Insufficient posts for analysis: %d (minimum: %d)", len(filteredPosts), minPostsRequired),
+		}, nil
+	}
+
 	// Step 1: Analyze posts for sentiment and calculate engagement scores
 	log.Printf("Analyzing %d posts", len(filteredPosts))
 	analyzedPosts, overallSentiment, netSentimentPercentage, err := h.analyzePosts(filteredPosts)
