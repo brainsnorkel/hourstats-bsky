@@ -3,61 +3,104 @@ package client
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"time"
+
 	"github.com/bluesky-social/indigo/api/bsky"
 )
 
+// EventDate represents a date for Wikipedia link generation
+type EventDate struct {
+	DisplayText string // e.g., "Jan 3" - text that appears in the post
+	FullDate    string // e.g., "2026-01-03" - full date with year for URL generation
+}
+
 // CreateWikipediaLinkFacets creates facets for Wikipedia link text in the post
 // Looks for patterns like "Sep 18 events" or "Oct 10 events" and makes them clickable
-// The URLs are no longer in the text, so we match the date + "events" pattern directly
-func CreateWikipediaLinkFacets(text string) []*bsky.RichtextFacet {
+// eventDates is an optional slice of EventDate structs that provide the actual dates with years
+// for accurate Wikipedia URL generation when the date range spans multiple years
+func CreateWikipediaLinkFacets(text string, eventDates ...EventDate) []*bsky.RichtextFacet {
 	var facets []*bsky.RichtextFacet
+
+	// Build a map of display text to full date for quick lookup
+	dateMap := make(map[string]string)
+	for _, ed := range eventDates {
+		dateMap[ed.DisplayText] = ed.FullDate
+	}
 
 	// Pattern to match: "Jan 2 events", "Sep 18 events", "Oct 10 events", etc.
 	// Matches month abbreviation (3 letters) + space + day (1-2 digits) + space + "events"
 	// Examples: "Sep 18 events", "Oct 10 events", "Jan 1 events"
-	pattern := regexp.MustCompile(`\b([A-Z][a-z]{2} \d{1,2} events)\b`)
+	pattern := regexp.MustCompile(`\b([A-Z][a-z]{2} \d{1,2}) events\b`)
 	matches := pattern.FindAllStringSubmatchIndex(text, -1)
 
-	// For each match, we need to find the corresponding Wikipedia URL
-	// Since URLs are no longer in the text, we'll need to generate them from the date
 	for _, match := range matches {
 		if len(match) < 4 {
 			continue
 		}
 
-		// Extract the matched text (e.g., "Sep 18 events")
-		matchedText := text[match[2]:match[3]]
-		
-		// Extract the date portion (e.g., "Sep 18")
-		datePortion := matchedText[:len(matchedText)-7] // Remove " events" (7 chars)
+		// match[0]:match[1] is the full match (e.g., "Jan 3 events")
+		// match[2]:match[3] is the captured group (e.g., "Jan 3")
+		datePortion := text[match[2]:match[3]] // e.g., "Jan 3"
 
-		// Parse the date to generate the Wikipedia URL
-		// We need to determine the year - check the post text for a date range to infer the year
-		// Format: "Bluesky Sentiment YYYY-MM-DD - YYYY-MM-DD"
 		var year int
-		yearPattern := regexp.MustCompile(`Bluesky Sentiment (\d{4})-\d{2}-\d{2}`)
-		yearMatch := yearPattern.FindStringSubmatch(text)
-		if len(yearMatch) >= 2 {
-			// Try to parse the year from the title
-			if parsedYear, err := strconv.Atoi(yearMatch[1]); err == nil {
-				year = parsedYear
-			} else {
-				year = time.Now().Year()
+		var date time.Time
+
+		// First, check if we have an exact date provided in eventDates
+		if fullDate, ok := dateMap[datePortion]; ok {
+			// Parse the full date to get the correct year
+			parsedDate, err := time.Parse("2006-01-02", fullDate)
+			if err == nil {
+				date = parsedDate
+				year = parsedDate.Year()
 			}
-		} else {
-			// Fallback to current year
-			year = time.Now().Year()
 		}
-		
-		dateStr := fmt.Sprintf("%s %d", datePortion, year)
-		
-		// Try to parse the date
-		date, err := time.Parse("Jan 2 2006", dateStr)
-		if err != nil {
-			// If parsing fails, try with different format or skip
-			continue
+
+		// If no exact date found, fall back to parsing from text
+		if year == 0 {
+			// Try to extract year from the title: "Bluesky Sentiment YYYY-MM-DD - YYYY-MM-DD"
+			dateRangePattern := regexp.MustCompile(`Bluesky Sentiment (\d{4})-(\d{2})-\d{2} - (\d{4})-(\d{2})-\d{2}`)
+			dateRangeMatch := dateRangePattern.FindStringSubmatch(text)
+
+			if len(dateRangeMatch) >= 5 {
+				startYear, _ := parseIntSafe(dateRangeMatch[1])
+				startMonth, _ := parseIntSafe(dateRangeMatch[2])
+				endYear, _ := parseIntSafe(dateRangeMatch[3])
+				endMonth, _ := parseIntSafe(dateRangeMatch[4])
+
+				// Parse just the month from the date portion to determine which year
+				eventDate, err := time.Parse("Jan 2", datePortion)
+				if err == nil {
+					eventMonth := int(eventDate.Month())
+
+					// Determine which year this event belongs to
+					if startYear != endYear {
+						// If event month >= start month, it's in the start year
+						// If event month <= end month (and different from start), it's in the end year
+						if eventMonth >= startMonth {
+							year = startYear
+						} else if eventMonth <= endMonth {
+							year = endYear
+						} else {
+							year = endYear // Fallback
+						}
+					} else {
+						year = startYear
+					}
+
+					// Create full date for URL generation
+					date = time.Date(year, time.Month(eventMonth), eventDate.Day(), 0, 0, 0, 0, time.UTC)
+				}
+			}
+
+			// Ultimate fallback: use current year
+			if year == 0 {
+				year = time.Now().Year()
+				parsedDate, err := time.Parse("Jan 2 2006", fmt.Sprintf("%s %d", datePortion, year))
+				if err != nil {
+					continue
+				}
+				date = parsedDate
+			}
 		}
 
 		// Generate Wikipedia URL for this date
@@ -69,8 +112,8 @@ func CreateWikipediaLinkFacets(text string) []*bsky.RichtextFacet {
 		// Create a link facet for the entire date + "events" phrase
 		facet := &bsky.RichtextFacet{
 			Index: &bsky.RichtextFacet_ByteSlice{
-				ByteStart: int64(match[2]),
-				ByteEnd:   int64(match[3]),
+				ByteStart: int64(match[0]), // Start of full match "Jan 3 events"
+				ByteEnd:   int64(match[1]), // End of full match
 			},
 			Features: []*bsky.RichtextFacet_Features_Elem{
 				{
@@ -84,8 +127,18 @@ func CreateWikipediaLinkFacets(text string) []*bsky.RichtextFacet {
 		facets = append(facets, facet)
 	}
 
-	// No fallback needed - we always try to match the date pattern
-
 	return facets
+}
+
+// parseIntSafe parses a string to int, returning 0 on error
+func parseIntSafe(s string) (int, bool) {
+	var result int
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		result = result*10 + int(c-'0')
+	}
+	return result, true
 }
 
