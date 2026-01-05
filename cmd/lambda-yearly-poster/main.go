@@ -132,7 +132,7 @@ func (h *YearlyPosterHandler) HandleRequest(ctx context.Context, event Event) (R
 	}
 
 	// Analyze yearly sentiment extremes with Wikipedia links
-	extremeMessage := h.analyzeYearlySentimentExtremes(yearlyData)
+	extremeResult := h.analyzeYearlySentimentExtremes(yearlyData)
 
 	// Generate comprehensive alt text
 	altText := h.generateYearlyAltText(yearlyData)
@@ -147,8 +147,8 @@ func (h *YearlyPosterHandler) HandleRequest(ctx context.Context, event Event) (R
 	} else {
 		postText = "Bluesky Sentiment"
 	}
-	if extremeMessage != "" {
-		postText += "\n\n" + extremeMessage
+	if extremeResult.Message != "" {
+		postText += "\n\n" + extremeResult.Message
 	}
 
 	// Truncate post text to 300 graphemes (Bluesky limit)
@@ -169,7 +169,8 @@ func (h *YearlyPosterHandler) HandleRequest(ctx context.Context, event Event) (R
 	}
 
 	// Create facets for Wikipedia URLs to make them clickable (based on truncated text)
-	wikipediaFacets := client.CreateWikipediaLinkFacets(truncatedPostText)
+	// Pass the actual event dates for accurate year determination
+	wikipediaFacets := client.CreateWikipediaLinkFacets(truncatedPostText, extremeResult.EventDates...)
 
 	// Post the yearly chart and get post URI/CID
 	var postURI, postCID string
@@ -249,10 +250,19 @@ func (h *YearlyPosterHandler) getBlueskyCredentials(ctx context.Context) (string
 	return handle, password, nil
 }
 
+// YearlyExtremeResult holds the result of analyzing yearly sentiment extremes
+type YearlyExtremeResult struct {
+	Message    string
+	EventDates []client.EventDate
+}
+
 // analyzeYearlySentimentExtremes checks for notable sentiment patterns in the yearly data
-func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.YearlySparklineDataPoint) string {
+// Returns both the message text and the event dates for accurate Wikipedia link generation
+func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.YearlySparklineDataPoint) YearlyExtremeResult {
+	result := YearlyExtremeResult{}
+
 	if len(dataPoints) < 30 {
-		return ""
+		return result
 	}
 
 	// Get the latest sentiment (most recent data point)
@@ -300,6 +310,11 @@ func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.
 			// Format as "Sep 18 events" which will be linked via facets
 			linkText := fmt.Sprintf("%s events", minDateDisplay)
 			insights = append(insights, fmt.Sprintf("Lowest: %.1f%% %s", minSentiment, linkText))
+			// Add to event dates for accurate Wikipedia URL generation
+			result.EventDates = append(result.EventDates, client.EventDate{
+				DisplayText: minDateDisplay,
+				FullDate:    minDate,
+			})
 		} else {
 			insights = append(insights, fmt.Sprintf("Lowest: %.1f%%", minSentiment))
 		}
@@ -311,16 +326,21 @@ func (h *YearlyPosterHandler) analyzeYearlySentimentExtremes(dataPoints []state.
 			// Format as "Oct 10 events" which will be linked via facets
 			linkText := fmt.Sprintf("%s events", maxDateDisplay)
 			insights = append(insights, fmt.Sprintf("Highest: %.1f%% %s", maxSentiment, linkText))
+			// Add to event dates for accurate Wikipedia URL generation
+			result.EventDates = append(result.EventDates, client.EventDate{
+				DisplayText: maxDateDisplay,
+				FullDate:    maxDate,
+			})
 		} else {
 			insights = append(insights, fmt.Sprintf("Highest: %.1f%%", maxSentiment))
 		}
 	}
 
-	if len(insights) == 0 {
-		return ""
+	if len(insights) > 0 {
+		result.Message = strings.Join(insights, "\n")
 	}
 
-	return strings.Join(insights, "\n")
+	return result
 }
 
 // generateYearlyAltText creates comprehensive alt text for the yearly sparkline chart

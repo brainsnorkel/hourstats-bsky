@@ -91,12 +91,19 @@ func main() {
 	// Add extreme sentiment information
 	// The date + "events" text will be linked via facets (URLs not shown in post)
 	extremeMessages := []string{}
+	var eventDates []client.EventDate
+
 	if minDate != "" {
 		minDateParsed, parseErr := time.Parse("2006-01-02", minDate)
 		if parseErr == nil {
 			minDateDisplay := minDateParsed.Format("Jan 2")
 			// Format as "Sep 18 events" which will be linked via facets
 			extremeMessages = append(extremeMessages, fmt.Sprintf("Lowest: %.1f%% %s events", minSentiment, minDateDisplay))
+			// Track the event date for accurate Wikipedia URL generation
+			eventDates = append(eventDates, client.EventDate{
+				DisplayText: minDateDisplay,
+				FullDate:    minDate,
+			})
 		} else {
 			extremeMessages = append(extremeMessages, fmt.Sprintf("Lowest: %.1f%%", minSentiment))
 		}
@@ -107,6 +114,11 @@ func main() {
 			maxDateDisplay := maxDateParsed.Format("Jan 2")
 			// Format as "Oct 10 events" which will be linked via facets
 			extremeMessages = append(extremeMessages, fmt.Sprintf("Highest: %.1f%% %s events", maxSentiment, maxDateDisplay))
+			// Track the event date for accurate Wikipedia URL generation
+			eventDates = append(eventDates, client.EventDate{
+				DisplayText: maxDateDisplay,
+				FullDate:    maxDate,
+			})
 		} else {
 			extremeMessages = append(extremeMessages, fmt.Sprintf("Highest: %.1f%%", maxSentiment))
 		}
@@ -181,7 +193,8 @@ func main() {
 	}
 
 	// Create facets for Wikipedia URLs to make them clickable (based on truncated text)
-	wikipediaFacets := client.CreateWikipediaLinkFacets(truncatedPostText)
+	// Pass the actual event dates for accurate year determination
+	wikipediaFacets := client.CreateWikipediaLinkFacets(truncatedPostText, eventDates...)
 
 	// Post the chart
 	var postURI, postCID string
