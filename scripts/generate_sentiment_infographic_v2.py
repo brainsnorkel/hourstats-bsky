@@ -121,7 +121,7 @@ for j, (label, value) in enumerate(stats):
             ha='right', va='center', transform=ax.transAxes)
 
 # Footer
-ax.text(0.5, 0.02, '@trendjournal.bsky.social',
+ax.text(0.5, 0.02, '@hourstats.bsky.social',
         fontsize=10, color='#475569', ha='center', va='bottom', transform=ax.transAxes)
 
 # Save
