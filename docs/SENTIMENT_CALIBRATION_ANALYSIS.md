@@ -169,132 +169,155 @@ const (
 
 ### 4.2 Complete Word List by Tier
 
+*All words tested against: "Bluesky is feeling ___"*
+
 #### Tier 1: Extreme Negative (5 words) - Sentiment < 0.0%
+*Vibe: Actively hostile, toxic, or distressed. Rare intraday events only.*
 ```
-1.  strained
-2.  tense
-3.  sour
-4.  discordant
-5.  antagonistic
+1.  angry
+2.  hostile
+3.  grim
+4.  miserable
+5.  dreadful
 ```
 
 #### Tier 2: Unusually Low (15 words) - Sentiment 0.0% to < 9.5%
+*Vibe: Strong pessimism, unhappiness, or tension. Distinctly negative atmosphere.*
 ```
-6.  stagnant
-7.  lethargic
-8.  subdued
-9.  muted
-10. drab
-11. listless
-12. apathetic
-13. indifferent
-14. reserved
-15. guarded
-16. wary
-17. hesitant
-18. cautious
-19. reflective
-20. pensive
+6.  anxious
+7.  agitated
+8.  irritable
+9.  tense
+10. pessimistic
+11. cynical
+12. uneasy
+13. restless
+14. glum
+15. sullen
+16. somber
+17. weary
+18. subdued
+19. melancholy
+20. despondent
 ```
 
 #### Tier 3: Below Average (15 words) - Sentiment 9.5% to < 10.5%
+*Vibe: Lacking energy, muted, slightly downbeat. The "meh" zone.*
 ```
-21. quiet
-22. still
-23. unremarkable
-24. neutral
-25. unassuming
-26. composed
-27. measured
-28. steady
-29. placid
-30. mild
-31. observant
-32. contemplative
-33. calm
-34. tranquil
-35. serene
+21. flat
+22. tired
+23. downbeat
+24. sluggish
+25. wary
+26. cautious
+27. skeptical
+28. reserved
+29. ambivalent
+30. uncertain
+31. distracted
+32. quiet
+33. pensive
+34. reflective
+35. solemn
 ```
 
 #### Tier 4: Typical (30 words) - Sentiment 10.5% to < 12.5%
+*Vibe: The everyday hum of the network. Normal baseline mood.*
+
+**Calm & Centered:**
 ```
-36. average
-37. normal
-38. standard
-39. regular
-40. typical
-41. consistent
-42. everyday
-43. familiar
-44. balanced
-45. harmonious
-46. agreeable
-47. constructive
-48. pleasant
-49. sociable
-50. amicable
-51. engaged
-52. interactive
-53. responsive
-54. conversational
-55. communal
-56. positive
-57. good-natured
-58. genial
-59. upbeat
-60. cheerful
-61. welcoming
-62. supportive
-63. encouraging
-64. heartening
-65. optimistic
+36. calm
+37. chill
+38. mellow
+39. relaxed
+40. content
+41. peaceful
+42. grounded
+43. steady
+```
+
+**Curious & Thoughtful:**
+```
+44. curious
+45. inquisitive
+46. thoughtful
+47. introspective
+48. speculative
+49. sentimental
+50. nostalgic
+```
+
+**Expressive & Social:**
+```
+51. playful
+52. mischievous
+53. cheeky
+54. ironic
+55. witty
+56. candid
+57. sincere
+58. earnest
+```
+
+**Engaged & Balanced:**
+```
+59. easygoing
+60. sociable
+61. engaged
+62. connected
+63. alert
+64. balanced
+65. settled
 ```
 
 #### Tier 5: Above Average (15 words) - Sentiment 12.5% to < 14.0%
+*Vibe: Genuinely positive and constructive. A good day online.*
 ```
-66. hopeful
-67. bright
-68. sunny
-69. warm
-70. lively
-71. animated
-72. buoyant
-73. inspired
-74. spirited
-75. vibrant
-76. dynamic
-77. energetic
-78. enthusiastic
-79. joyful
-80. delighted
+66. happy
+67. cheerful
+68. upbeat
+69. positive
+70. optimistic
+71. hopeful
+72. encouraged
+73. pleased
+74. amused
+75. friendly
+76. warm
+77. welcoming
+78. lively
+79. supportive
+80. bright
 ```
 
 #### Tier 6: Unusually High (15 words) - Sentiment 14.0% to < 18.0%
+*Vibe: High-energy positivity, creativity, and excitement.*
 ```
 81. excited
-82. thrilled
-83. gleeful
-84. vivacious
-85. elated
-86. effervescent
-87. ebullient
-88. exuberant
-89. radiant
-90. glowing
-91. proud
-92. rapturous
-93. exhilarated
-94. triumphant
-95. overjoyed
+82. vibrant
+83. energetic
+84. enthusiastic
+85. inspired
+86. creative
+87. joyful
+88. delighted
+89. thrilled
+90. invigorated
+91. passionate
+92. spirited
+93. exuberant
+94. buoyant
+95. buzzing
 ```
 
 #### Tier 7: Extreme Positive (5 words) - Sentiment >= 18.0%
+*Vibe: Peak collective experience; overwhelming joy. Holidays and milestones.*
 ```
-96. festive
-97. jubilant
-98. celebratory
-99. ecstatic
-100. euphoric
+96. euphoric
+97. ecstatic
+98. elated
+99. jubilant
+100. celebratory
 ```
 
 ---
