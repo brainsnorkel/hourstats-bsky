@@ -9,41 +9,14 @@ import matplotlib.patches as mpatches
 import numpy as np
 
 # Tier data with sample words (showing most representative)
+# Ordered from most positive to most negative (top to bottom)
 tiers = [
     {
-        "name": "Extreme Negative",
-        "range": "< 0%",
+        "name": "Extreme Positive",
+        "range": "≥ 18%",
         "count": 5,
-        "sample": "angry • hostile • grim • miserable • dreadful",
-        "color": "#EF4444",
-    },
-    {
-        "name": "Unusually Low",
-        "range": "0% – 9.5%",
-        "count": 15,
-        "sample": "anxious • tense • pessimistic • glum • melancholy",
-        "color": "#F97316",
-    },
-    {
-        "name": "Below Average",
-        "range": "9.5% – 10.5%",
-        "count": 15,
-        "sample": "flat • tired • cautious • quiet • reflective",
-        "color": "#EAB308",
-    },
-    {
-        "name": "Typical",
-        "range": "10.5% – 12.5%",
-        "count": 30,
-        "sample": "calm • content • curious • playful • sociable",
-        "color": "#84CC16",
-    },
-    {
-        "name": "Above Average",
-        "range": "12.5% – 14%",
-        "count": 15,
-        "sample": "happy • cheerful • optimistic • friendly • bright",
-        "color": "#22C55E",
+        "sample": "euphoric • ecstatic • elated • jubilant • celebratory",
+        "color": "#3B82F6",
     },
     {
         "name": "Unusually High",
@@ -53,11 +26,39 @@ tiers = [
         "color": "#14B8A6",
     },
     {
-        "name": "Extreme Positive",
-        "range": "≥ 18%",
+        "name": "Above Average",
+        "range": "12.5% – 14%",
+        "count": 15,
+        "sample": "happy • cheerful • optimistic • friendly • bright",
+        "color": "#22C55E",
+    },
+    {
+        "name": "Typical",
+        "range": "10.5% – 12.5%",
+        "count": 30,
+        "sample": "calm • content • curious • playful • sociable",
+        "color": "#84CC16",
+    },
+    {
+        "name": "Below Average",
+        "range": "9.5% – 10.5%",
+        "count": 15,
+        "sample": "flat • tired • cautious • quiet • reflective",
+        "color": "#EAB308",
+    },
+    {
+        "name": "Unusually Low",
+        "range": "0% – 9.5%",
+        "count": 15,
+        "sample": "anxious • tense • pessimistic • glum • melancholy",
+        "color": "#F97316",
+    },
+    {
+        "name": "Extreme Negative",
+        "range": "< 0%",
         "count": 5,
-        "sample": "euphoric • ecstatic • elated • jubilant • celebratory",
-        "color": "#3B82F6",
+        "sample": "angry • hostile • grim • miserable • dreadful",
+        "color": "#EF4444",
     },
 ]
 
