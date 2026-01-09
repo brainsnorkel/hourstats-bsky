@@ -48,6 +48,10 @@ Thumbs.db
 # Lambda binary artifacts
 cmd/*/bootstrap
 cmd/*/main
+lambda-processor
+lambda-fetcher
+lambda-orchestrator
+lambda-sparkline-poster
 
 # Configuration files with secrets
 config.yaml
