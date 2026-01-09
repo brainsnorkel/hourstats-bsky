@@ -63,7 +63,7 @@ func main() {
 		}
 
 		// Make API call
-		posts, nextCursor, hasMore, err := client.GetTrendingPostsBatch(ctx, currentCursor, cutoffTime)
+		posts, nextCursor, hasMore, _, err := client.GetTrendingPostsBatch(ctx, currentCursor, cutoffTime)
 		if err != nil {
 			log.Fatalf("API call failed at iteration %d: %v", iteration, err)
 		}

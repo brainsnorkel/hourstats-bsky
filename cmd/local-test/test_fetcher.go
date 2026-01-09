@@ -235,7 +235,7 @@ func fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient,
 			// Add delay to reduce API load
 			time.Sleep(time.Duration(cursorIndex) * time.Second)
 
-			posts, _, _, err := client.GetTrendingPostsBatch(ctx, cursorValue, cutoffTime)
+			posts, _, _, _, err := client.GetTrendingPostsBatch(ctx, cursorValue, cutoffTime)
 			if err != nil {
 				fmt.Printf("   ❌ Parallel call %d failed: %v\n", cursorIndex+1, err)
 				return
