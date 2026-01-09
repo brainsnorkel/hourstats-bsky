@@ -162,8 +162,8 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 		}, nil
 	}
 
-	// Minimum post count check: don't post if we have fewer than 250 posts
-	minPostsRequired := 250
+	// Minimum post count check: don't post if we have fewer than 1000 posts
+	minPostsRequired := 1000
 	if len(filteredPosts) < minPostsRequired {
 		log.Printf("⚠️ PROCESSOR: Only %d posts found (minimum required: %d). Posting search latency message.", len(filteredPosts), minPostsRequired)
 
