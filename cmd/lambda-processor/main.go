@@ -661,7 +661,7 @@ func (h *ProcessorHandler) postSearchLatencyMessage(ctx context.Context, totalPo
 	}
 
 	// Format message per user requirements
-	message := fmt.Sprintf("Recent posts issue: %d posts found in the last %d minutes (too few to calculate sentiment). %d posts retrieved in total. Most recent post returned by search %s. Earliest post %s.",
+	message := fmt.Sprintf("Latest posts search issue: %d posts found in the last %d minutes (too few to calculate sentiment). %d posts retrieved in total. Most recent post returned by search %s. Earliest post %s.",
 		filteredPostsCount, analysisMinutes, totalPostsRetrieved, latestDuration, earliestDuration)
 
 	log.Printf("📢 PROCESSOR: Posting search latency message: %s", message)
