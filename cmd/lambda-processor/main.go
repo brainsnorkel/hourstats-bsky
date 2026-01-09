@@ -135,14 +135,11 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	deduplicatedPosts := h.deduplicatePostsByURI(allPosts)
 	log.Printf("🔍 PROCESSOR DEBUG: After deduplication: %d posts (from %d original)", len(deduplicatedPosts), len(allPosts))
 
-	// Track post timestamps before filtering (for search latency reporting)
-	var earliestPostTime, latestPostTime time.Time
-	if len(deduplicatedPosts) > 0 {
-		earliestPostTime, latestPostTime = h.getPostTimeRange(deduplicatedPosts)
-		log.Printf("📅 PROCESSOR: Post time range - Earliest: %s, Latest: %s",
-			earliestPostTime.Format("2006-01-02 15:04:05 UTC"),
-			latestPostTime.Format("2006-01-02 15:04:05 UTC"))
-	}
+	// Log raw API stats from fetcher (for search latency reporting)
+	log.Printf("📊 PROCESSOR: Raw API stats from fetcher - Total API posts: %d, Earliest: %s, Latest: %s",
+		runState.TotalAPIPostsReturned,
+		runState.EarliestAPIPostTime.Format("2006-01-02 15:04:05 UTC"),
+		runState.LatestAPIPostTime.Format("2006-01-02 15:04:05 UTC"))
 
 	// Filter posts by cutoff time
 	filteredPosts := h.filterPostsByCutoffTime(deduplicatedPosts, runState.CutoffTime)
@@ -151,8 +148,8 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	if len(filteredPosts) == 0 {
 		log.Printf("⚠️ PROCESSOR: No posts found for the time period. Posting search latency message.")
 
-		// Post informational message about search latency
-		err := h.postSearchLatencyMessage(ctx, runState.TotalPostsRetrieved, 0, runState.AnalysisIntervalMinutes, earliestPostTime, latestPostTime)
+		// Post informational message about search latency using raw API stats
+		err := h.postSearchLatencyMessage(ctx, runState.TotalAPIPostsReturned, 0, runState.AnalysisIntervalMinutes, runState.EarliestAPIPostTime, runState.LatestAPIPostTime)
 		if err != nil {
 			log.Printf("Failed to post search latency message: %v", err)
 		} else {
@@ -170,8 +167,8 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	if len(filteredPosts) < minPostsRequired {
 		log.Printf("⚠️ PROCESSOR: Only %d posts found (minimum required: %d). Posting search latency message.", len(filteredPosts), minPostsRequired)
 
-		// Post informational message about search latency
-		err := h.postSearchLatencyMessage(ctx, runState.TotalPostsRetrieved, len(filteredPosts), runState.AnalysisIntervalMinutes, earliestPostTime, latestPostTime)
+		// Post informational message about search latency using raw API stats
+		err := h.postSearchLatencyMessage(ctx, runState.TotalAPIPostsReturned, len(filteredPosts), runState.AnalysisIntervalMinutes, runState.EarliestAPIPostTime, runState.LatestAPIPostTime)
 		if err != nil {
 			log.Printf("Failed to post search latency message: %v", err)
 		} else {
