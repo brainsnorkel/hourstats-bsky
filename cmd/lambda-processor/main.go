@@ -617,19 +617,33 @@ func (h *ProcessorHandler) getPostTimeRange(posts []state.Post) (earliest, lates
 	return
 }
 
-// formatDuration formats a duration in a human-readable way
+// formatDuration formats a duration in a human-readable way with correct grammar
 func formatDuration(d time.Duration) string {
 	if d < time.Minute {
-		return fmt.Sprintf("%d seconds", int(d.Seconds()))
+		seconds := int(d.Seconds())
+		if seconds == 1 {
+			return "1 second"
+		}
+		return fmt.Sprintf("%d seconds", seconds)
 	}
 	hours := int(d.Hours())
 	minutes := int(d.Minutes()) % 60
-	if hours > 0 && minutes > 0 {
-		return fmt.Sprintf("%d hours %d minutes", hours, minutes)
-	} else if hours > 0 {
-		return fmt.Sprintf("%d hours", hours)
+
+	hourWord := "hours"
+	if hours == 1 {
+		hourWord = "hour"
 	}
-	return fmt.Sprintf("%d minutes", minutes)
+	minuteWord := "minutes"
+	if minutes == 1 {
+		minuteWord = "minute"
+	}
+
+	if hours > 0 && minutes > 0 {
+		return fmt.Sprintf("%d %s %d %s", hours, hourWord, minutes, minuteWord)
+	} else if hours > 0 {
+		return fmt.Sprintf("%d %s", hours, hourWord)
+	}
+	return fmt.Sprintf("%d %s", minutes, minuteWord)
 }
 
 // postSearchLatencyMessage posts an informational message when Bluesky search is delayed
@@ -650,8 +664,8 @@ func (h *ProcessorHandler) postSearchLatencyMessage(ctx context.Context, totalPo
 	}
 
 	// Format message per user requirements
-	message := fmt.Sprintf("%d posts found in the search for posts in the last %d minutes. %d posts retrieved. Most recent post returned by search %s. Earliest post %s.",
-		totalPostsRetrieved, analysisMinutes, filteredPostsCount, latestDuration, earliestDuration)
+	message := fmt.Sprintf("%d posts found in the last %d minutes (too few to calculate sentiment). %d posts retrieved in total. Most recent post returned by search %s. Earliest post %s.",
+		filteredPostsCount, analysisMinutes, totalPostsRetrieved, latestDuration, earliestDuration)
 
 	log.Printf("📢 PROCESSOR: Posting search latency message: %s", message)
 
