@@ -44,6 +44,11 @@ type RunState struct {
 	ProcessingTimeMs int64   `json:"processingTimeMs" dynamodbav:"processingTimeMs"`
 	PostsPerSecond   float64 `json:"postsPerSecond" dynamodbav:"postsPerSecond"`
 	MemoryUsageMB    int64   `json:"memoryUsageMB" dynamodbav:"memoryUsageMB"`
+
+	// API response tracking (before time filtering) - for search latency reporting
+	TotalAPIPostsReturned int       `json:"totalAPIPostsReturned" dynamodbav:"totalAPIPostsReturned"`
+	EarliestAPIPostTime   time.Time `json:"earliestAPIPostTime,omitempty" dynamodbav:"earliestAPIPostTime,omitempty"`
+	LatestAPIPostTime     time.Time `json:"latestAPIPostTime,omitempty" dynamodbav:"latestAPIPostTime,omitempty"`
 }
 
 // Post represents a single post in the state
@@ -395,6 +400,26 @@ func (sm *StateManager) UpdateCursor(ctx context.Context, runID, cursor string, 
 	state.HasMorePosts = hasMorePosts
 	state.Step = "fetcher"
 	state.Status = "fetching"
+
+	return sm.UpdateRun(ctx, state)
+}
+
+// UpdateAPIStats updates the raw API statistics for search latency reporting
+func (sm *StateManager) UpdateAPIStats(ctx context.Context, runID string, totalAPIPostsReturned int, earliestAPIPostTime, latestAPIPostTime time.Time) error {
+	// Try to get fetcher step first, fall back to orchestrator step
+	state, err := sm.GetRun(ctx, runID, "fetcher")
+	if err != nil {
+		// If fetcher step doesn't exist, get orchestrator step
+		state, err = sm.GetRun(ctx, runID, "orchestrator")
+		if err != nil {
+			return fmt.Errorf("failed to get current state: %w", err)
+		}
+	}
+
+	// Update raw API stats
+	state.TotalAPIPostsReturned = totalAPIPostsReturned
+	state.EarliestAPIPostTime = earliestAPIPostTime
+	state.LatestAPIPostTime = latestAPIPostTime
 
 	return sm.UpdateRun(ctx, state)
 }

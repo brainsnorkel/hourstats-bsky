@@ -116,7 +116,7 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 	log.Printf("   📊 Analysis Interval: %d minutes", runState.AnalysisIntervalMinutes)
 
 	// Run parallel fetch with internal loops
-	totalPosts, err := h.fetchAllPostsInParallel(ctx, blueskyClient, runState.CutoffTime, event.RunID)
+	totalPosts, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime, err := h.fetchAllPostsInParallel(ctx, blueskyClient, runState.CutoffTime, event.RunID)
 	if err != nil {
 		log.Printf("Failed to fetch posts: %v", err)
 		return Response{
@@ -132,6 +132,12 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 			StatusCode: 500,
 			Body:       "Failed to update cursor: " + err.Error(),
 		}, err
+	}
+
+	// Store raw API stats in run state for processor to use in search latency message
+	if err := h.stateManager.UpdateAPIStats(ctx, event.RunID, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime); err != nil {
+		log.Printf("Failed to update API stats: %v", err)
+		// Non-fatal error - continue with processing
 	}
 
 	log.Printf("✅ FETCHER: All fetching complete - Run: %s, Total posts retrieved: %d", event.RunID, totalPosts)
@@ -156,8 +162,11 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 }
 
 // fetchAllPostsInParallel fetches all posts using parallel API calls and internal loops
-func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bskyclient.BlueskyClient, cutoffTime time.Time, runID string) (int, error) {
+// Returns: total filtered posts, total raw API posts, earliest API post time, latest API post time, error
+func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bskyclient.BlueskyClient, cutoffTime time.Time, runID string) (int, int, time.Time, time.Time, error) {
 	var totalPosts int
+	var totalAPIPostsReturned int
+	var earliestAPIPostTime, latestAPIPostTime time.Time
 	currentCursor := "" // Start with empty cursor to get most recent posts
 	iteration := 0
 	maxIterations := 100 // Increased for sequential pagination (100 pages * 100 posts = 10,000 posts max)
@@ -191,7 +200,20 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 		log.Printf("🔄 FETCHER: Starting iteration %d with cursor: '%s'", iteration, currentCursor)
 
 		// Make a single API call with proper cursor-based pagination
-		posts, nextCursor, hasMore, err := client.GetTrendingPostsBatch(ctx, currentCursor, cutoffTime)
+		posts, nextCursor, hasMore, batchStats, err := client.GetTrendingPostsBatch(ctx, currentCursor, cutoffTime)
+
+		// Accumulate raw API stats (before filtering)
+		totalAPIPostsReturned += batchStats.RawPostCount
+		if !batchStats.EarliestPost.IsZero() {
+			if earliestAPIPostTime.IsZero() || batchStats.EarliestPost.Before(earliestAPIPostTime) {
+				earliestAPIPostTime = batchStats.EarliestPost
+			}
+		}
+		if !batchStats.LatestPost.IsZero() {
+			if latestAPIPostTime.IsZero() || batchStats.LatestPost.After(latestAPIPostTime) {
+				latestAPIPostTime = batchStats.LatestPost
+			}
+		}
 		if err != nil {
 			// Handle timeout errors gracefully - skip this cursor and continue
 			if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "timeout") {
@@ -211,7 +233,7 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 				break
 			}
 			// For other errors, return immediately
-			return totalPosts, fmt.Errorf("failed to fetch batch at iteration %d: %w", iteration, err)
+			return totalPosts, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime, fmt.Errorf("failed to fetch batch at iteration %d: %w", iteration, err)
 		}
 
 		log.Printf("📊 FETCHER: Iteration %d - API returned %d posts (nextCursor: '%s', hasMore: %v)",
@@ -285,7 +307,7 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 		log.Printf("💾 FETCHER: Storing %d posts from iteration %d", len(statePosts), iteration)
 
 		if err := h.stateManager.AddPosts(ctx, runID, statePosts); err != nil {
-			return totalPosts, fmt.Errorf("failed to add posts: %w", err)
+			return totalPosts, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime, fmt.Errorf("failed to add posts: %w", err)
 		}
 
 		totalPosts += len(posts)
@@ -381,8 +403,14 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	if totalPosts < minPostsRequired {
 		log.Printf("⚠️ FETCHER: WARNING - Only retrieved %d posts (minimum required: %d). This may indicate API issues or low activity.", totalPosts, minPostsRequired)
 	}
-	
-	return totalPosts, nil
+
+	// Log raw API stats for debugging
+	log.Printf("📊 FETCHER: Raw API stats - Total posts returned by API: %d, Earliest: %s, Latest: %s",
+		totalAPIPostsReturned,
+		earliestAPIPostTime.Format("2006-01-02 15:04:05 UTC"),
+		latestAPIPostTime.Format("2006-01-02 15:04:05 UTC"))
+
+	return totalPosts, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime, nil
 }
 
 // convertToStatePosts converts client posts to state posts

@@ -28,6 +28,13 @@ type Post struct {
 	EngagementScore float64
 }
 
+// APIBatchStats contains statistics about the raw API response before filtering
+type APIBatchStats struct {
+	RawPostCount   int       // Number of posts returned by API (before time filtering)
+	EarliestPost   time.Time // Timestamp of earliest post from API
+	LatestPost     time.Time // Timestamp of latest post from API
+}
+
 type BlueskyClient struct {
 	client   *client.APIClient
 	handle   string
@@ -58,8 +65,12 @@ func (c *BlueskyClient) Authenticate() error {
 }
 
 // GetTrendingPostsBatch fetches a single batch of posts using cursor-based pagination
-func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string, cutoffTime time.Time) ([]Post, string, bool, error) {
+// Returns: filtered posts, next cursor, has more pages, API batch stats (raw counts before filtering), error
+func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string, cutoffTime time.Time) ([]Post, string, bool, APIBatchStats, error) {
 	log.Printf("Fetching posts batch with cursor: %s", cursor)
+
+	// Initialize stats
+	stats := APIBatchStats{}
 
 	// Make the API request with retry logic
 	var searchResult *bsky.FeedSearchPosts_Output
@@ -98,12 +109,12 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 					if cursorNum > 8000 {
 						log.Printf("⚠️ Timeout at high cursor %d, skipping this cursor and continuing", cursorNum)
 						// Return empty result but indicate we should continue with next cursor
-						return nil, "", true, nil
+						return nil, "", true, stats, nil
 					}
 				}
 			}
 			// For other timeouts, return error but fetcher can handle it
-			return nil, "", false, fmt.Errorf("API request timed out after 3 retries: %w", err)
+			return nil, "", false, stats, fmt.Errorf("API request timed out after 3 retries: %w", err)
 		}
 
 		// Check for cursor pagination limits (HTTP 400 InvalidRequest)
@@ -122,41 +133,58 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 					// If cursor is very high (>10000), likely hit pagination limit
 					if cursorNum > 10000 {
 						log.Printf("Likely hit cursor pagination limit at cursor %d, stopping gracefully", cursorNum)
-						return nil, "", false, fmt.Errorf("cursor pagination limit reached at %d", cursorNum)
+						return nil, "", false, stats, fmt.Errorf("cursor pagination limit reached at %d", cursorNum)
 					}
 				}
 			}
 
 			// For HTTP 400 errors that aren't timeouts, don't retry - likely a permanent issue
-			return nil, "", false, fmt.Errorf("API request failed with HTTP 400: %w", err)
+			return nil, "", false, stats, fmt.Errorf("API request failed with HTTP 400: %w", err)
 		}
 
 		// Log detailed error information for debugging
 		log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
 
 		// For other errors, fail immediately
-		return nil, "", false, fmt.Errorf("failed to search public posts: %w", err)
+		return nil, "", false, stats, fmt.Errorf("failed to search public posts: %w", err)
 	}
 
 	if err != nil {
-		return nil, "", false, fmt.Errorf("failed to search public posts after 3 retries: %w", err)
+		return nil, "", false, stats, fmt.Errorf("failed to search public posts after 3 retries: %w", err)
 	}
 
 	// DEBUG: Log API response details
 	log.Printf("📊 API Response: Received %d posts from API (cursor: %s)", len(searchResult.Posts), cursor)
+
+	// Collect raw API stats BEFORE filtering
+	stats.RawPostCount = len(searchResult.Posts)
+	for _, postView := range searchResult.Posts {
+		if postView.IndexedAt != "" {
+			postTime, err := time.Parse(time.RFC3339, postView.IndexedAt)
+			if err == nil {
+				if stats.EarliestPost.IsZero() || postTime.Before(stats.EarliestPost) {
+					stats.EarliestPost = postTime
+				}
+				if stats.LatestPost.IsZero() || postTime.After(stats.LatestPost) {
+					stats.LatestPost = postTime
+				}
+			}
+		}
+	}
+
 	if len(searchResult.Posts) > 0 {
 		firstPost := searchResult.Posts[0]
 		lastPost := searchResult.Posts[len(searchResult.Posts)-1]
 		log.Printf("📊 First post IndexedAt: %s", firstPost.IndexedAt)
 		log.Printf("📊 Last post IndexedAt: %s", lastPost.IndexedAt)
 		log.Printf("📊 Cutoff time: %s", cutoffTime.Format(time.RFC3339))
-		
+
 		// Parse and compare timestamps
 		if firstPost.IndexedAt != "" {
 			firstTime, err := time.Parse(time.RFC3339, firstPost.IndexedAt)
 			if err == nil {
 				diff := firstTime.Sub(cutoffTime)
-				log.Printf("📊 First post is %s %s the cutoff", 
+				log.Printf("📊 First post is %s %s the cutoff",
 					diff.Abs().Round(time.Second),
 					map[bool]string{true: "after", false: "before"}[diff >= 0])
 			}
@@ -165,7 +193,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 			lastTime, err := time.Parse(time.RFC3339, lastPost.IndexedAt)
 			if err == nil {
 				diff := lastTime.Sub(cutoffTime)
-				log.Printf("📊 Last post is %s %s the cutoff", 
+				log.Printf("📊 Last post is %s %s the cutoff",
 					diff.Abs().Round(time.Second),
 					map[bool]string{true: "after", false: "before"}[diff >= 0])
 			}
@@ -279,7 +307,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 	}
 
 	log.Printf("Retrieved %d posts from batch (cursor: %s, nextCursor: %s, hasMore: %v)", len(posts), cursor, nextCursor, hasMorePosts)
-	return posts, nextCursor, hasMorePosts, nil
+	return posts, nextCursor, hasMorePosts, stats, nil
 }
 
 func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, error) {
