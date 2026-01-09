@@ -38,7 +38,7 @@ func main() {
 
 	// Make first call with empty cursor
 	ctx := context.Background()
-	posts, nextCursor, hasMore, err := client.GetTrendingPostsBatch(ctx, "", cutoffTime)
+	posts, nextCursor, hasMore, _, err := client.GetTrendingPostsBatch(ctx, "", cutoffTime)
 	if err != nil {
 		log.Fatalf("API call failed: %v", err)
 	}

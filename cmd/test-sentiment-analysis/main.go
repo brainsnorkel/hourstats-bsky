@@ -223,7 +223,7 @@ func fetchAndAnalyzePosts(ctx context.Context, client *bskyclient.BlueskyClient,
 			break
 		}
 
-		posts, nextCursor, hasMore, err := client.GetTrendingPostsBatch(ctx, currentCursor, cutoffTime)
+		posts, nextCursor, hasMore, _, err := client.GetTrendingPostsBatch(ctx, currentCursor, cutoffTime)
 		if err != nil {
 			log.Printf("   ❌ API call %d failed: %v", apiCallCount, err)
 			break
