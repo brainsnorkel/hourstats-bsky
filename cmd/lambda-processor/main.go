@@ -135,25 +135,52 @@ func (h *ProcessorHandler) HandleRequest(ctx context.Context, event ProcessorEve
 	deduplicatedPosts := h.deduplicatePostsByURI(allPosts)
 	log.Printf("🔍 PROCESSOR DEBUG: After deduplication: %d posts (from %d original)", len(deduplicatedPosts), len(allPosts))
 
+	// Track post timestamps before filtering (for search latency reporting)
+	var earliestPostTime, latestPostTime time.Time
+	if len(deduplicatedPosts) > 0 {
+		earliestPostTime, latestPostTime = h.getPostTimeRange(deduplicatedPosts)
+		log.Printf("📅 PROCESSOR: Post time range - Earliest: %s, Latest: %s",
+			earliestPostTime.Format("2006-01-02 15:04:05 UTC"),
+			latestPostTime.Format("2006-01-02 15:04:05 UTC"))
+	}
+
 	// Filter posts by cutoff time
 	filteredPosts := h.filterPostsByCutoffTime(deduplicatedPosts, runState.CutoffTime)
 	log.Printf("🔍 PROCESSOR DEBUG: After time filtering: %d posts (from %d deduplicated)", len(filteredPosts), len(deduplicatedPosts))
 
 	if len(filteredPosts) == 0 {
-		log.Printf("No posts found for the time period, skipping analysis")
+		log.Printf("⚠️ PROCESSOR: No posts found for the time period. Posting search latency message.")
+
+		// Post informational message about search latency
+		err := h.postSearchLatencyMessage(ctx, runState.TotalPostsRetrieved, 0, runState.AnalysisIntervalMinutes, earliestPostTime, latestPostTime)
+		if err != nil {
+			log.Printf("Failed to post search latency message: %v", err)
+		} else {
+			log.Printf("✅ Posted search latency message")
+		}
+
 		return Response{
 			StatusCode: 200,
-			Body:       "No posts to analyze",
+			Body:       "No posts to analyze. Search latency message posted.",
 		}, nil
 	}
 
 	// Minimum post count check: don't post if we have fewer than 250 posts
 	minPostsRequired := 250
 	if len(filteredPosts) < minPostsRequired {
-		log.Printf("⚠️ PROCESSOR: Only %d posts found (minimum required: %d). Skipping analysis and posting to avoid low-quality data.", len(filteredPosts), minPostsRequired)
+		log.Printf("⚠️ PROCESSOR: Only %d posts found (minimum required: %d). Posting search latency message.", len(filteredPosts), minPostsRequired)
+
+		// Post informational message about search latency
+		err := h.postSearchLatencyMessage(ctx, runState.TotalPostsRetrieved, len(filteredPosts), runState.AnalysisIntervalMinutes, earliestPostTime, latestPostTime)
+		if err != nil {
+			log.Printf("Failed to post search latency message: %v", err)
+		} else {
+			log.Printf("✅ Posted search latency message")
+		}
+
 		return Response{
 			StatusCode: 200,
-			Body:       fmt.Sprintf("Insufficient posts for analysis: %d (minimum: %d)", len(filteredPosts), minPostsRequired),
+			Body:       fmt.Sprintf("Insufficient posts for analysis: %d (minimum: %d). Search latency message posted.", len(filteredPosts), minPostsRequired),
 		}, nil
 	}
 
@@ -571,6 +598,69 @@ func (h *ProcessorHandler) storeSentimentData(runID, overallSentiment string, ne
 
 	log.Printf("✅ SENTIMENT: Successfully stored sentiment data for run: %s", runID)
 	return nil
+}
+
+// getPostTimeRange finds the earliest and latest post timestamps from a slice of posts
+func (h *ProcessorHandler) getPostTimeRange(posts []state.Post) (earliest, latest time.Time) {
+	for _, post := range posts {
+		postTime, err := time.Parse(time.RFC3339, post.CreatedAt)
+		if err != nil {
+			continue
+		}
+		if earliest.IsZero() || postTime.Before(earliest) {
+			earliest = postTime
+		}
+		if latest.IsZero() || postTime.After(latest) {
+			latest = postTime
+		}
+	}
+	return
+}
+
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%d seconds", int(d.Seconds()))
+	}
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	if hours > 0 && minutes > 0 {
+		return fmt.Sprintf("%d hours %d minutes", hours, minutes)
+	} else if hours > 0 {
+		return fmt.Sprintf("%d hours", hours)
+	}
+	return fmt.Sprintf("%d minutes", minutes)
+}
+
+// postSearchLatencyMessage posts an informational message when Bluesky search is delayed
+func (h *ProcessorHandler) postSearchLatencyMessage(ctx context.Context, totalPostsRetrieved, filteredPostsCount, analysisMinutes int, earliestPost, latestPost time.Time) error {
+	now := time.Now().UTC()
+
+	// Calculate durations
+	var latestDuration, earliestDuration string
+	if !latestPost.IsZero() {
+		latestDuration = formatDuration(now.Sub(latestPost)) + " ago"
+	} else {
+		latestDuration = "N/A"
+	}
+	if !earliestPost.IsZero() {
+		earliestDuration = formatDuration(now.Sub(earliestPost)) + " ago"
+	} else {
+		earliestDuration = "N/A"
+	}
+
+	// Format message per user requirements
+	message := fmt.Sprintf("%d posts found in the search for posts in the last %d minutes. %d posts retrieved. Most recent post returned by search %s. Earliest post %s.",
+		totalPostsRetrieved, analysisMinutes, filteredPostsCount, latestDuration, earliestDuration)
+
+	log.Printf("📢 PROCESSOR: Posting search latency message: %s", message)
+
+	// Authenticate and post (client already exists in handler)
+	if err := h.blueskyClient.Authenticate(); err != nil {
+		return fmt.Errorf("failed to authenticate: %w", err)
+	}
+
+	return h.blueskyClient.PostWithFacets(ctx, message, nil)
 }
 
 func main() {
