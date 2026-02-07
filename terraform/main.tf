@@ -145,7 +145,6 @@ resource "aws_iam_policy" "lambda_policy" {
           "lambda:InvokeFunction"
         ]
         Resource = [
-          aws_lambda_function.hourstats_orchestrator.arn,
           aws_lambda_function.hourstats_fetcher.arn,
           aws_lambda_function.hourstats_processor.arn,
           aws_lambda_function.hourstats_sparkline_poster.arn,
@@ -184,10 +183,10 @@ resource "aws_iam_role_policy_attachment" "daily_sentiment_policy" {
 
 # DynamoDB Table for Multi-Lambda State Management
 resource "aws_dynamodb_table" "hourstats_state" {
-  name           = "hourstats-state"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "runId"
-  range_key      = "postId"
+  name         = "hourstats-state"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "runId"
+  range_key    = "postId"
 
   attribute {
     name = "runId"
@@ -246,39 +245,16 @@ resource "aws_dynamodb_table" "hourstats_state" {
   }
 }
 
-# Orchestrator Lambda Function
-resource "aws_lambda_function" "hourstats_orchestrator" {
-  filename         = "lambda-orchestrator.zip"
-  function_name    = "hourstats-orchestrator"
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "bootstrap"
-  source_code_hash = filebase64sha256("lambda-orchestrator.zip")
-  runtime         = "provided.al2023"
-  timeout         = 900  # 15 minutes (AWS Lambda maximum)
-  memory_size     = 128
-
-  environment {
-    variables = {
-      DYNAMODB_TABLE = aws_dynamodb_table.hourstats_state.name
-    }
-  }
-
-  tags = {
-    Name        = "${var.function_name}-orchestrator"
-    Environment = "production"
-  }
-}
-
-# Fetcher Lambda Function
+# Fetcher Lambda Function (also handles run creation, previously done by orchestrator)
 resource "aws_lambda_function" "hourstats_fetcher" {
   filename         = "lambda-fetcher.zip"
   function_name    = "hourstats-fetcher"
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "bootstrap"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "bootstrap"
   source_code_hash = filebase64sha256("lambda-fetcher.zip")
-  runtime         = "provided.al2023"
-  timeout         = 900  # 15 minutes (AWS Lambda maximum)
-  memory_size     = 128
+  runtime          = "provided.al2023"
+  timeout          = 900 # 15 minutes (AWS Lambda maximum)
+  memory_size      = 128
 
   environment {
     variables = {
@@ -296,12 +272,12 @@ resource "aws_lambda_function" "hourstats_fetcher" {
 resource "aws_lambda_function" "hourstats_processor" {
   filename         = "lambda-processor.zip"
   function_name    = "hourstats-processor"
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "bootstrap"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "bootstrap"
   source_code_hash = filebase64sha256("lambda-processor.zip")
-  runtime         = "provided.al2023"
-  timeout         = 300  # 5 minutes
-  memory_size     = 128
+  runtime          = "provided.al2023"
+  timeout          = 300 # 5 minutes
+  memory_size      = 128
 
   environment {
     variables = {
@@ -319,16 +295,16 @@ resource "aws_lambda_function" "hourstats_processor" {
 resource "aws_lambda_function" "hourstats_sparkline_poster" {
   filename         = "lambda-sparkline-poster.zip"
   function_name    = "hourstats-sparkline-poster"
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "bootstrap"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "bootstrap"
   source_code_hash = filebase64sha256("lambda-sparkline-poster.zip")
-  runtime         = "provided.al2023"
-  timeout         = 300  # 5 minutes
-  memory_size     = 256
+  runtime          = "provided.al2023"
+  timeout          = 300 # 5 minutes
+  memory_size      = 256
 
   environment {
     variables = {
-      DYNAMODB_TABLE = aws_dynamodb_table.hourstats_state.name
+      DYNAMODB_TABLE          = aws_dynamodb_table.hourstats_state.name
       SENTIMENT_HISTORY_TABLE = aws_dynamodb_table.sentiment_history.name
     }
   }
@@ -351,11 +327,11 @@ resource "aws_cloudwatch_event_rule" "hourstats_schedule" {
   }
 }
 
-# EventBridge Target to invoke Orchestrator Lambda
+# EventBridge Target to invoke Fetcher Lambda
 resource "aws_cloudwatch_event_target" "hourstats_target" {
   rule      = aws_cloudwatch_event_rule.hourstats_schedule.name
   target_id = "HourStatsTarget"
-  arn       = aws_lambda_function.hourstats_orchestrator.arn
+  arn       = aws_lambda_function.hourstats_fetcher.arn
 
   input = jsonencode({
     source                  = "aws.events"
@@ -364,11 +340,11 @@ resource "aws_cloudwatch_event_target" "hourstats_target" {
   })
 }
 
-# Permission for EventBridge to invoke Orchestrator Lambda
-resource "aws_lambda_permission" "allow_eventbridge_orchestrator" {
+# Permission for EventBridge to invoke Fetcher Lambda
+resource "aws_lambda_permission" "allow_eventbridge_fetcher" {
   statement_id  = "AllowExecutionFromEventBridge"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.hourstats_orchestrator.function_name
+  function_name = aws_lambda_function.hourstats_fetcher.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.hourstats_schedule.arn
 }
@@ -393,11 +369,6 @@ output "dynamodb_table_name" {
   value       = aws_dynamodb_table.hourstats_state.name
 }
 
-output "orchestrator_function_arn" {
-  description = "ARN of the orchestrator Lambda function"
-  value       = aws_lambda_function.hourstats_orchestrator.arn
-}
-
 output "fetcher_function_arn" {
   description = "ARN of the fetcher Lambda function"
   value       = aws_lambda_function.hourstats_fetcher.arn
@@ -415,5 +386,5 @@ output "eventbridge_rule_arn" {
 
 output "log_group_name" {
   description = "Name of the CloudWatch log group"
-  value       = "/aws/lambda/hourstats-orchestrator"
+  value       = "/aws/lambda/hourstats-fetcher"
 }

@@ -38,10 +38,8 @@ Bluesky is #satisfied
 
 The bot runs on AWS Lambda with the following components:
 
-- **Orchestrator**: Initiates analysis runs every 30 minutes via EventBridge
-- **Fetcher**: Collects posts from Bluesky API using `since` time filter (stops at 14 minutes if >1000 posts collected)
-- **Processor**: Analyzes sentiment and ranks posts
-- **Poster**: Publishes summaries to Bluesky
+- **Fetcher**: Triggered every 30 minutes via EventBridge; creates a run then collects posts from Bluesky API using `since` time filter (stops at 14 minutes if >1000 posts collected)
+- **Processor**: Analyzes sentiment, ranks posts, and publishes summaries to Bluesky
 - **Sparkline Poster**: Generates and posts 48-hour sentiment charts
 - **Daily Aggregator**: Calculates daily sentiment averages (runs at midnight UTC)
 - **Yearly Poster**: Generates yearly charts (posts monthly on 1st at 1:00 AM UTC)
@@ -157,7 +155,7 @@ The bot is deployed to AWS using Terraform and GitHub Actions. See [PRODUCTION_D
 
 ### AWS Resources
 
-- Lambda functions (orchestrator, fetcher, processor, poster, sparkline-poster, daily-aggregator, yearly-poster)
+- Lambda functions (fetcher, processor, sparkline-poster, daily-aggregator, yearly-poster)
 - DynamoDB tables (state, sentiment history, daily sentiment)
 - EventBridge rules (30-minute, daily, monthly schedules)
 - S3 bucket (sparkline images)
@@ -167,20 +165,26 @@ The bot is deployed to AWS using Terraform and GitHub Actions. See [PRODUCTION_D
 
 ```
 hourstats-bsky/
-├── cmd/                      # Lambda functions and entry points
-│   ├── lambda-orchestrator/  # Orchestrator Lambda
-│   ├── lambda-fetcher/       # Fetcher Lambda
-│   ├── lambda-processor/     # Processor Lambda
-│   ├── lambda-poster/        # Poster Lambda
-│   └── ...
-├── internal/                 # Shared packages
-│   ├── client/              # Bluesky API client
-│   ├── analyzer/            # Sentiment analysis
-│   ├── formatter/           # Post formatting
-│   ├── sparkline/           # Chart generation
-│   └── state/               # DynamoDB state management
-├── terraform/               # Infrastructure as Code
-└── docs/                    # Documentation
+├── cmd/                          # Lambda functions and entry points
+│   ├── lambda-fetcher/           # Fetcher Lambda (EventBridge trigger + post collection)
+│   ├── lambda-processor/         # Processor Lambda (sentiment analysis + posting)
+│   ├── lambda-sparkline-poster/  # Sparkline chart Lambda
+│   ├── lambda-daily-aggregator/  # Daily aggregation Lambda
+│   ├── lambda-yearly-poster/     # Yearly chart Lambda
+│   ├── dynamodb-backup/          # DynamoDB backup utility
+│   ├── dynamodb-restore/         # DynamoDB restore utility
+│   ├── diagnostics/              # Production diagnostics tool
+│   └── local-test/               # Local testing harness
+├── internal/                     # Shared packages
+│   ├── awsutil/                  # Shared AWS utilities (SSM credentials)
+│   ├── backup/                   # DynamoDB backup/restore logic
+│   ├── client/                   # Bluesky API client
+│   ├── analyzer/                 # Sentiment analysis
+│   ├── formatter/                # Post formatting
+│   ├── sparkline/                # Chart generation
+│   └── state/                    # DynamoDB state management
+├── terraform/                    # Infrastructure as Code
+└── openspec/                     # Architecture specifications
 ```
 
 ## Contributing

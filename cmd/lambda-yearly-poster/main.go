@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/christophergentle/hourstats-bsky/internal/awsutil"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
@@ -68,7 +68,7 @@ func (h *YearlyPosterHandler) HandleRequest(ctx context.Context, event Event) (R
 	log.Printf("Yearly poster received event: %+v", event)
 
 	// Check if dry run mode is enabled
-	dryRun, err := h.isDryRunMode(ctx)
+	dryRun, err := awsutil.IsDryRunMode(ctx, h.ssmClient)
 	if err != nil {
 		log.Printf("Failed to check dry run mode: %v", err)
 		return Response{
@@ -112,7 +112,7 @@ func (h *YearlyPosterHandler) HandleRequest(ctx context.Context, event Event) (R
 	}
 
 	// Get Bluesky credentials
-	handle, password, err := h.getBlueskyCredentials(ctx)
+	handle, password, err := awsutil.GetBlueskyCredentials(ctx, h.ssmClient)
 	if err != nil {
 		log.Printf("Failed to get Bluesky credentials: %v", err)
 		return Response{
@@ -202,52 +202,6 @@ func (h *YearlyPosterHandler) HandleRequest(ctx context.Context, event Event) (R
 		Body:       "Yearly sentiment chart posted successfully",
 		Posted:     true,
 	}, nil
-}
-
-// isDryRunMode checks if dry run mode is enabled
-func (h *YearlyPosterHandler) isDryRunMode(ctx context.Context) (bool, error) {
-	result, err := h.ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
-		Name:           aws.String("/hourstats/settings/dry_run"),
-		WithDecryption: aws.Bool(false),
-	})
-	if err != nil {
-		return false, fmt.Errorf("failed to get dry run parameter: %w", err)
-	}
-
-	return *result.Parameter.Value == "true", nil
-}
-
-// getBlueskyCredentials retrieves credentials from SSM
-func (h *YearlyPosterHandler) getBlueskyCredentials(ctx context.Context) (string, string, error) {
-	parameterNames := []string{
-		"/hourstats/bluesky/handle",
-		"/hourstats/bluesky/password",
-	}
-
-	result, err := h.ssmClient.GetParameters(ctx, &ssm.GetParametersInput{
-		Names:          parameterNames,
-		WithDecryption: aws.Bool(true),
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get parameters: %w", err)
-	}
-
-	params := make(map[string]string)
-	for _, p := range result.Parameters {
-		params[*p.Name] = *p.Value
-	}
-
-	handle, ok := params["/hourstats/bluesky/handle"]
-	if !ok {
-		return "", "", fmt.Errorf("handle parameter not found")
-	}
-
-	password, ok := params["/hourstats/bluesky/password"]
-	if !ok {
-		return "", "", fmt.Errorf("password parameter not found")
-	}
-
-	return handle, password, nil
 }
 
 // YearlyExtremeResult holds the result of analyzing yearly sentiment extremes
@@ -459,7 +413,7 @@ func (h *YearlyPosterHandler) calculateYearlySentimentStats(dataPoints []state.Y
 // postInsufficientDataMessage posts a message about insufficient yearly data
 func (h *YearlyPosterHandler) postInsufficientDataMessage(ctx context.Context, dataPointCount int) (Response, error) {
 	// Get Bluesky credentials
-	handle, password, err := h.getBlueskyCredentials(ctx)
+	handle, password, err := awsutil.GetBlueskyCredentials(ctx, h.ssmClient)
 	if err != nil {
 		log.Printf("Failed to get Bluesky credentials: %v", err)
 		return Response{

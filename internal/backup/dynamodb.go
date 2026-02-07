@@ -52,7 +52,7 @@ func (d *DynamoDBClient) ScanTable(ctx context.Context, tableName string, progre
 
 		allItems = append(allItems, result.Items...)
 		scanCount++
-		
+
 		if progressFunc != nil {
 			progressFunc(len(result.Items))
 		}
@@ -65,9 +65,6 @@ func (d *DynamoDBClient) ScanTable(ctx context.Context, tableName string, progre
 		}
 
 		lastEvaluatedKey = result.LastEvaluatedKey
-
-		// Small delay to avoid throttling
-		time.Sleep(50 * time.Millisecond)
 	}
 
 	log.Printf("Completed scan of %s: %d total items in %d pages", tableName, len(allItems), scanCount)
@@ -178,4 +175,3 @@ func ConvertToDynamoDBItem(item interface{}) (map[string]types.AttributeValue, e
 func ConvertFromDynamoDBItem(av map[string]types.AttributeValue, out interface{}) error {
 	return attributevalue.UnmarshalMap(av, out)
 }
-
