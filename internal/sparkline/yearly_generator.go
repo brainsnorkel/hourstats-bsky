@@ -85,8 +85,8 @@ func DefaultYearlyConfig() *YearlySparklineConfig {
 		LineWidth:    4.0,                            // Scaled proportionally
 		PointRadius:  1.0,                            // Scaled proportionally
 		Background:   color.RGBA{248, 249, 250, 255}, // Light gray
-		PositiveLine: color.RGBA{40, 167, 69, 255},   // Green
-		NegativeLine: color.RGBA{220, 53, 69, 255},   // Red
+		PositiveLine: color.RGBA{0, 114, 178, 255},   // Okabe-Ito blue (colour-blind safe)
+		NegativeLine: color.RGBA{213, 94, 0, 255},    // Okabe-Ito vermillion (colour-blind safe)
 		NeutralLine:  color.RGBA{108, 117, 125, 255}, // Gray
 		GridColor:    color.RGBA{200, 200, 200, 255}, // Light gray
 		TextColor:    color.RGBA{33, 37, 41, 255},    // Dark gray
@@ -232,22 +232,22 @@ func (yg *YearlySparklineGenerator) drawYearlyNeutralZone(dc *gg.Context, x, y, 
 		dc.Fill()
 
 		// Draw "Neutral" watermark
-		yg.drawYearlyNeutralWatermark(dc, x, yMin, width, yMax-yMin)
+		yg.drawYearlyNeutralWatermark(dc, x, yMin, width, yMax-yMin, height)
 	}
 }
 
 // drawYearlyNeutralWatermark draws a "Neutral" watermark
-func (yg *YearlySparklineGenerator) drawYearlyNeutralWatermark(dc *gg.Context, x, y, width, height float64) {
+func (yg *YearlySparklineGenerator) drawYearlyNeutralWatermark(dc *gg.Context, x, y, width, height, chartHeight float64) {
 	if height < 50 || width < 200 {
 		return
 	}
 
-	fontSize := height * 0.3
-	if fontSize > 60 {
-		fontSize = 60
+	fontSize := chartHeight * 0.15
+	if fontSize > 40 {
+		fontSize = 40
 	}
-	if fontSize < 20 {
-		fontSize = 20
+	if fontSize < 16 {
+		fontSize = 16
 	}
 
 	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", fontSize); err != nil {
@@ -256,11 +256,12 @@ func (yg *YearlySparklineGenerator) drawYearlyNeutralWatermark(dc *gg.Context, x
 		}
 	}
 
-	centerX := x + width/2
 	centerY := y + height/2
 
-	dc.SetColor(color.RGBA{200, 200, 200, 60})
-	dc.DrawStringAnchored("Neutral", centerX, centerY, 0.5, 0.5)
+	dc.SetColor(color.RGBA{255, 255, 255, 80})
+	dc.DrawStringAnchored("Neutral", x+22, centerY+2, 0, 0.5)
+	dc.SetColor(color.RGBA{60, 60, 60, 135})
+	dc.DrawStringAnchored("Neutral", x+20, centerY, 0, 0.5)
 }
 
 // drawYearlySentimentWatermarks draws "Positive" and "Negative" watermarks
@@ -287,8 +288,10 @@ func (yg *YearlySparklineGenerator) drawYearlySentimentWatermarks(dc *gg.Context
 
 		if positiveY < y+height-50 {
 			positiveCenterY := (positiveY + y) / 2
-			dc.SetColor(color.RGBA{40, 167, 69, 100})
-			dc.DrawStringAnchored("Positive", x+width/2, positiveCenterY, 0.5, 0.5)
+			dc.SetColor(color.RGBA{255, 255, 255, 80})
+			dc.DrawStringAnchored("Positive", x+22, positiveCenterY+2, 0, 0.5)
+			dc.SetColor(color.RGBA{60, 60, 60, 135})
+			dc.DrawStringAnchored("Positive", x+20, positiveCenterY, 0, 0.5)
 		}
 	}
 
@@ -300,8 +303,10 @@ func (yg *YearlySparklineGenerator) drawYearlySentimentWatermarks(dc *gg.Context
 
 		if negativeY > y+50 {
 			negativeCenterY := (negativeY + y + height) / 2
-			dc.SetColor(color.RGBA{220, 53, 69, 100})
-			dc.DrawStringAnchored("Negative", x+width/2, negativeCenterY, 0.5, 0.5)
+			dc.SetColor(color.RGBA{255, 255, 255, 80})
+			dc.DrawStringAnchored("Negative", x+22, negativeCenterY+2, 0, 0.5)
+			dc.SetColor(color.RGBA{60, 60, 60, 135})
+			dc.DrawStringAnchored("Negative", x+20, negativeCenterY, 0, 0.5)
 		}
 	}
 }
@@ -750,16 +755,14 @@ func (yg *YearlySparklineGenerator) drawYearlyExtremeLabels(dc *gg.Context, data
 	// Verify the point is within bounds before drawing
 	if lowestXPos >= x && lowestXPos <= x+width && lowestYPos >= y && lowestYPos <= y+height {
 		// Draw a larger, more visible circle marker at the lowest point
-		dc.SetColor(color.RGBA{220, 53, 69, 255}) // Red for lowest
+		dc.SetColor(color.RGBA{213, 94, 0, 255}) // Vermillion for lowest
 		dc.DrawCircle(lowestXPos, lowestYPos, 6)
 		dc.Fill()
 
 		// Format date as "Jan 2"
 		lowestDateLabel := lowest.Timestamp.Format("Jan 2")
 		lowestLabel := fmt.Sprintf("%.1f%%\n%s", lowest.AverageSentiment, lowestDateLabel)
-		dc.SetColor(color.RGBA{220, 53, 69, 255}) // Use red color for visibility
-		// Draw label below the point with more spacing
-		yg.drawYearlyMultilineStringAnchored(dc, lowestLabel, lowestXPos, lowestYPos+30, 0.5, 0)
+		yg.drawYearlyMultilineStringAnchored(dc, lowestLabel, lowestXPos, lowestYPos+30, 0.5, 0, color.RGBA{213, 94, 0, 255})
 	}
 
 	// Draw highest sentiment label with marker circle (only if different from lowest)
@@ -771,39 +774,54 @@ func (yg *YearlySparklineGenerator) drawYearlyExtremeLabels(dc *gg.Context, data
 		// Verify the point is within bounds before drawing
 		if highestXPos >= x && highestXPos <= x+width && highestYPos >= y && highestYPos <= y+height {
 			// Draw a larger, more visible circle marker at the highest point
-			dc.SetColor(color.RGBA{40, 167, 69, 255}) // Green for highest
+			dc.SetColor(color.RGBA{0, 114, 178, 255}) // Blue for highest
 			dc.DrawCircle(highestXPos, highestYPos, 6)
 			dc.Fill()
 
 			// Format date as "Jan 2"
 			highestDateLabel := highest.Timestamp.Format("Jan 2")
 			highestLabel := fmt.Sprintf("%.1f%%\n%s", highest.AverageSentiment, highestDateLabel)
-			dc.SetColor(color.RGBA{40, 167, 69, 255}) // Use green color for visibility
-			// Draw label above the point with more spacing
-			yg.drawYearlyMultilineStringAnchored(dc, highestLabel, highestXPos, highestYPos-30, 0.5, 1)
+			yg.drawYearlyMultilineStringAnchored(dc, highestLabel, highestXPos, highestYPos-30, 0.5, 1, color.RGBA{0, 114, 178, 255})
 		}
 	}
 }
 
 // drawYearlyMultilineStringAnchored draws multi-line text with proper anchoring for yearly view
-func (yg *YearlySparklineGenerator) drawYearlyMultilineStringAnchored(dc *gg.Context, text string, x, y, anchorX, anchorY float64) {
+func (yg *YearlySparklineGenerator) drawYearlyMultilineStringAnchored(dc *gg.Context, text string, x, y, anchorX, anchorY float64, fgColor color.RGBA) {
 	lines := strings.Split(text, "\n")
-	lineHeight := 13.0 // Font height for 11pt font
+	lineHeight := 13.0
+	pad := 3.0
 
-	// Calculate total height of all lines
-	totalHeight := float64(len(lines)-1) * lineHeight
+	totalHeight := float64(len(lines)-1)*lineHeight + lineHeight
 
-	// Calculate starting Y position based on anchor
 	startY := y
 	switch anchorY {
-	case 0.5: // Center anchor
-		startY = y - totalHeight/2
-	case 1.0: // Top anchor
-		startY = y - totalHeight
-		// For bottom anchor (anchorY == 0.0), startY remains as y (default case)
+	case 0.5:
+		startY = y - totalHeight/2 + lineHeight/2
+	case 1.0:
+		startY = y - totalHeight + lineHeight/2
+	default:
+		startY = y + lineHeight/2
 	}
 
-	// Draw each line
+	var maxW float64
+	for _, line := range lines {
+		w, _ := dc.MeasureString(line)
+		if w > maxW {
+			maxW = w
+		}
+	}
+
+	boxX := x - anchorX*maxW - pad
+	boxY := startY - lineHeight/2 - pad
+	boxW := maxW + pad*2
+	boxH := totalHeight + pad*2
+
+	dc.SetColor(color.RGBA{255, 255, 230, 255})
+	dc.DrawRoundedRectangle(boxX, boxY, boxW, boxH, 3)
+	dc.Fill()
+
+	dc.SetColor(fgColor)
 	for i, line := range lines {
 		lineY := startY + float64(i)*lineHeight
 		dc.DrawStringAnchored(line, x, lineY, anchorX, 0.5)
@@ -837,8 +855,14 @@ func (yg *YearlySparklineGenerator) drawYearlyAverageLabel(dc *gg.Context, dataP
 		}
 
 		label := fmt.Sprintf("Avg: %.1f%%", average)
+		w, h := dc.MeasureString(label)
+		pad := 3.0
+		bgX := x + width - 10 - w - pad
+		bgY := yPos + 10 - h/2 - pad
+		dc.SetColor(color.RGBA{255, 255, 230, 255})
+		dc.DrawRoundedRectangle(bgX, bgY, w+pad*2, h+pad*2, 3)
+		dc.Fill()
 		dc.SetColor(yg.config.TextColor)
-		// Position label on the right side of the chart, 10 pixels below the average line
 		dc.DrawStringAnchored(label, x+width-10, yPos+10, 1, 0.5)
 	}
 }
@@ -889,42 +913,18 @@ func (yg *YearlySparklineGenerator) drawYearlyGaussianTrendLine(dc *gg.Context, 
 	endTime := dataPoints[len(dataPoints)-1].Timestamp
 	timeRange := endTime.Sub(startTime).Seconds()
 
-	// White halo pass for visibility over colored data lines
-	dc.SetColor(color.RGBA{255, 255, 255, 200})
-	dc.SetLineWidth(3.5)
-	dc.SetDash(4, 3)
-
-	for i := 0; i < len(smoothedData)-1; i++ {
-		x1 := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*width
-		normalizedY1 := (smoothedData[i] - yRange.Center) * yRange.Scale / 100.0
-		y1 := y + height/2 - normalizedY1*(height/2)
-
-		x2 := x + (dataPoints[i+1].Timestamp.Sub(startTime).Seconds()/timeRange)*width
-		normalizedY2 := (smoothedData[i+1] - yRange.Center) * yRange.Scale / 100.0
-		y2 := y + height/2 - normalizedY2*(height/2)
-
-		dc.DrawLine(x1, y1, x2, y2)
-		dc.Stroke()
-	}
-
-	dc.SetDash()
-
 	dc.SetColor(color.RGBA{0, 123, 255, 255})
 	dc.SetLineWidth(1.5)
 	dc.SetDash(4, 3)
 
-	for i := 0; i < len(smoothedData)-1; i++ {
-		x1 := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*width
-		normalizedY1 := (smoothedData[i] - yRange.Center) * yRange.Scale / 100.0
-		y1 := y + height/2 - normalizedY1*(height/2)
-
-		x2 := x + (dataPoints[i+1].Timestamp.Sub(startTime).Seconds()/timeRange)*width
-		normalizedY2 := (smoothedData[i+1] - yRange.Center) * yRange.Scale / 100.0
-		y2 := y + height/2 - normalizedY2*(height/2)
-
-		dc.DrawLine(x1, y1, x2, y2)
-		dc.Stroke()
+	x0 := x + (dataPoints[0].Timestamp.Sub(startTime).Seconds()/timeRange)*width
+	ny0 := (smoothedData[0] - yRange.Center) * yRange.Scale / 100.0
+	dc.MoveTo(x0, y+height/2-ny0*(height/2))
+	for i := 1; i < len(smoothedData); i++ {
+		xi := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		nyi := (smoothedData[i] - yRange.Center) * yRange.Scale / 100.0
+		dc.LineTo(xi, y+height/2-nyi*(height/2))
 	}
-
+	dc.Stroke()
 	dc.SetDash()
 }

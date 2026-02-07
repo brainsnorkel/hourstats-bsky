@@ -85,8 +85,8 @@ func DefaultConfig() *SparklineConfig {
 		LineWidth:    3.0,                            // 50% of original 6.0
 		PointRadius:  0.8,                            // Reduced to 0.8 for very small dots
 		Background:   color.RGBA{248, 249, 250, 255}, // Light gray
-		PositiveLine: color.RGBA{40, 167, 69, 255},   // Green
-		NegativeLine: color.RGBA{220, 53, 69, 255},   // Red
+		PositiveLine: color.RGBA{0, 114, 178, 255},   // Blue (Okabe-Ito, colour-blind safe)
+		NegativeLine: color.RGBA{213, 94, 0, 255},    // Vermillion (Okabe-Ito, colour-blind safe)
 		NeutralLine:  color.RGBA{108, 117, 125, 255}, // Gray
 		GridColor:    color.RGBA{200, 200, 200, 255}, // Light gray
 		TextColor:    color.RGBA{33, 37, 41, 255},    // Dark gray
@@ -229,24 +229,22 @@ func (sg *SparklineGenerator) drawNeutralZone(dc *gg.Context, x, y, width, heigh
 		dc.Fill()
 
 		// Draw "Neutral" watermark in the center of the neutral zone
-		sg.drawNeutralWatermark(dc, x, yMin, width, yMax-yMin)
+		sg.drawNeutralWatermark(dc, x, yMin, width, yMax-yMin, height)
 	}
 }
 
 // drawNeutralWatermark draws a "Neutral" watermark in the neutral zone
-func (sg *SparklineGenerator) drawNeutralWatermark(dc *gg.Context, x, y, width, height float64) {
-	// Only draw watermark if the neutral zone is large enough
+func (sg *SparklineGenerator) drawNeutralWatermark(dc *gg.Context, x, y, width, height, chartHeight float64) {
 	if height < 50 || width < 200 {
 		return
 	}
 
-	// Calculate font size based on neutral zone size
-	fontSize := height * 0.3 // 30% of neutral zone height
-	if fontSize > 60 {
-		fontSize = 60 // Cap at 60px
+	fontSize := chartHeight * 0.15
+	if fontSize > 40 {
+		fontSize = 40
 	}
-	if fontSize < 20 {
-		fontSize = 20 // Minimum 20px
+	if fontSize < 16 {
+		fontSize = 16
 	}
 
 	// Load a larger font for the watermark
@@ -258,15 +256,12 @@ func (sg *SparklineGenerator) drawNeutralWatermark(dc *gg.Context, x, y, width, 
 		}
 	}
 
-	// Calculate center position
-	centerX := x + width/2
 	centerY := y + height/2
 
-	// Set watermark color - very light gray with low opacity
-	dc.SetColor(color.RGBA{200, 200, 200, 60})
-
-	// Draw "Neutral" text centered in the neutral zone
-	dc.DrawStringAnchored("Neutral", centerX, centerY, 0.5, 0.5)
+	dc.SetColor(color.RGBA{255, 255, 255, 80})
+	dc.DrawStringAnchored("Neutral", x+22, centerY+2, 0, 0.5)
+	dc.SetColor(color.RGBA{60, 60, 60, 135})
+	dc.DrawStringAnchored("Neutral", x+20, centerY, 0, 0.5)
 }
 
 // drawSentimentWatermarks draws "Positive" and "Negative" watermarks in their respective zones
@@ -299,8 +294,10 @@ func (sg *SparklineGenerator) drawSentimentWatermarks(dc *gg.Context, x, y, widt
 		// Only draw if positive zone is large enough
 		if positiveY < y+height-50 {
 			positiveCenterY := (positiveY + y) / 2
-			dc.SetColor(color.RGBA{40, 167, 69, 100})
-			dc.DrawStringAnchored("Positive", x+width/2, positiveCenterY, 0.5, 0.5)
+			dc.SetColor(color.RGBA{255, 255, 255, 80})
+			dc.DrawStringAnchored("Positive", x+22, positiveCenterY+2, 0, 0.5)
+			dc.SetColor(color.RGBA{60, 60, 60, 135})
+			dc.DrawStringAnchored("Positive", x+20, positiveCenterY, 0, 0.5)
 		}
 	}
 
@@ -314,8 +311,10 @@ func (sg *SparklineGenerator) drawSentimentWatermarks(dc *gg.Context, x, y, widt
 		// Only draw if negative zone is large enough
 		if negativeY > y+50 {
 			negativeCenterY := (negativeY + y + height) / 2
-			dc.SetColor(color.RGBA{220, 53, 69, 100})
-			dc.DrawStringAnchored("Negative", x+width/2, negativeCenterY, 0.5, 0.5)
+			dc.SetColor(color.RGBA{255, 255, 255, 80})
+			dc.DrawStringAnchored("Negative", x+22, negativeCenterY+2, 0, 0.5)
+			dc.SetColor(color.RGBA{60, 60, 60, 135})
+			dc.DrawStringAnchored("Negative", x+20, negativeCenterY, 0, 0.5)
 		}
 	}
 }
@@ -641,8 +640,12 @@ func (sg *SparklineGenerator) drawAverageLabel(dc *gg.Context, dataPoints []stat
 
 	// Only draw if the average line is within the visible range
 	if yPos >= y && yPos <= y+height {
-		// Draw label above the middle of the average line
 		label := fmt.Sprintf("Avg: %.1f%%", average)
+		w, h := dc.MeasureString(label)
+		pad := 3.0
+		dc.SetColor(color.RGBA{255, 255, 230, 255})
+		dc.DrawRoundedRectangle(x+width/2-w/2-pad, yPos-15-h/2-pad, w+pad*2, h+pad*2, 3)
+		dc.Fill()
 		dc.SetColor(sg.config.TextColor)
 		dc.DrawStringAnchored(label, x+width/2, yPos-15, 0.5, 1)
 	}
@@ -665,8 +668,12 @@ func (sg *SparklineGenerator) drawMostRecentLabel(dc *gg.Context, dataPoints []s
 	normalizedY := (lastPoint.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
 	yPos := y + height/2 - normalizedY*(height/2)
 
-	// Draw label above the most recent point
 	label := fmt.Sprintf("Latest: %.1f%%", lastPoint.NetSentimentPercent)
+	w, h := dc.MeasureString(label)
+	pad := 3.0
+	dc.SetColor(color.RGBA{255, 255, 230, 255})
+	dc.DrawRoundedRectangle(xPos-w/2-pad, yPos-15-h/2-pad, w+pad*2, h+pad*2, 3)
+	dc.Fill()
 	dc.SetColor(sg.config.TextColor)
 	dc.DrawStringAnchored(label, xPos, yPos-15, 0.5, 1)
 }
@@ -728,22 +735,39 @@ func (sg *SparklineGenerator) drawExtremeLabels(dc *gg.Context, dataPoints []sta
 // drawMultilineStringAnchored draws multi-line text with proper anchoring
 func (sg *SparklineGenerator) drawMultilineStringAnchored(dc *gg.Context, text string, x, y, anchorX, anchorY float64) {
 	lines := strings.Split(text, "\n")
-	lineHeight := 14.0 // Font height for 12pt font
+	lineHeight := 14.0
+	pad := 3.0
 
-	// Calculate total height of all lines
-	totalHeight := float64(len(lines)-1) * lineHeight
+	totalHeight := float64(len(lines)-1)*lineHeight + lineHeight
 
-	// Calculate starting Y position based on anchor
 	startY := y
 	switch anchorY {
-	case 0.5: // Center anchor
-		startY = y - totalHeight/2
-	case 1.0: // Top anchor
-		startY = y - totalHeight
-		// For bottom anchor (anchorY == 0.0), startY remains as y (default case)
+	case 0.5:
+		startY = y - totalHeight/2 + lineHeight/2
+	case 1.0:
+		startY = y - totalHeight + lineHeight/2
+	default:
+		startY = y + lineHeight/2
 	}
 
-	// Draw each line
+	var maxW float64
+	for _, line := range lines {
+		w, _ := dc.MeasureString(line)
+		if w > maxW {
+			maxW = w
+		}
+	}
+
+	boxX := x - anchorX*maxW - pad
+	boxY := startY - lineHeight/2 - pad
+	boxW := maxW + pad*2
+	boxH := totalHeight + pad*2
+
+	dc.SetColor(color.RGBA{255, 255, 230, 255})
+	dc.DrawRoundedRectangle(boxX, boxY, boxW, boxH, 3)
+	dc.Fill()
+
+	dc.SetColor(sg.config.TextColor)
 	for i, line := range lines {
 		lineY := startY + float64(i)*lineHeight
 		dc.DrawStringAnchored(line, x, lineY, anchorX, 0.5)

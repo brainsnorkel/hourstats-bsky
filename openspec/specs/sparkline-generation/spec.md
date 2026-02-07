@@ -45,6 +45,19 @@ The system SHALL post the generated trend chart as a reply to the primary summar
 - **THEN** the system MUST upload the image as a blob to the Bluesky service
 - **AND** create a new post containing the image as a direct reply to the summary post.
 
+### Requirement: Colour-Blind Accessible Rendering
+The system SHALL use a colour palette and visual encoding that remains distinguishable for readers with the most common forms of colour vision deficiency (protanopia, deuteranopia, tritanopia).
+
+#### Scenario: Colour-Blind Safe Palette
+- **WHEN** selecting colours for sentiment segments and trend lines
+- **THEN** the system MUST avoid relying solely on red/green colour differences to convey meaning
+- **AND** MUST use a palette that maintains sufficient contrast and distinguishability under simulated protanopia and deuteranopia conditions (e.g. blue/orange, or colours validated against the Okabe-Ito palette).
+
+#### Scenario: Redundant Visual Encoding
+- **WHEN** rendering the chart
+- **THEN** the system MUST NOT rely on colour alone to distinguish positive, negative, and neutral regions
+- **AND** MUST provide at least one additional visual cue such as labelled watermarks, distinct line patterns, or spatial separation to reinforce meaning.
+
 ### Requirement: Automatic Alt-Text Generation
 The system SHALL generate comprehensive descriptive text for the chart to ensure accessibility for all users.
 

@@ -1,9 +1,9 @@
 # DynamoDB table for sentiment history
 resource "aws_dynamodb_table" "sentiment_history" {
-  name           = "hourstats-sentiment-history"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "runId"
-  range_key      = "timestamp"
+  name         = "hourstats-sentiment-history"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "runId"
+  range_key    = "timestamp"
 
   attribute {
     name = "runId"
@@ -26,6 +26,10 @@ resource "aws_dynamodb_table" "sentiment_history" {
     range_key          = "runId"
     projection_type    = "INCLUDE"
     non_key_attributes = ["netSentimentPercent", "sentimentCategory", "totalPosts", "averageCompoundScore"]
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = {

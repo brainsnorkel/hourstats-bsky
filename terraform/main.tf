@@ -239,6 +239,10 @@ resource "aws_dynamodb_table" "hourstats_state" {
     enabled        = true
   }
 
+  point_in_time_recovery {
+    enabled = true
+  }
+
   tags = {
     Name        = "${var.function_name}-state"
     Environment = "production"

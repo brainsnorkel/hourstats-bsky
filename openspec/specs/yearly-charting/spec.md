@@ -23,6 +23,19 @@ The system SHALL generate a high-resolution 1500x1000 pixel image representing t
 - **WHEN** finalizing the chart visualization
 - **THEN** the system MUST include a prominent title (32pt font) containing the start and end dates of the charted period in YYYY-MM-DD format.
 
+### Requirement: Colour-Blind Accessible Rendering
+The system SHALL use a colour palette and visual encoding that remains distinguishable for readers with the most common forms of colour vision deficiency (protanopia, deuteranopia, tritanopia).
+
+#### Scenario: Colour-Blind Safe Palette
+- **WHEN** selecting colours for sentiment line segments, fills, and annotations
+- **THEN** the system MUST avoid relying solely on red/green colour differences to convey meaning
+- **AND** MUST use a palette that maintains sufficient contrast and distinguishability under simulated protanopia and deuteranopia conditions (e.g. blue/orange, or colours validated against the Okabe-Ito palette).
+
+#### Scenario: Redundant Visual Encoding
+- **WHEN** rendering the yearly chart
+- **THEN** the system MUST NOT rely on colour alone to distinguish positive, negative, and neutral regions
+- **AND** MUST provide at least one additional visual cue such as labelled watermarks, distinct line patterns, or spatial separation to reinforce meaning.
+
 ### Requirement: Event Contextualization
 The system SHALL provide historical context for sentiment extremes by linking to relevant external event records.
 
