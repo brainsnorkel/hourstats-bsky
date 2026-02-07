@@ -61,11 +61,12 @@ func (sg *SparklineGenerator) calculateYRange(dataPoints []state.SentimentDataPo
 		padding = 5.0
 	}
 
-	// Calculate final range
-	finalMin := min - padding
-	finalMax := max + padding
+	paddedMin := min - padding
+	paddedMax := max + padding
+
+	finalMin, finalMax, _ := niceRange(paddedMin, paddedMax)
 	center := (finalMin + finalMax) / 2.0
-	scale := 200.0 / (finalMax - finalMin) // Scale to fit in -100 to +100 range
+	scale := 200.0 / (finalMax - finalMin)
 
 	return YRange{
 		Min:    finalMin,
@@ -262,7 +263,7 @@ func (sg *SparklineGenerator) drawNeutralWatermark(dc *gg.Context, x, y, width, 
 	centerY := y + height/2
 
 	// Set watermark color - very light gray with low opacity
-	dc.SetColor(color.RGBA{200, 200, 200, 30}) // Light gray with low transparency
+	dc.SetColor(color.RGBA{200, 200, 200, 60})
 
 	// Draw "Neutral" text centered in the neutral zone
 	dc.DrawStringAnchored("Neutral", centerX, centerY, 0.5, 0.5)
@@ -298,7 +299,7 @@ func (sg *SparklineGenerator) drawSentimentWatermarks(dc *gg.Context, x, y, widt
 		// Only draw if positive zone is large enough
 		if positiveY < y+height-50 {
 			positiveCenterY := (positiveY + y) / 2
-			dc.SetColor(color.RGBA{40, 167, 69, 60}) // Green with higher opacity
+			dc.SetColor(color.RGBA{40, 167, 69, 100})
 			dc.DrawStringAnchored("Positive", x+width/2, positiveCenterY, 0.5, 0.5)
 		}
 	}
@@ -313,7 +314,7 @@ func (sg *SparklineGenerator) drawSentimentWatermarks(dc *gg.Context, x, y, widt
 		// Only draw if negative zone is large enough
 		if negativeY > y+50 {
 			negativeCenterY := (negativeY + y + height) / 2
-			dc.SetColor(color.RGBA{220, 53, 69, 60}) // Red with higher opacity
+			dc.SetColor(color.RGBA{220, 53, 69, 100})
 			dc.DrawStringAnchored("Negative", x+width/2, negativeCenterY, 0.5, 0.5)
 		}
 	}
@@ -498,10 +499,9 @@ func (sg *SparklineGenerator) drawLabels(dc *gg.Context, dataPoints []state.Sent
 		timeRange := endTime.Sub(startTime).Hours() / 24
 
 		if timeRange >= 1 {
-			// For multi-day data, show day labels at midnight UTC positions
 			sg.drawDayMarkers(dc, dataPoints, x, y, width, height)
+			sg.drawHourMarkers(dc, dataPoints, x, y, width, height)
 		} else {
-			// For same-day data, show time labels
 			startLabel := startTime.Format("15:04")
 			endLabel := endTime.Format("15:04")
 
@@ -573,6 +573,53 @@ func (sg *SparklineGenerator) findMidnightPositions(startTime, endTime time.Time
 	}
 
 	return midnights
+}
+
+// drawHourMarkers draws 6-hour interval ticks (06:00, 12:00, 18:00) between midnight markers
+func (sg *SparklineGenerator) drawHourMarkers(dc *gg.Context, dataPoints []state.SentimentDataPoint, x, y, width, height float64) {
+	if len(dataPoints) < 2 {
+		return
+	}
+
+	startTime := dataPoints[0].Timestamp
+	endTime := dataPoints[len(dataPoints)-1].Timestamp
+	timeRange := endTime.Sub(startTime).Seconds()
+
+	midnightSet := make(map[int64]bool)
+	for _, m := range sg.findMidnightPositions(startTime, endTime) {
+		midnightSet[m.Unix()] = true
+	}
+
+	if err := dc.LoadFontFace("/System/Library/Fonts/Geneva.ttf", 10); err != nil {
+		if fallbackErr := dc.LoadFontFace("", 10); fallbackErr != nil {
+			_ = fallbackErr
+		}
+	}
+
+	firstHour := startTime.Truncate(6 * time.Hour)
+	if firstHour.Before(startTime) {
+		firstHour = firstHour.Add(6 * time.Hour)
+	}
+
+	for current := firstHour; !current.After(endTime); current = current.Add(6 * time.Hour) {
+		if midnightSet[current.Unix()] {
+			continue
+		}
+
+		xPos := x + (current.Sub(startTime).Seconds()/timeRange)*width
+		if xPos < x+10 || xPos > x+width-10 {
+			continue
+		}
+
+		dc.SetColor(color.RGBA{220, 220, 220, 255})
+		dc.SetLineWidth(0.3)
+		tickHeight := height * 0.06
+		dc.DrawLine(xPos, y+height-tickHeight, xPos, y+height)
+		dc.Stroke()
+
+		dc.SetColor(color.RGBA{140, 140, 140, 255})
+		dc.DrawStringAnchored(current.Format("15:04"), xPos, y+height+15, 0.5, 0)
+	}
 }
 
 // drawAverageLabel draws a label for the average line
@@ -693,7 +740,7 @@ func (sg *SparklineGenerator) drawMultilineStringAnchored(dc *gg.Context, text s
 		startY = y - totalHeight/2
 	case 1.0: // Top anchor
 		startY = y - totalHeight
-	// For bottom anchor (anchorY == 0.0), startY remains as y (default case)
+		// For bottom anchor (anchorY == 0.0), startY remains as y (default case)
 	}
 
 	// Draw each line
@@ -750,13 +797,12 @@ func (sg *SparklineGenerator) drawGaussianTrendLine(dc *gg.Context, dataPoints [
 	endTime := dataPoints[len(dataPoints)-1].Timestamp
 	timeRange := endTime.Sub(startTime).Seconds()
 
-	// Draw as thin dashed blue line
-	dc.SetColor(color.RGBA{0, 123, 255, 255}) // Blue color
-	dc.SetLineWidth(1.5)                      // Thin line
-	dc.SetDash(4, 3)                          // Dashed pattern
+	// White halo pass for visibility over colored data lines
+	dc.SetColor(color.RGBA{255, 255, 255, 200})
+	dc.SetLineWidth(3.5)
+	dc.SetDash(4, 3)
 
 	for i := 0; i < len(smoothedData)-1; i++ {
-		// Calculate positions using time-based positioning
 		x1 := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*width
 		normalizedY1 := (smoothedData[i] - yRange.Center) * yRange.Scale / 100.0
 		y1 := y + height/2 - normalizedY1*(height/2)
@@ -769,5 +815,24 @@ func (sg *SparklineGenerator) drawGaussianTrendLine(dc *gg.Context, dataPoints [
 		dc.Stroke()
 	}
 
-	dc.SetDash() // Reset dash pattern
+	dc.SetDash()
+
+	dc.SetColor(color.RGBA{0, 123, 255, 255})
+	dc.SetLineWidth(1.5)
+	dc.SetDash(4, 3)
+
+	for i := 0; i < len(smoothedData)-1; i++ {
+		x1 := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		normalizedY1 := (smoothedData[i] - yRange.Center) * yRange.Scale / 100.0
+		y1 := y + height/2 - normalizedY1*(height/2)
+
+		x2 := x + (dataPoints[i+1].Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		normalizedY2 := (smoothedData[i+1] - yRange.Center) * yRange.Scale / 100.0
+		y2 := y + height/2 - normalizedY2*(height/2)
+
+		dc.DrawLine(x1, y1, x2, y2)
+		dc.Stroke()
+	}
+
+	dc.SetDash()
 }
