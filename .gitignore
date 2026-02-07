@@ -48,10 +48,12 @@ Thumbs.db
 # Lambda binary artifacts
 cmd/*/bootstrap
 cmd/*/main
-lambda-processor
-lambda-fetcher
-lambda-orchestrator
-lambda-sparkline-poster
+
+# Root-level compiled binaries
+/lambda-*
+/dynamodb-backup
+/dynamodb-restore
+/graph-lab
 
 # Configuration files with secrets
 config.yaml

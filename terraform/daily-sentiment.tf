@@ -1,9 +1,9 @@
 # DynamoDB table for daily sentiment averages
 resource "aws_dynamodb_table" "daily_sentiment" {
-  name           = "hourstats-daily-sentiment"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "date"
-  range_key      = "runId"
+  name         = "hourstats-daily-sentiment"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "date"
+  range_key    = "runId"
 
   attribute {
     name = "date"
@@ -26,10 +26,14 @@ resource "aws_dynamodb_table" "daily_sentiment" {
   }
 
   global_secondary_index {
-    name               = "date-index"
-    hash_key           = "date"
-    range_key          = "createdAt"
-    projection_type    = "ALL"
+    name            = "date-index"
+    hash_key        = "date"
+    range_key       = "createdAt"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = {
@@ -67,16 +71,16 @@ resource "aws_iam_policy" "daily_sentiment_access" {
 resource "aws_lambda_function" "hourstats_daily_aggregator" {
   filename         = "lambda-daily-aggregator.zip"
   function_name    = "hourstats-daily-aggregator"
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "bootstrap"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "bootstrap"
   source_code_hash = filebase64sha256("lambda-daily-aggregator.zip")
-  runtime         = "provided.al2023"
-  timeout         = 300  # 5 minutes
-  memory_size     = 256
+  runtime          = "provided.al2023"
+  timeout          = 300 # 5 minutes
+  memory_size      = 256
 
   environment {
     variables = {
-      DAILY_SENTIMENT_TABLE = aws_dynamodb_table.daily_sentiment.name
+      DAILY_SENTIMENT_TABLE   = aws_dynamodb_table.daily_sentiment.name
       SENTIMENT_HISTORY_TABLE = aws_dynamodb_table.sentiment_history.name
     }
   }
@@ -91,16 +95,16 @@ resource "aws_lambda_function" "hourstats_daily_aggregator" {
 resource "aws_lambda_function" "hourstats_yearly_poster" {
   filename         = "lambda-yearly-poster.zip"
   function_name    = "hourstats-yearly-poster"
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "bootstrap"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "bootstrap"
   source_code_hash = filebase64sha256("lambda-yearly-poster.zip")
-  runtime         = "provided.al2023"
-  timeout         = 600  # 10 minutes
-  memory_size     = 512
+  runtime          = "provided.al2023"
+  timeout          = 600 # 10 minutes
+  memory_size      = 512
 
   environment {
     variables = {
-      DAILY_SENTIMENT_TABLE = aws_dynamodb_table.daily_sentiment.name
+      DAILY_SENTIMENT_TABLE   = aws_dynamodb_table.daily_sentiment.name
       SENTIMENT_HISTORY_TABLE = aws_dynamodb_table.sentiment_history.name
     }
   }

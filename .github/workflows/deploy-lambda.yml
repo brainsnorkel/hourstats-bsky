@@ -98,8 +98,41 @@ jobs:
           name: lambda-functions
           path: terraform/
 
-  deploy:
+  backup:
     needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Export DynamoDB tables to S3 (PITR snapshot)
+        run: |
+          TABLES="hourstats-state hourstats-sentiment-history hourstats-daily-sentiment"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          for TABLE in $TABLES; do
+            TABLE_ARN="arn:aws:dynamodb:${{ env.AWS_REGION }}:${ACCOUNT_ID}:table/${TABLE}"
+            echo "Exporting ${TABLE}..."
+            aws dynamodb export-table-to-point-in-time \
+              --table-arn "${TABLE_ARN}" \
+              --s3-bucket "hourstats-dynamodb-backups" \
+              --s3-prefix "pre-deploy/${TABLE}" \
+              --export-format DYNAMODB_JSON \
+              --no-cli-pager
+          done
+          echo "All exports initiated (running server-side, zero RCU cost)"
+
+  deploy:
+    needs: [build, backup]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     
@@ -183,7 +216,7 @@ jobs:
             --region ${{ env.AWS_REGION }}
 
   notify:
-    needs: [test, build, deploy]
+    needs: [test, build, backup, deploy]
     runs-on: ubuntu-latest
     if: always()
     steps:

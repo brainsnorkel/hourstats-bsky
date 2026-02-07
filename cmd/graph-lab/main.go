@@ -214,12 +214,17 @@ func syntheticYearlyVolatile(rng *rand.Rand) []state.YearlySparklineDataPoint {
 func syntheticYearlySeasonal(rng *rand.Rand) []state.YearlySparklineDataPoint {
 	points := generateYearlyData(rng, 365, 5.0, 5.0)
 	for i := range points {
-		// Seasonal sine wave: peaks mid-year (summer), troughs at year boundaries (winter)
 		seasonalWave := math.Sin(float64(i)/365.0*2*math.Pi-math.Pi/2) * 15.0
-		points[i].AverageSentiment += seasonalWave
-		points[i].NetSentimentPercent = points[i].AverageSentiment
-		points[i].MinSentiment = points[i].AverageSentiment - 3.0 - rng.Float64()*5.0
-		points[i].MaxSentiment = points[i].AverageSentiment + 3.0 + rng.Float64()*5.0
+		avg := points[i].AverageSentiment + seasonalWave
+		minVal := avg - 3.0 - rng.Float64()*5.0
+		maxVal := avg + 3.0 + rng.Float64()*5.0
+		points[i].AverageSentiment = avg
+		points[i].NetSentimentPercent = avg
+		points[i].MinSentiment = minVal
+		points[i].MaxSentiment = maxVal
+		points[i].Q1Sentiment = minVal + (avg-minVal)*0.4 + (rng.Float64()-0.5)*1.0
+		points[i].MedianSentiment = avg + (rng.Float64()-0.5)*1.5
+		points[i].Q3Sentiment = avg + (maxVal-avg)*0.6 + (rng.Float64()-0.5)*1.0
 	}
 	return points
 }
@@ -228,7 +233,6 @@ func syntheticYearlySeasonal(rng *rand.Rand) []state.YearlySparklineDataPoint {
 func syntheticYearlyCrashRecovery(rng *rand.Rand) []state.YearlySparklineDataPoint {
 	points := generateYearlyData(rng, 365, 12.0, 4.0)
 	for i := range points {
-		// Simulates a sentiment crash centered at day 165: 15-day ramp down, 60-day recovery
 		dayFromCrash := float64(i) - 165.0
 		crashEffect := 0.0
 		if dayFromCrash >= -15 && dayFromCrash <= 0 {
@@ -236,10 +240,16 @@ func syntheticYearlyCrashRecovery(rng *rand.Rand) []state.YearlySparklineDataPoi
 		} else if dayFromCrash > 0 && dayFromCrash <= 60 {
 			crashEffect = -30.0 * (1.0 - dayFromCrash/60.0)
 		}
-		points[i].AverageSentiment += crashEffect
-		points[i].NetSentimentPercent = points[i].AverageSentiment
-		points[i].MinSentiment = points[i].AverageSentiment - 3.0 - rng.Float64()*5.0
-		points[i].MaxSentiment = points[i].AverageSentiment + 3.0 + rng.Float64()*5.0
+		avg := points[i].AverageSentiment + crashEffect
+		minVal := avg - 3.0 - rng.Float64()*5.0
+		maxVal := avg + 3.0 + rng.Float64()*5.0
+		points[i].AverageSentiment = avg
+		points[i].NetSentimentPercent = avg
+		points[i].MinSentiment = minVal
+		points[i].MaxSentiment = maxVal
+		points[i].Q1Sentiment = minVal + (avg-minVal)*0.4 + (rng.Float64()-0.5)*1.0
+		points[i].MedianSentiment = avg + (rng.Float64()-0.5)*1.5
+		points[i].Q3Sentiment = avg + (maxVal-avg)*0.6 + (rng.Float64()-0.5)*1.0
 	}
 	return points
 }
@@ -273,11 +283,18 @@ func generateYearlyData(rng *rand.Rand, days int, center, amplitude float64) []s
 		minVal := value - 3.0 - rng.Float64()*5.0
 		maxVal := value + 3.0 + rng.Float64()*5.0
 
+		q1 := minVal + (value-minVal)*0.4 + (rng.Float64()-0.5)*1.0
+		median := value + (rng.Float64()-0.5)*1.5
+		q3 := value + (maxVal-value)*0.6 + (rng.Float64()-0.5)*1.0
+
 		points[i] = state.YearlySparklineDataPoint{
 			Date:                ts.Format("2006-01-02"),
 			AverageSentiment:    value,
 			MinSentiment:        minVal,
 			MaxSentiment:        maxVal,
+			Q1Sentiment:         q1,
+			MedianSentiment:     median,
+			Q3Sentiment:         q3,
 			Timestamp:           ts,
 			NetSentimentPercent: value,
 		}

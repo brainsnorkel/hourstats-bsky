@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -20,6 +21,9 @@ type DailySentimentDataPoint struct {
 	AverageSentiment float64   `json:"averageSentiment" dynamodbav:"averageSentiment"`
 	MinSentiment     float64   `json:"minSentiment" dynamodbav:"minSentiment"`
 	MaxSentiment     float64   `json:"maxSentiment" dynamodbav:"maxSentiment"`
+	Q1Sentiment      float64   `json:"q1Sentiment" dynamodbav:"q1Sentiment"`
+	MedianSentiment  float64   `json:"medianSentiment" dynamodbav:"medianSentiment"`
+	Q3Sentiment      float64   `json:"q3Sentiment" dynamodbav:"q3Sentiment"`
 	TotalRuns        int       `json:"totalRuns" dynamodbav:"totalRuns"`
 	TotalPosts       int       `json:"totalPosts" dynamodbav:"totalPosts"`
 	CreatedAt        time.Time `json:"createdAt" dynamodbav:"createdAt"`
@@ -32,6 +36,9 @@ type YearlySparklineDataPoint struct {
 	AverageSentiment    float64   `json:"averageSentiment"`
 	MinSentiment        float64   `json:"minSentiment"`
 	MaxSentiment        float64   `json:"maxSentiment"`
+	Q1Sentiment         float64   `json:"q1Sentiment"`
+	MedianSentiment     float64   `json:"medianSentiment"`
+	Q3Sentiment         float64   `json:"q3Sentiment"`
 	Timestamp           time.Time `json:"timestamp"`
 	NetSentimentPercent float64   `json:"netSentimentPercent"` // Alias for AverageSentiment
 }
@@ -137,8 +144,11 @@ func (dsm *DailySentimentManager) GetYearlySentimentData(ctx context.Context) ([
 			AverageSentiment:    daily.AverageSentiment,
 			MinSentiment:        daily.MinSentiment,
 			MaxSentiment:        daily.MaxSentiment,
+			Q1Sentiment:         daily.Q1Sentiment,
+			MedianSentiment:     daily.MedianSentiment,
+			Q3Sentiment:         daily.Q3Sentiment,
 			Timestamp:           date,
-			NetSentimentPercent: daily.AverageSentiment, // Alias for compatibility
+			NetSentimentPercent: daily.AverageSentiment,
 		})
 	}
 
@@ -177,6 +187,28 @@ func (dsm *DailySentimentManager) GetDailySentimentForDate(ctx context.Context, 
 	return &dataPoint, nil
 }
 
+// quantile computes the p-th quantile of a sorted slice using Type 7 linear interpolation
+// (the default method in R and NumPy). p must be in [0, 1]. The input slice must be sorted
+// in ascending order.
+func quantile(sorted []float64, p float64) float64 {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	if n == 1 {
+		return sorted[0]
+	}
+	// Type 7: index = (n-1)*p
+	index := p * float64(n-1)
+	lo := int(math.Floor(index))
+	hi := lo + 1
+	frac := index - float64(lo)
+	if hi >= n {
+		return sorted[n-1]
+	}
+	return sorted[lo]*(1-frac) + sorted[hi]*frac
+}
+
 // CalculateDailySentimentFromHistory calculates daily sentiment from 24 hours of sentiment history
 func (dsm *DailySentimentManager) CalculateDailySentimentFromHistory(ctx context.Context, sentimentHistoryManager *SentimentHistoryManager, targetDate string) (*DailySentimentDataPoint, error) {
 	// Parse target date
@@ -213,33 +245,38 @@ func (dsm *DailySentimentManager) CalculateDailySentimentFromHistory(ctx context
 		return nil, fmt.Errorf("no sentiment data found for date: %s", targetDate)
 	}
 
-	// Calculate statistics
-	var sum, min, max float64
+	sentiments := make([]float64, len(dayData))
+	var sum float64
 	var totalPosts int
-	min = dayData[0].NetSentimentPercent
-	max = dayData[0].NetSentimentPercent
+	minVal := dayData[0].NetSentimentPercent
+	maxVal := dayData[0].NetSentimentPercent
 
-	for _, dp := range dayData {
-		sentiment := dp.NetSentimentPercent
-		sum += sentiment
+	for i, dp := range dayData {
+		s := dp.NetSentimentPercent
+		sentiments[i] = s
+		sum += s
 		totalPosts += dp.TotalPosts
 
-		if sentiment < min {
-			min = sentiment
+		if s < minVal {
+			minVal = s
 		}
-		if sentiment > max {
-			max = sentiment
+		if s > maxVal {
+			maxVal = s
 		}
 	}
 
+	sort.Float64s(sentiments)
 	average := sum / float64(len(dayData))
 
 	return &DailySentimentDataPoint{
 		Date:             targetDate,
 		RunID:            "daily-" + targetDate,
 		AverageSentiment: average,
-		MinSentiment:     min,
-		MaxSentiment:     max,
+		MinSentiment:     minVal,
+		MaxSentiment:     maxVal,
+		Q1Sentiment:      quantile(sentiments, 0.25),
+		MedianSentiment:  quantile(sentiments, 0.50),
+		Q3Sentiment:      quantile(sentiments, 0.75),
 		TotalRuns:        len(dayData),
 		TotalPosts:       totalPosts,
 		CreatedAt:        time.Now(),
