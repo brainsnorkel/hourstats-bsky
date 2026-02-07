@@ -125,6 +125,19 @@ test-multi-lambda:
 		--overwrite \
 		--region us-east-1 > /dev/null
 
+# Generate chart experiments with synthetic data (no AWS needed)
+graph-lab:
+	go run cmd/graph-lab/main.go
+	@echo "Open test-results/graph-lab/ to view generated charts"
+
+# Generate only sparkline experiments
+graph-lab-sparkline:
+	go run cmd/graph-lab/main.go -type sparkline
+
+# Generate only yearly chart experiments
+graph-lab-yearly:
+	go run cmd/graph-lab/main.go -type yearly
+
 # Format code
 fmt:
 	go fmt ./...
@@ -157,6 +170,9 @@ help:
 	@echo "  build-backup  - Build DynamoDB backup utility"
 	@echo "  build-restore - Build DynamoDB restore utility"
 	@echo "  build-backup-tools - Build both backup and restore utilities"
+	@echo "  graph-lab    - Generate chart experiments with synthetic data (no AWS needed)"
+	@echo "  graph-lab-sparkline - Generate only sparkline experiments"
+	@echo "  graph-lab-yearly    - Generate only yearly chart experiments"
 	@echo "  fmt          - Format code"
 	@echo "  lint         - Lint code"
 	@echo "  help         - Show this help message"
