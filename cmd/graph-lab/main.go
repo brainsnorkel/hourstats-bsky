@@ -93,17 +93,17 @@ func generateSparklineCharts(seed int64) {
 
 // syntheticSparkline48hNormal generates a typical 48-hour dataset with moderate swings.
 func syntheticSparkline48hNormal(rng *rand.Rand) []state.SentimentDataPoint {
-	return generateSparklineData(rng, 48, 30*time.Minute, 8.0, 12.0)
+	return generateSparklineData(rng, 96, 30*time.Minute, 8.0, 12.0)
 }
 
 // syntheticSparkline48hVolatile generates a highly volatile 48-hour dataset.
 func syntheticSparkline48hVolatile(rng *rand.Rand) []state.SentimentDataPoint {
-	return generateSparklineData(rng, 48, 30*time.Minute, 0.0, 30.0)
+	return generateSparklineData(rng, 96, 30*time.Minute, 0.0, 30.0)
 }
 
 // syntheticSparkline48hTrendUp generates a 48-hour dataset trending positive.
 func syntheticSparkline48hTrendUp(rng *rand.Rand) []state.SentimentDataPoint {
-	points := generateSparklineData(rng, 48, 30*time.Minute, -5.0, 8.0)
+	points := generateSparklineData(rng, 96, 30*time.Minute, -5.0, 8.0)
 	for i := range points {
 		drift := float64(i) / float64(len(points)) * 25.0
 		points[i].NetSentimentPercent += drift
@@ -113,7 +113,7 @@ func syntheticSparkline48hTrendUp(rng *rand.Rand) []state.SentimentDataPoint {
 
 // syntheticSparkline48hTrendDown generates a 48-hour dataset trending negative.
 func syntheticSparkline48hTrendDown(rng *rand.Rand) []state.SentimentDataPoint {
-	points := generateSparklineData(rng, 48, 30*time.Minute, 10.0, 8.0)
+	points := generateSparklineData(rng, 96, 30*time.Minute, 10.0, 8.0)
 	for i := range points {
 		drift := float64(i) / float64(len(points)) * -30.0
 		points[i].NetSentimentPercent += drift
@@ -123,7 +123,7 @@ func syntheticSparkline48hTrendDown(rng *rand.Rand) []state.SentimentDataPoint {
 
 // syntheticSparkline48hNeutral generates a 48-hour dataset hovering near zero.
 func syntheticSparkline48hNeutral(rng *rand.Rand) []state.SentimentDataPoint {
-	return generateSparklineData(rng, 48, 30*time.Minute, 2.0, 4.0)
+	return generateSparklineData(rng, 96, 30*time.Minute, 2.0, 4.0)
 }
 
 // generateSparklineData creates synthetic SentimentDataPoints.

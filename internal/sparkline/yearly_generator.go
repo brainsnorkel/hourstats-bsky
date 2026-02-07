@@ -61,11 +61,12 @@ func (yg *YearlySparklineGenerator) calculateYearlyYRange(dataPoints []state.Yea
 		padding = 5.0
 	}
 
-	// Calculate final range
-	finalMin := min - padding
-	finalMax := max + padding
+	paddedMin := min - padding
+	paddedMax := max + padding
+
+	finalMin, finalMax, _ := niceRange(paddedMin, paddedMax)
 	center := (finalMin + finalMax) / 2.0
-	scale := 200.0 / (finalMax - finalMin) // Scale to fit in -100 to +100 range
+	scale := 200.0 / (finalMax - finalMin)
 
 	return YearlyYRange{
 		Min:    finalMin,
@@ -258,7 +259,7 @@ func (yg *YearlySparklineGenerator) drawYearlyNeutralWatermark(dc *gg.Context, x
 	centerX := x + width/2
 	centerY := y + height/2
 
-	dc.SetColor(color.RGBA{200, 200, 200, 30})
+	dc.SetColor(color.RGBA{200, 200, 200, 60})
 	dc.DrawStringAnchored("Neutral", centerX, centerY, 0.5, 0.5)
 }
 
@@ -286,7 +287,7 @@ func (yg *YearlySparklineGenerator) drawYearlySentimentWatermarks(dc *gg.Context
 
 		if positiveY < y+height-50 {
 			positiveCenterY := (positiveY + y) / 2
-			dc.SetColor(color.RGBA{40, 167, 69, 60})
+			dc.SetColor(color.RGBA{40, 167, 69, 100})
 			dc.DrawStringAnchored("Positive", x+width/2, positiveCenterY, 0.5, 0.5)
 		}
 	}
@@ -299,7 +300,7 @@ func (yg *YearlySparklineGenerator) drawYearlySentimentWatermarks(dc *gg.Context
 
 		if negativeY > y+50 {
 			negativeCenterY := (negativeY + y + height) / 2
-			dc.SetColor(color.RGBA{220, 53, 69, 60})
+			dc.SetColor(color.RGBA{220, 53, 69, 100})
 			dc.DrawStringAnchored("Negative", x+width/2, negativeCenterY, 0.5, 0.5)
 		}
 	}
@@ -462,11 +463,9 @@ func (yg *YearlySparklineGenerator) drawYearlyLabels(dc *gg.Context, dataPoints 
 		dc.DrawStringAnchored("0.0%", x-15, yZero, 1, 0.5)
 	}
 
-	// Draw month markers, biweekly ticks, and weekly ticks
 	yg.drawYearlyMonthMarkers(dc, dataPoints, x, y, width, height)
 	yg.drawYearlyBiweeklyTicks(dc, dataPoints, x, y, width, height)
-	yg.drawYearlyWeeklyTicks(dc, dataPoints, x, y, width, height)
-	
+
 	// Draw start and end date labels
 	yg.drawYearlyStartEndLabels(dc, dataPoints, x, y, width, height)
 
@@ -538,7 +537,7 @@ func (yg *YearlySparklineGenerator) findYearlyMonthPositions(startTime, endTime 
 	// Start from the first day of the month containing startTime
 	// Always include this month marker for chart readability
 	firstMonth := time.Date(startTime.Year(), startTime.Month(), 1, 0, 0, 0, 0, time.UTC)
-	
+
 	// End at the first day of the month after endTime (to include the endTime's month)
 	endMonth := time.Date(endTime.Year(), endTime.Month(), 1, 0, 0, 0, 0, time.UTC)
 	// Include the month after endTime as well for better context
@@ -591,33 +590,11 @@ func (yg *YearlySparklineGenerator) drawYearlyBiweeklyTicks(dc *gg.Context, data
 
 		// Only draw if within the visible range
 		if xPos >= x && xPos <= x+width {
-			// Draw a shorter vertical line for biweekly tick (lighter than month markers)
-			dc.SetColor(color.RGBA{220, 220, 220, 255}) // Lighter gray
+			dc.SetColor(color.RGBA{220, 220, 220, 255})
 			dc.SetLineWidth(0.3)
-			tickHeight := height * 0.15 // Shorter tick line (15% of chart height)
+			tickHeight := height * 0.15
 			dc.DrawLine(xPos, y+height-tickHeight, xPos, y+height)
 			dc.Stroke()
-
-			// Draw date label below the chart, rotated 90 degrees clockwise
-			// Format: "15 Oct" (day month)
-			dateLabel := biweeklyTime.Format("2 Jan") // Format: "15 Oct"
-			dc.SetColor(color.RGBA{120, 120, 120, 255}) // Darker gray for text
-			
-			// Position for the label (below the chart)
-			labelX := xPos
-			labelY := y + height + 25
-			
-			// Rotate text 90 degrees clockwise using Push/Translate/Rotate
-			// In gg, transformations are applied in order: Translate then Rotate
-			dc.Push()
-			// Translate to where we want the text (this becomes the rotation center)
-			dc.Translate(labelX, labelY)
-			// Rotate 90 degrees clockwise around the translated origin
-			dc.Rotate(math.Pi / 2)
-			// Draw text at (0,0) in the transformed coordinate system
-			// The anchor (0.5, 0.5) centers the text at the rotation point
-			dc.DrawStringAnchored(dateLabel, 0, 0, 0.5, 0.5)
-			dc.Pop()
 		}
 	}
 }
@@ -629,7 +606,7 @@ func (yg *YearlySparklineGenerator) findYearlyBiweeklyPositions(startTime, endTi
 	// Start from startTime, then add 14 days for each biweekly tick
 	// We want ticks approximately every 2 weeks from the start
 	firstBiweekly := startTime.Truncate(24 * time.Hour) // Round to midnight
-	
+
 	// Find the first biweekly position (could be startTime or up to 14 days later)
 	// We'll align to approximate 14-day intervals
 	for current := firstBiweekly; !current.After(endTime); current = current.AddDate(0, 0, 14) {
@@ -694,7 +671,7 @@ func (yg *YearlySparklineGenerator) findYearlyWeeklyPositions(startTime, endTime
 
 	// Start from startTime, then add 7 days for each weekly tick
 	firstWeekly := startTime.Truncate(24 * time.Hour) // Round to midnight
-	
+
 	// Find all weekly positions (every 7 days)
 	for current := firstWeekly; !current.After(endTime); current = current.AddDate(0, 0, 7) {
 		// Only add if it's after or equal to startTime
@@ -723,7 +700,7 @@ func (yg *YearlySparklineGenerator) drawYearlyStartEndLabels(dc *gg.Context, dat
 	}
 
 	// Draw start date label at the left edge (50 pixels below chart to avoid overlap)
-	startLabel := startTime.Format("2 Jan") // Format: "18 Sep"
+	startLabel := startTime.Format("2 Jan")  // Format: "18 Sep"
 	dc.SetColor(color.RGBA{80, 80, 80, 255}) // Dark gray for start/end labels
 	dc.DrawStringAnchored(startLabel, x, y+height+50, 0, 0)
 
@@ -823,7 +800,7 @@ func (yg *YearlySparklineGenerator) drawYearlyMultilineStringAnchored(dc *gg.Con
 		startY = y - totalHeight/2
 	case 1.0: // Top anchor
 		startY = y - totalHeight
-	// For bottom anchor (anchorY == 0.0), startY remains as y (default case)
+		// For bottom anchor (anchorY == 0.0), startY remains as y (default case)
 	}
 
 	// Draw each line
@@ -858,7 +835,7 @@ func (yg *YearlySparklineGenerator) drawYearlyAverageLabel(dc *gg.Context, dataP
 				_ = fallbackErr
 			}
 		}
-		
+
 		label := fmt.Sprintf("Avg: %.1f%%", average)
 		dc.SetColor(yg.config.TextColor)
 		// Position label on the right side of the chart, 10 pixels below the average line
@@ -912,7 +889,26 @@ func (yg *YearlySparklineGenerator) drawYearlyGaussianTrendLine(dc *gg.Context, 
 	endTime := dataPoints[len(dataPoints)-1].Timestamp
 	timeRange := endTime.Sub(startTime).Seconds()
 
-	// Draw as thin dashed blue line
+	// White halo pass for visibility over colored data lines
+	dc.SetColor(color.RGBA{255, 255, 255, 200})
+	dc.SetLineWidth(3.5)
+	dc.SetDash(4, 3)
+
+	for i := 0; i < len(smoothedData)-1; i++ {
+		x1 := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		normalizedY1 := (smoothedData[i] - yRange.Center) * yRange.Scale / 100.0
+		y1 := y + height/2 - normalizedY1*(height/2)
+
+		x2 := x + (dataPoints[i+1].Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		normalizedY2 := (smoothedData[i+1] - yRange.Center) * yRange.Scale / 100.0
+		y2 := y + height/2 - normalizedY2*(height/2)
+
+		dc.DrawLine(x1, y1, x2, y2)
+		dc.Stroke()
+	}
+
+	dc.SetDash()
+
 	dc.SetColor(color.RGBA{0, 123, 255, 255})
 	dc.SetLineWidth(1.5)
 	dc.SetDash(4, 3)
@@ -930,5 +926,5 @@ func (yg *YearlySparklineGenerator) drawYearlyGaussianTrendLine(dc *gg.Context, 
 		dc.Stroke()
 	}
 
-	dc.SetDash() // Reset dash pattern
+	dc.SetDash()
 }
