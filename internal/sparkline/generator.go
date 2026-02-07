@@ -664,7 +664,12 @@ func (sg *SparklineGenerator) drawMostRecentLabel(dc *gg.Context, dataPoints []s
 	startTime := dataPoints[0].Timestamp
 	endTime := dataPoints[len(dataPoints)-1].Timestamp
 	timeRange := endTime.Sub(startTime).Seconds()
-	xPos := x + (lastPoint.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+	var xPos float64
+	if timeRange == 0 {
+		xPos = x + width/2
+	} else {
+		xPos = x + (lastPoint.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+	}
 	normalizedY := (lastPoint.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
 	yPos := y + height/2 - normalizedY*(height/2)
 
@@ -708,7 +713,12 @@ func (sg *SparklineGenerator) drawExtremeLabels(dc *gg.Context, dataPoints []sta
 
 	// Draw lowest observation label (only if not the latest observation)
 	if !(lowest.Timestamp.Equal(latestPoint.Timestamp) && lowest.NetSentimentPercent == latestPoint.NetSentimentPercent) {
-		lowestXPos := x + (lowest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		var lowestXPos float64
+		if timeRange == 0 {
+			lowestXPos = x + width/2
+		} else {
+			lowestXPos = x + (lowest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		}
 		normalizedLowestY := (lowest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
 		lowestYPos := y + height/2 - normalizedLowestY*(height/2)
 
@@ -721,7 +731,12 @@ func (sg *SparklineGenerator) drawExtremeLabels(dc *gg.Context, dataPoints []sta
 	// Draw highest observation label (only if different from lowest and not the latest observation)
 	if highest.NetSentimentPercent != lowest.NetSentimentPercent &&
 		!(highest.Timestamp.Equal(latestPoint.Timestamp) && highest.NetSentimentPercent == latestPoint.NetSentimentPercent) {
-		highestXPos := x + (highest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		var highestXPos float64
+		if timeRange == 0 {
+			highestXPos = x + width/2
+		} else {
+			highestXPos = x + (highest.Timestamp.Sub(startTime).Seconds()/timeRange)*width
+		}
 		normalizedHighestY := (highest.NetSentimentPercent - yRange.Center) * yRange.Scale / 100.0
 		highestYPos := y + height/2 - normalizedHighestY*(height/2)
 
