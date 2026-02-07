@@ -118,8 +118,8 @@ func main() {
 	runID := fmt.Sprintf("test-run-%d", time.Now().Unix())
 	fmt.Printf("📝 Test Run ID: %s\n", runID)
 
-	// Step 1: Create run state (orchestrator step)
-	fmt.Println("\n🎯 Step 1: Creating run state (Orchestrator)...")
+	// Step 1: Create run state
+	fmt.Println("\n🎯 Step 1: Creating run state...")
 	err = mockClient.createRunState(ctx, runID, testIntervalMinutes)
 	if err != nil {
 		log.Fatalf("Failed to create run state: %v", err)
@@ -156,7 +156,7 @@ func main() {
 	}
 }
 
-// createRunState simulates the orchestrator creating a run state
+// createRunState initializes run state in DynamoDB for a test run
 func (m *MockLambdaClient) createRunState(ctx context.Context, runID string, analysisIntervalMinutes int) error {
 	now := time.Now()
 

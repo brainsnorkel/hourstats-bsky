@@ -16,13 +16,13 @@ import (
 
 const (
 	expectedRunsPer24Hours = 48 // Every 30 minutes = 48 runs per day
-	region                  = "us-east-1"
+	region                 = "us-east-1"
 )
 
 func main() {
 	var (
-		command = flag.String("cmd", "status", "Command to run: status, runs, current, errors, validate, tail, all")
-		tailFunc = flag.String("function", "", "Lambda function name for tail command (orchestrator, fetcher, processor, sparkline-poster)")
+		command  = flag.String("cmd", "status", "Command to run: status, runs, current, errors, validate, tail, all")
+		tailFunc = flag.String("function", "", "Lambda function name for tail command (fetcher, processor, sparkline-poster, daily-aggregator, yearly-poster)")
 		filter   = flag.String("filter", "all", "Filter for tail command: all, errors, success")
 		limit    = flag.Int("limit", 10, "Number of recent runs to show")
 	)
@@ -49,7 +49,7 @@ func main() {
 		validateRunCount(ctx, stateManager)
 	case "tail":
 		if *tailFunc == "" {
-			fmt.Println("Usage: go run cmd/diagnostics/main.go -cmd tail -function <orchestrator|fetcher|processor|sparkline-poster> [-filter all|errors|success]")
+			fmt.Println("Usage: go run cmd/diagnostics/main.go -cmd tail -function <fetcher|processor|sparkline-poster|daily-aggregator|yearly-poster> [-filter all|errors|success]")
 			os.Exit(1)
 		}
 		tailCloudWatch(*tailFunc, *filter)
@@ -78,13 +78,13 @@ func showUsage() {
 	fmt.Println("")
 	fmt.Println("Options:")
 	fmt.Println("  -limit <n>       Number of recent runs to show (default: 10)")
-	fmt.Println("  -function <name> Lambda function for tail (orchestrator, fetcher, processor, sparkline-poster)")
+	fmt.Println("  -function <name> Lambda function for tail (fetcher, processor, sparkline-poster, daily-aggregator, yearly-poster)")
 	fmt.Println("  -filter <type>   Filter for tail (all, errors, success) (default: all)")
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  go run cmd/diagnostics/main.go -cmd status")
 	fmt.Println("  go run cmd/diagnostics/main.go -cmd runs -limit 20")
-	fmt.Println("  go run cmd/diagnostics/main.go -cmd tail -function orchestrator -filter errors")
+	fmt.Println("  go run cmd/diagnostics/main.go -cmd tail -function fetcher -filter errors")
 }
 
 func showStatus(ctx context.Context, stateManager *state.StateManager, limit int) {
@@ -92,25 +92,25 @@ func showStatus(ctx context.Context, stateManager *state.StateManager, limit int
 	fmt.Println("📊 HourStats System Status")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 	fmt.Println()
-	
+
 	// Show recent runs
 	fmt.Println("📋 Recent Runs:")
 	fmt.Println("───────────────────────────────────────────────────────────────")
 	showRecentRuns(ctx, stateManager, limit)
 	fmt.Println()
-	
+
 	// Show current run state
 	fmt.Println("🔄 Current Run State:")
 	fmt.Println("───────────────────────────────────────────────────────────────")
 	showCurrentRunState(ctx, stateManager)
 	fmt.Println()
-	
+
 	// Validate run count
 	fmt.Println("✅ Run Count Validation (Last 24 Hours):")
 	fmt.Println("───────────────────────────────────────────────────────────────")
 	validateRunCount(ctx, stateManager)
 	fmt.Println()
-	
+
 	// Show errors summary
 	fmt.Println("⚠️  Recent Errors:")
 	fmt.Println("───────────────────────────────────────────────────────────────")
@@ -172,7 +172,7 @@ func showRecentRuns(ctx context.Context, stateManager *state.StateManager, limit
 			sentiment = "N/A"
 		}
 		createdStr := run.created.Local().Format("2006-01-02 15:04:05")
-		
+
 		fmt.Printf("%-30s %s %-11s %-12s %-8d %-12s %-20s\n",
 			truncate(run.runID, 30),
 			statusIcon,
@@ -181,7 +181,7 @@ func showRecentRuns(ctx context.Context, stateManager *state.StateManager, limit
 			run.stats.TotalPostsRetrieved,
 			sentiment,
 			createdStr)
-		
+
 		if i < len(runs)-1 && i%5 == 4 {
 			fmt.Println() // Add spacing every 5 runs
 		}
@@ -197,7 +197,7 @@ func showCurrentRunState(ctx context.Context, stateManager *state.StateManager) 
 	}
 
 	runID := runIDs[0]
-	
+
 	// Get stats for overview
 	stats, err := stateManager.GetRunStats(ctx, runID)
 	if err != nil {
@@ -214,8 +214,9 @@ func showCurrentRunState(ctx context.Context, stateManager *state.StateManager) 
 	fmt.Println()
 
 	// Check each step
+	// Note: "orchestrator" is the DynamoDB sort key for run state (hardcoded in state.CreateRun)
 	steps := []string{"orchestrator", "fetcher", "processor", "aggregator", "analyzer"}
-	
+
 	fmt.Println("Step Status:")
 	fmt.Println("───────────────────────────────────────────────────────────────")
 	for _, step := range steps {
@@ -227,7 +228,7 @@ func showCurrentRunState(ctx context.Context, stateManager *state.StateManager) 
 
 		statusIcon := getStatusIcon(runState.Status)
 		fmt.Printf("  %-15s %s %s", step+":", statusIcon, runState.Status)
-		
+
 		if runState.ErrorMessage != "" {
 			fmt.Printf(" - Error: %s", truncate(runState.ErrorMessage, 50))
 		}
@@ -254,11 +255,11 @@ func detectErrors(ctx context.Context, stateManager *state.StateManager, limit i
 	}
 
 	type errorInfo struct {
-		runID      string
-		step       string
-		message    string
-		errorTime  time.Time
-		createdAt  time.Time
+		runID     string
+		step      string
+		message   string
+		errorTime time.Time
+		createdAt time.Time
 	}
 
 	var errors []errorInfo
@@ -322,7 +323,7 @@ func detectErrors(ctx context.Context, stateManager *state.StateManager, limit i
 func validateRunCount(ctx context.Context, stateManager *state.StateManager) {
 	// Get all runs from last 24 hours
 	twentyFourHoursAgo := time.Now().Add(-24 * time.Hour)
-	
+
 	runIDs, err := stateManager.ListRuns(ctx, 100) // Get enough to check 24 hours
 	if err != nil {
 		fmt.Printf("❌ Failed to list runs: %v\n", err)
@@ -345,10 +346,10 @@ func validateRunCount(ctx context.Context, stateManager *state.StateManager) {
 
 	actualCount := len(recentRuns)
 	expectedCount := expectedRunsPer24Hours
-	
+
 	fmt.Printf("Expected runs (last 24h): %d\n", expectedCount)
 	fmt.Printf("Actual runs (last 24h):   %d\n", actualCount)
-	
+
 	if actualCount >= expectedCount {
 		fmt.Printf("✅ Status: PASS (sufficient runs)\n")
 	} else {
@@ -361,7 +362,7 @@ func validateRunCount(ctx context.Context, stateManager *state.StateManager) {
 		sort.Slice(runTimes, func(i, j int) bool {
 			return runTimes[i].Before(runTimes[j])
 		})
-		
+
 		fmt.Println()
 		fmt.Println("Time gaps between runs:")
 		var maxGap time.Duration
@@ -372,7 +373,7 @@ func validateRunCount(ctx context.Context, stateManager *state.StateManager) {
 				maxGap = gap
 				maxGapStart = runTimes[i-1]
 			}
-			
+
 			if gap > 35*time.Minute { // More than 5 minutes over expected 30 min
 				fmt.Printf("  ⚠️  %s - Gap: %s (between %s and %s)\n",
 					getGapSeverity(gap),
@@ -381,7 +382,7 @@ func validateRunCount(ctx context.Context, stateManager *state.StateManager) {
 					runTimes[i].Local().Format("15:04:05"))
 			}
 		}
-		
+
 		if maxGap > 35*time.Minute {
 			fmt.Printf("\n  Largest gap: %s (starting at %s)\n",
 				maxGap.Round(time.Minute),
@@ -392,18 +393,19 @@ func validateRunCount(ctx context.Context, stateManager *state.StateManager) {
 
 func tailCloudWatch(functionName, filter string) {
 	logGroup := fmt.Sprintf("/aws/lambda/hourstats-%s", functionName)
-	
+
 	// Validate function name
 	validFunctions := map[string]bool{
-		"orchestrator":     true,
 		"fetcher":          true,
 		"processor":        true,
 		"sparkline-poster": true,
+		"daily-aggregator": true,
+		"yearly-poster":    true,
 	}
-	
+
 	if !validFunctions[functionName] {
 		fmt.Printf("❌ Invalid function name: %s\n", functionName)
-		fmt.Println("Valid functions: orchestrator, fetcher, processor, sparkline-poster")
+		fmt.Println("Valid functions: fetcher, processor, sparkline-poster, daily-aggregator, yearly-poster")
 		os.Exit(1)
 	}
 
@@ -426,11 +428,11 @@ func tailCloudWatch(functionName, filter string) {
 	fmt.Printf("Filter: %s\n", filter)
 	fmt.Println("Press Ctrl+C to stop")
 	fmt.Println("───────────────────────────────────────────────────────────────")
-	
+
 	cmd := exec.Command("aws", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	
+
 	if err := cmd.Run(); err != nil {
 		fmt.Printf("\n❌ Error tailing logs: %v\n", err)
 		os.Exit(1)
@@ -478,4 +480,3 @@ func getGapSeverity(gap time.Duration) string {
 	}
 	return "LOW"
 }
-

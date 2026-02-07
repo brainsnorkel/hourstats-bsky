@@ -13,15 +13,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	awslambda "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/christophergentle/hourstats-bsky/internal/awsutil"
 	bskyclient "github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 )
 
-// FetcherEvent represents the event for the fetcher lambda
+// FetcherEvent represents the unified event for the fetcher lambda.
+// It accepts both EventBridge schedule events and direct invocations.
+// When triggered by EventBridge (source is set, runId is empty), the fetcher
+// creates a new run and orchestrates the full pipeline.
+// When invoked directly with a runId, it fetches posts for an existing run.
 type FetcherEvent struct {
-	RunID                   string `json:"runId"`
-	AnalysisIntervalMinutes int    `json:"analysisIntervalMinutes"`
-	Status                  string `json:"status"`
+	// EventBridge fields (present when triggered by schedule)
+	Source string `json:"source,omitempty"`
+	Time   string `json:"time,omitempty"`
+
+	// Direct invocation fields
+	RunID                   string `json:"runId,omitempty"`
+	AnalysisIntervalMinutes int    `json:"analysisIntervalMinutes,omitempty"`
+	Status                  string `json:"status,omitempty"`
 }
 
 // Response represents the Lambda response
@@ -29,6 +39,7 @@ type Response struct {
 	StatusCode     int    `json:"statusCode"`
 	Body           string `json:"body"`
 	PostsRetrieved int    `json:"postsRetrieved"`
+	RunID          string `json:"runId,omitempty"`
 }
 
 // FetcherHandler handles the fetcher Lambda function
@@ -65,22 +76,40 @@ func NewFetcherHandler(ctx context.Context) (*FetcherHandler, error) {
 	}, nil
 }
 
-// Handle handles the Lambda function invocation
+// Handle handles the Lambda function invocation.
+// Supports two trigger modes:
+//   - EventBridge schedule: source is set, runId is empty → creates run, fetches, dispatches processor
+//   - Direct invocation: runId is set → fetches posts for existing run
 func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Response, error) {
-	log.Printf("🚀 FETCHER: Starting fetcher for run: %s", event.RunID)
+	runID := event.RunID
+	analysisInterval := event.AnalysisIntervalMinutes
 
-	// Get run state
-	runState, err := h.stateManager.GetRun(ctx, event.RunID, "orchestrator")
-	if err != nil {
-		log.Printf("Failed to get run state: %v", err)
-		return Response{
-			StatusCode: 500,
-			Body:       "Failed to get run state: " + err.Error(),
-		}, err
+	// Detect EventBridge trigger: source is set and no runId provided
+	if event.Source != "" && runID == "" {
+		log.Printf("🚀 FETCHER: Triggered by EventBridge (source=%s), creating new run", event.Source)
+		var err error
+		runID, analysisInterval, err = h.createRun(ctx, event.AnalysisIntervalMinutes)
+		if err != nil {
+			return Response{StatusCode: 500, Body: "Failed to create run: " + err.Error()}, err
+		}
 	}
 
+	if runID == "" {
+		return Response{StatusCode: 400, Body: "No runId provided and not an EventBridge event"}, fmt.Errorf("no runId")
+	}
+
+	log.Printf("🚀 FETCHER: Starting fetch for run: %s", runID)
+
+	runState, err := h.stateManager.GetRun(ctx, runID, "orchestrator")
+	if err != nil {
+		log.Printf("Failed to get run state: %v", err)
+		return Response{StatusCode: 500, Body: "Failed to get run state: " + err.Error()}, err
+	}
+
+	_ = analysisInterval // interval is already stored in runState
+
 	// Get Bluesky credentials
-	handle, password, err := h.getBlueskyCredentials(ctx)
+	handle, password, err := awsutil.GetBlueskyCredentials(ctx, h.ssmClient)
 	if err != nil {
 		log.Printf("Failed to get credentials: %v", err)
 		return Response{
@@ -116,7 +145,7 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 	log.Printf("   📊 Analysis Interval: %d minutes", runState.AnalysisIntervalMinutes)
 
 	// Run parallel fetch with internal loops
-	totalPosts, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime, err := h.fetchAllPostsInParallel(ctx, blueskyClient, runState.CutoffTime, event.RunID)
+	totalPosts, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime, err := h.fetchAllPostsInParallel(ctx, blueskyClient, runState.CutoffTime, runID)
 	if err != nil {
 		log.Printf("Failed to fetch posts: %v", err)
 		return Response{
@@ -126,7 +155,7 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 	}
 
 	// Update state to indicate fetching is complete
-	if err := h.stateManager.UpdateCursor(ctx, event.RunID, "", false); err != nil {
+	if err := h.stateManager.UpdateCursor(ctx, runID, "", false); err != nil {
 		log.Printf("Failed to update cursor: %v", err)
 		return Response{
 			StatusCode: 500,
@@ -135,16 +164,16 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 	}
 
 	// Store raw API stats in run state for processor to use in search latency message
-	if err := h.stateManager.UpdateAPIStats(ctx, event.RunID, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime); err != nil {
+	if err := h.stateManager.UpdateAPIStats(ctx, runID, totalAPIPostsReturned, earliestAPIPostTime, latestAPIPostTime); err != nil {
 		log.Printf("Failed to update API stats: %v", err)
 		// Non-fatal error - continue with processing
 	}
 
-	log.Printf("✅ FETCHER: All fetching complete - Run: %s, Total posts retrieved: %d", event.RunID, totalPosts)
+	log.Printf("✅ FETCHER: All fetching complete - Run: %s, Total posts retrieved: %d", runID, totalPosts)
 
 	// Dispatch processor
 	log.Printf("🏁 FETCHER: Fetching complete, dispatching processor")
-	err = h.dispatchProcessor(ctx, event.RunID)
+	err = h.dispatchProcessor(ctx, runID)
 	if err != nil {
 		log.Printf("Failed to dispatch processor: %v", err)
 		return Response{
@@ -158,7 +187,33 @@ func (h *FetcherHandler) Handle(ctx context.Context, event FetcherEvent) (Respon
 		StatusCode:     200,
 		Body:           "Posts fetched successfully and processor dispatched",
 		PostsRetrieved: totalPosts,
+		RunID:          runID,
 	}, nil
+}
+
+// createRun generates a run ID, calculates the cutoff time, and persists a new run
+// in DynamoDB. This logic was previously in the orchestrator Lambda.
+func (h *FetcherHandler) createRun(ctx context.Context, analysisIntervalMinutes int) (string, int, error) {
+	if analysisIntervalMinutes <= 0 {
+		analysisIntervalMinutes = 30
+	}
+
+	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	cutoffTime := now.Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
+
+	log.Printf("📅 FETCHER: Creating run %s — From: %s, To: %s (interval: %d min)",
+		runID,
+		cutoffTime.Format("2006-01-02 15:04:05 UTC"),
+		now.Format("2006-01-02 15:04:05 UTC"),
+		analysisIntervalMinutes)
+
+	_, err := h.stateManager.CreateRun(ctx, runID, analysisIntervalMinutes, cutoffTime)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to create run state: %w", err)
+	}
+
+	return runID, analysisIntervalMinutes, nil
 }
 
 // fetchAllPostsInParallel fetches all posts using parallel API calls and internal loops
@@ -398,7 +453,7 @@ func (h *FetcherHandler) fetchAllPostsInParallel(ctx context.Context, client *bs
 	}
 
 	log.Printf("🏁 FETCHER: Sequential fetch complete - Total posts: %d across %d iterations", totalPosts, iteration)
-	
+
 	// Final check: warn if we didn't get minimum required posts
 	if totalPosts < minPostsRequired {
 		log.Printf("⚠️ FETCHER: WARNING - Only retrieved %d posts (minimum required: %d). This may indicate API issues or low activity.", totalPosts, minPostsRequired)
@@ -434,37 +489,6 @@ func (h *FetcherHandler) convertToStatePosts(posts []bskyclient.Post) []state.Po
 		}
 	}
 	return statePosts
-}
-
-// getBlueskyCredentials retrieves credentials from SSM Parameter Store
-func (h *FetcherHandler) getBlueskyCredentials(ctx context.Context) (string, string, error) {
-	log.Printf("🔐 FETCHER: Attempting to retrieve credentials from SSM...")
-
-	handleParam, err := h.ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
-		Name:           aws.String("/hourstats/bluesky/handle"),
-		WithDecryption: aws.Bool(false),
-	})
-	if err != nil {
-		log.Printf("❌ FETCHER: Failed to get handle parameter: %v", err)
-		return "", "", fmt.Errorf("failed to get handle parameter: %w", err)
-	}
-	log.Printf("✅ FETCHER: Successfully retrieved handle parameter")
-
-	passwordParam, err := h.ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
-		Name:           aws.String("/hourstats/bluesky/password"),
-		WithDecryption: aws.Bool(true),
-	})
-	if err != nil {
-		log.Printf("❌ FETCHER: Failed to get password parameter: %v", err)
-		return "", "", fmt.Errorf("failed to get password parameter: %w", err)
-	}
-	log.Printf("✅ FETCHER: Successfully retrieved password parameter")
-
-	handle := aws.ToString(handleParam.Parameter.Value)
-	password := aws.ToString(passwordParam.Parameter.Value)
-
-	log.Printf("🔐 FETCHER: Credentials retrieved - Handle: %s, Password length: %d", handle, len(password))
-	return handle, password, nil
 }
 
 // dispatchProcessor invokes the processor lambda

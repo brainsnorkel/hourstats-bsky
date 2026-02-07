@@ -1,0 +1,403 @@
+asyncapi: 3.0.0
+info:
+  title: HourStats Event Contracts
+  version: 1.0.0
+  description: |
+    Event-driven architecture for HourStats Bluesky sentiment analysis bot.
+    Documents the event schemas exchanged between Lambda functions via
+    async invocation and EventBridge triggers.
+
+channels:
+  eventbridge-hourly:
+    address: hourstats-schedule
+    description: EventBridge rule firing every 30 minutes to trigger the hourly pipeline
+    messages:
+      eventBridgeScheduleEvent:
+        $ref: '#/components/messages/EventBridgeScheduleEvent'
+
+  eventbridge-daily:
+    address: hourstats-daily-aggregation-schedule
+    description: EventBridge rule firing daily at midnight UTC
+    messages:
+      eventBridgeDailyEvent:
+        $ref: '#/components/messages/EventBridgeDailyEvent'
+
+  eventbridge-yearly:
+    address: hourstats-yearly-posting-schedule
+    description: EventBridge rule firing daily at 1am UTC
+    messages:
+      eventBridgeYearlyEvent:
+        $ref: '#/components/messages/EventBridgeYearlyEvent'
+
+  fetcher-to-processor:
+    address: hourstats-processor
+    description: Async Lambda invocation from fetcher to processor
+    messages:
+      processorEvent:
+        $ref: '#/components/messages/ProcessorEvent'
+
+  processor-to-sparkline:
+    address: hourstats-sparkline-poster
+    description: Async Lambda invocation from processor to sparkline poster
+    messages:
+      sparklineEvent:
+        $ref: '#/components/messages/SparklineEvent'
+
+operations:
+  triggerFetcher:
+    action: send
+    channel:
+      $ref: '#/channels/eventbridge-hourly'
+    summary: EventBridge triggers the fetcher every 30 minutes
+
+  triggerDailyAggregator:
+    action: send
+    channel:
+      $ref: '#/channels/eventbridge-daily'
+    summary: EventBridge triggers daily sentiment aggregation at midnight UTC
+
+  triggerYearlyPoster:
+    action: send
+    channel:
+      $ref: '#/channels/eventbridge-yearly'
+    summary: EventBridge triggers yearly chart posting at 1am UTC
+
+  dispatchProcessor:
+    action: send
+    channel:
+      $ref: '#/channels/fetcher-to-processor'
+    summary: Fetcher dispatches processor after post collection is complete
+
+  dispatchSparkline:
+    action: send
+    channel:
+      $ref: '#/channels/processor-to-sparkline'
+    summary: Processor dispatches sparkline poster after summary is posted
+
+components:
+  messages:
+    EventBridgeScheduleEvent:
+      name: EventBridgeScheduleEvent
+      title: Hourly Schedule Event
+      summary: Event sent by EventBridge to trigger the fetcher Lambda
+      payload:
+        $ref: '#/components/schemas/FetcherEvent'
+
+    EventBridgeDailyEvent:
+      name: EventBridgeDailyEvent
+      title: Daily Aggregation Event
+      summary: Event sent by EventBridge to trigger daily sentiment aggregation
+      payload:
+        $ref: '#/components/schemas/DailyAggregatorEvent'
+
+    EventBridgeYearlyEvent:
+      name: EventBridgeYearlyEvent
+      title: Yearly Posting Event
+      summary: Event sent by EventBridge to trigger yearly chart posting
+      payload:
+        $ref: '#/components/schemas/YearlyPosterEvent'
+
+    ProcessorEvent:
+      name: ProcessorEvent
+      title: Processor Invocation Event
+      summary: Event sent from fetcher to processor via async Lambda invoke
+      payload:
+        $ref: '#/components/schemas/ProcessorEvent'
+
+    SparklineEvent:
+      name: SparklineEvent
+      title: Sparkline Poster Invocation Event
+      summary: Event sent from processor to sparkline poster via async Lambda invoke
+      payload:
+        $ref: '#/components/schemas/SparklineEvent'
+
+  schemas:
+    FetcherEvent:
+      type: object
+      description: |
+        Accepted by hourstats-fetcher. Handles both EventBridge schedule triggers
+        (no runId) and direct invocations (with runId).
+      properties:
+        source:
+          type: string
+          description: EventBridge source identifier
+          example: aws.events
+        time:
+          type: string
+          description: EventBridge event timestamp
+          example: "2025-01-15T10:30:00Z"
+        runId:
+          type: string
+          description: |
+            Run identifier. If empty, the fetcher creates a new run.
+            If provided, resumes an existing run (for manual/retry invocations).
+          example: run-1737000000000000000
+        analysisIntervalMinutes:
+          type: integer
+          description: Time window for post collection in minutes
+          default: 30
+          example: 30
+        status:
+          type: string
+          description: Current pipeline status
+          example: fetching
+
+    FetcherResponse:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 200
+        body:
+          type: string
+          example: Posts fetched successfully and processor dispatched
+        postsRetrieved:
+          type: integer
+          description: Number of posts fetched and stored
+          example: 2500
+
+    ProcessorEvent:
+      type: object
+      required: [runId]
+      properties:
+        runId:
+          type: string
+          description: Run identifier from fetcher
+          example: run-1737000000000000000
+        analysisIntervalMinutes:
+          type: integer
+          description: Analysis window (passed through from fetcher)
+        status:
+          type: string
+
+    ProcessorResponse:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 200
+        body:
+          type: string
+          example: Posts processed and summary posted successfully
+        postsAnalyzed:
+          type: integer
+          description: Number of posts analyzed for sentiment
+          example: 1850
+        topPostsCount:
+          type: integer
+          description: Number of top posts selected
+          example: 5
+        overallSentiment:
+          type: string
+          enum: [positive, neutral, negative]
+          example: positive
+
+    SparklineEvent:
+      type: object
+      required: [runId]
+      properties:
+        runId:
+          type: string
+          description: Run identifier
+          example: run-1737000000000000000
+
+    SparklineResponse:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 200
+        body:
+          type: string
+          example: Sparkline posted successfully
+        posted:
+          type: boolean
+          description: Whether the sparkline was actually posted
+          example: true
+
+    DailyAggregatorEvent:
+      type: object
+      properties:
+        source:
+          type: string
+          example: aws.events
+        time:
+          type: string
+          example: "2025-01-15T00:00:00Z"
+        action:
+          type: string
+          description: Optional action override
+        targetDate:
+          type: string
+          description: |
+            Specific date to aggregate (YYYY-MM-DD format).
+            If empty, processes the previous day.
+          example: "2025-01-14"
+
+    DailyAggregatorResponse:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 200
+        body:
+          type: string
+          example: "Daily sentiment processed successfully for date: 2025-01-14"
+        processed:
+          type: boolean
+          description: Whether aggregation was performed (false if already exists)
+        date:
+          type: string
+          description: Date that was processed
+          example: "2025-01-14"
+
+    YearlyPosterEvent:
+      type: object
+      properties:
+        source:
+          type: string
+          example: aws.events
+        time:
+          type: string
+          example: "2025-01-15T01:00:00Z"
+        action:
+          type: string
+          description: Optional action override
+
+    YearlyPosterResponse:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 200
+        body:
+          type: string
+          example: Yearly sentiment chart posted successfully
+        posted:
+          type: boolean
+          description: Whether the chart was posted
+          example: true
+
+    # Shared data models stored in DynamoDB
+    RunState:
+      type: object
+      description: Run coordination state stored in hourstats-state DynamoDB table
+      properties:
+        runId:
+          type: string
+          description: Unique run identifier
+        postId:
+          type: string
+          description: Step name for run metadata, or post/batch index for post data
+        step:
+          type: string
+          enum: [orchestrator, fetcher, analyzer, aggregator]
+        status:
+          type: string
+          enum: [initializing, fetching, analyzed, aggregated, completed]
+        analysisIntervalMinutes:
+          type: integer
+        cutoffTime:
+          type: string
+          format: date-time
+        totalPostsRetrieved:
+          type: integer
+        overallSentiment:
+          type: string
+          enum: [positive, neutral, negative]
+        netSentimentPercentage:
+          type: number
+          format: double
+        topPostURI:
+          type: string
+          description: AT Protocol URI of the posted summary (used for sparkline reply)
+        topPostCID:
+          type: string
+          description: CID of the posted summary
+        ttl:
+          type: integer
+          format: int64
+          description: DynamoDB TTL (Unix timestamp, 2 days from creation)
+
+    Post:
+      type: object
+      description: A Bluesky post with engagement metrics and sentiment analysis
+      properties:
+        uri:
+          type: string
+          description: AT Protocol URI
+          example: at://did:plc:abc123/app.bsky.feed.post/xyz789
+        cid:
+          type: string
+        text:
+          type: string
+        author:
+          type: string
+          example: alice.bsky.social
+        likes:
+          type: integer
+        reposts:
+          type: integer
+        replies:
+          type: integer
+        sentiment:
+          type: string
+          enum: [positive, neutral, negative]
+        engagementScore:
+          type: number
+          format: double
+          description: Sum of likes + reposts + replies
+        createdAt:
+          type: string
+          format: date-time
+
+    SentimentDataPoint:
+      type: object
+      description: Per-run sentiment data stored in hourstats-sentiment-history
+      properties:
+        runId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        averageCompoundScore:
+          type: number
+          format: double
+          description: VADER compound score (-1.0 to 1.0)
+        netSentimentPercent:
+          type: number
+          format: double
+          description: Compound score scaled to percentage (-100 to 100)
+        sentimentCategory:
+          type: string
+          enum: [positive, neutral, negative]
+        totalPosts:
+          type: integer
+
+    DailySentimentDataPoint:
+      type: object
+      description: Aggregated daily sentiment stored in hourstats-daily-sentiment
+      properties:
+        date:
+          type: string
+          format: date
+          example: "2025-01-14"
+        runId:
+          type: string
+        averageSentiment:
+          type: number
+          format: double
+        minSentiment:
+          type: number
+          format: double
+        maxSentiment:
+          type: number
+          format: double
+        totalRuns:
+          type: integer
+        totalPosts:
+          type: integer
+        ttl:
+          type: integer
+          format: int64
+          description: DynamoDB TTL (3 years from creation)
