@@ -109,12 +109,13 @@ func runJetstream(ctx context.Context, db *store.Store) {
 			if evt.Commit != nil {
 				cid = evt.Commit.CID
 			}
+			createdAt := normalizeTimestamp(rec.CreatedAt)
 			post := store.Post{
 				URI:       evt.PostURI(),
 				CID:       cid,
 				Text:      rec.Text,
 				AuthorDID: evt.DID,
-				CreatedAt: rec.CreatedAt,
+				CreatedAt: createdAt,
 			}
 			if err := db.InsertPost(ctx, post); err != nil {
 				slog.Error("insert post failed", "uri", post.URI, "error", err)
@@ -533,6 +534,17 @@ func percentile(sorted []float64, p float64) float64 {
 // ---------------------------------------------------------------------------
 // Env helpers
 // ---------------------------------------------------------------------------
+
+func normalizeTimestamp(raw string) string {
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339Nano, raw)
+	}
+	if err != nil {
+		return time.Now().UTC().Format(time.RFC3339)
+	}
+	return t.UTC().Format(time.RFC3339)
+}
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
