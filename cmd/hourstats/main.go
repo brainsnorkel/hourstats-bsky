@@ -195,6 +195,20 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 
+	// Exclude posts that failed hydration (no author handle means the
+	// hydrator could not resolve them — deleted, private, or API error).
+	// Including them would skew sentiment with un-engageable ghost posts.
+	var hydrated []store.Post
+	for _, p := range posts {
+		if p.AuthorHandle != "" {
+			hydrated = append(hydrated, p)
+		}
+	}
+	if dropped := len(posts) - len(hydrated); dropped > 0 {
+		slog.Info("excluded unhydrated posts from analysis", "dropped", dropped, "remaining", len(hydrated))
+	}
+	posts = hydrated
+
 	analyzerPosts := toAnalyzerPosts(posts)
 	sa := analyzer.New()
 	analyzed, err := sa.AnalyzePosts(analyzerPosts)
