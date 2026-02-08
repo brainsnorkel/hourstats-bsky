@@ -117,3 +117,59 @@ func (s *Store) GetDailySentimentForDate(ctx context.Context, date string) (*Dai
 	dp.CreatedAt = strToTime(createdStr)
 	return &dp, nil
 }
+
+func (s *Store) GetWeeklyPostTotals(ctx context.Context) ([]WeeklyPostTotal, error) {
+	now := time.Now().UTC()
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	currentWeekStart := now.AddDate(0, 0, -(weekday - 1)).Truncate(24 * time.Hour)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT strftime('%Y-%m-%d', timestamp) AS day,
+		        SUM(total_posts) AS en_total,
+		        SUM(total_firehose_posts) AS firehose_total
+		 FROM sentiment_history
+		 WHERE timestamp < ?
+		 GROUP BY day
+		 ORDER BY day ASC`,
+		timeToStr(currentWeekStart),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query weekly post totals: %w", err)
+	}
+	defer rows.Close()
+
+	weekMap := make(map[string]*WeeklyPostTotal)
+	var weekOrder []string
+	for rows.Next() {
+		var dateStr string
+		var enPosts, firehosePosts int
+		if err := rows.Scan(&dateStr, &enPosts, &firehosePosts); err != nil {
+			return nil, fmt.Errorf("scan daily post total: %w", err)
+		}
+		t, _ := time.Parse("2006-01-02", dateStr)
+		wd := int(t.Weekday())
+		if wd == 0 {
+			wd = 7
+		}
+		monday := t.AddDate(0, 0, -(wd - 1))
+		key := monday.Format("2006-01-02")
+		if _, ok := weekMap[key]; !ok {
+			weekMap[key] = &WeeklyPostTotal{WeekStart: monday}
+			weekOrder = append(weekOrder, key)
+		}
+		weekMap[key].Count += enPosts
+		weekMap[key].TotalFirehosePosts += firehosePosts
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	results := make([]WeeklyPostTotal, 0, len(weekOrder))
+	for _, key := range weekOrder {
+		results = append(results, *weekMap[key])
+	}
+	return results, nil
+}

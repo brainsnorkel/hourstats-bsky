@@ -106,7 +106,8 @@ func NewSparklineGenerator(config *SparklineConfig) *SparklineGenerator {
 	return &SparklineGenerator{config: config}
 }
 
-// GenerateSentimentSparkline creates a PNG image of sentiment data over time
+// GenerateSentimentSparkline creates a PNG image of sentiment data over time.
+// If hourlyVolume is non-nil, a background bar chart of post counts is drawn.
 func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.SentimentDataPoint) ([]byte, error) {
 	if len(dataPoints) == 0 {
 		return nil, fmt.Errorf("no data points provided")

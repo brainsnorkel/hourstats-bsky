@@ -29,7 +29,7 @@ import (
 const outputDir = "test-results/graph-lab"
 
 func main() {
-	chartType := flag.String("type", "all", "Chart type to generate: sparkline, yearly, or all")
+	chartType := flag.String("type", "all", "Chart type to generate: sparkline, yearly, daily-volume, yearly-volume, or all")
 	seed := flag.Int64("seed", 42, "Random seed for reproducible data (0 for random)")
 	flag.Parse()
 
@@ -46,11 +46,17 @@ func main() {
 		generateSparklineCharts(*seed)
 	case "yearly":
 		generateYearlyCharts(*seed)
+	case "daily-volume":
+		generateDailyVolumeCharts(*seed)
+	case "yearly-volume":
+		generateYearlyVolumeCharts(*seed)
 	case "all":
 		generateSparklineCharts(*seed)
 		generateYearlyCharts(*seed)
+		generateDailyVolumeCharts(*seed)
+		generateYearlyVolumeCharts(*seed)
 	default:
-		log.Fatalf("Unknown chart type: %s (use sparkline, yearly, or all)", *chartType)
+		log.Fatalf("Unknown chart type: %s (use sparkline, yearly, daily-volume, yearly-volume, or all)", *chartType)
 	}
 
 	fmt.Printf("\nAll charts saved to %s/\n", outputDir)
@@ -259,7 +265,6 @@ func syntheticYearlySteadilyPositive(rng *rand.Rand) []state.YearlySparklineData
 	return generateYearlyData(rng, 365, 18.0, 5.0)
 }
 
-// generateYearlyData creates synthetic YearlySparklineDataPoints.
 func generateYearlyData(rng *rand.Rand, days int, center, amplitude float64) []state.YearlySparklineDataPoint {
 	endDate := time.Now().UTC().Truncate(24 * time.Hour)
 	startDate := endDate.AddDate(0, 0, -days+1)
@@ -300,4 +305,202 @@ func generateYearlyData(rng *rand.Rand, days int, center, amplitude float64) []s
 		}
 	}
 	return points
+}
+
+// ---------------------------------------------------------------------------
+// Daily volume charts (7-day bar charts)
+// ---------------------------------------------------------------------------
+
+func generateDailyVolumeCharts(seed int64) {
+	fmt.Println("=== Generating 7-day volume charts ===")
+
+	scenarios := []struct {
+		name string
+		data func(*rand.Rand) []sparkline.DailyVolume
+	}{
+		{"baseline", syntheticDailyVolumeBaseline},
+		{"high-volume", syntheticDailyVolumeHigh},
+		{"growing", syntheticDailyVolumeGrowing},
+		{"with-total-posts", syntheticDailyVolumeWithTotal},
+	}
+
+	gen := sparkline.NewDailyVolumeGenerator(nil)
+
+	for _, sc := range scenarios {
+		rng := rand.New(rand.NewSource(seed))
+		data := sc.data(rng)
+
+		img, err := gen.GenerateDailyVolumeChart(data)
+		if err != nil {
+			log.Printf("  [FAIL] %s: %v", sc.name, err)
+			continue
+		}
+
+		path := filepath.Join(outputDir, fmt.Sprintf("daily-volume-%s.png", sc.name))
+		if err := os.WriteFile(path, img, 0644); err != nil {
+			log.Printf("  [FAIL] %s: %v", sc.name, err)
+			continue
+		}
+		fmt.Printf("  [OK] %s -> %s (%d bytes)\n", sc.name, path, len(img))
+	}
+}
+
+// syntheticDailyVolumeBaseline generates a typical 7-day EN-only dataset (~90k-120k/day).
+func syntheticDailyVolumeBaseline(rng *rand.Rand) []sparkline.DailyVolume {
+	return generateDailyVolumeData(rng, 7, 100_000, 20_000, false, 0)
+}
+
+// syntheticDailyVolumeHigh generates high-volume days (~200k+/day).
+func syntheticDailyVolumeHigh(rng *rand.Rand) []sparkline.DailyVolume {
+	return generateDailyVolumeData(rng, 7, 220_000, 30_000, false, 0)
+}
+
+// syntheticDailyVolumeGrowing generates a week with steadily increasing volume.
+func syntheticDailyVolumeGrowing(rng *rand.Rand) []sparkline.DailyVolume {
+	days := make([]sparkline.DailyVolume, 7)
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+	for i := 0; i < 7; i++ {
+		base := 60_000 + i*20_000
+		days[i] = sparkline.DailyVolume{
+			Date:    now.AddDate(0, 0, i-6),
+			ENPosts: base + rng.Intn(10_000),
+		}
+	}
+	return days
+}
+
+// syntheticDailyVolumeWithTotal generates 7 days with both total firehose and EN counts.
+func syntheticDailyVolumeWithTotal(rng *rand.Rand) []sparkline.DailyVolume {
+	return generateDailyVolumeData(rng, 7, 110_000, 15_000, true, 3.0)
+}
+
+func generateDailyVolumeData(rng *rand.Rand, count, center, amplitude int, withTotal bool, totalMultiplier float64) []sparkline.DailyVolume {
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+	days := make([]sparkline.DailyVolume, count)
+	for i := 0; i < count; i++ {
+		enPosts := center + rng.Intn(amplitude*2) - amplitude
+		if enPosts < 1000 {
+			enPosts = 1000
+		}
+		d := sparkline.DailyVolume{
+			Date:    now.AddDate(0, 0, i-count+1),
+			ENPosts: enPosts,
+		}
+		if withTotal {
+			d.TotalPosts = int(float64(enPosts)*totalMultiplier) + rng.Intn(amplitude)
+		}
+		days[i] = d
+	}
+	return days
+}
+
+// ---------------------------------------------------------------------------
+// Yearly volume charts (weekly bar charts for full year)
+// ---------------------------------------------------------------------------
+
+func generateYearlyVolumeCharts(seed int64) {
+	fmt.Println("=== Generating yearly volume charts ===")
+
+	scenarios := []struct {
+		name string
+		data func(*rand.Rand) []sparkline.WeeklyVolume
+	}{
+		{"baseline", syntheticYearlyVolumeBaseline},
+		{"growing", syntheticYearlyVolumeGrowing},
+		{"with-total-posts", syntheticYearlyVolumeWithTotal},
+		{"seasonal", syntheticYearlyVolumeSeasonal},
+	}
+
+	gen := sparkline.NewYearlyVolumeGenerator(nil)
+
+	for _, sc := range scenarios {
+		rng := rand.New(rand.NewSource(seed))
+		data := sc.data(rng)
+
+		img, err := gen.GenerateYearlyVolumeChart(data)
+		if err != nil {
+			log.Printf("  [FAIL] %s: %v", sc.name, err)
+			continue
+		}
+
+		path := filepath.Join(outputDir, fmt.Sprintf("yearly-volume-%s.png", sc.name))
+		if err := os.WriteFile(path, img, 0644); err != nil {
+			log.Printf("  [FAIL] %s: %v", sc.name, err)
+			continue
+		}
+		fmt.Printf("  [OK] %s -> %s (%d bytes)\n", sc.name, path, len(img))
+	}
+}
+
+// syntheticYearlyVolumeBaseline generates ~52 weeks of steady EN-only volume (~600k-800k/week).
+func syntheticYearlyVolumeBaseline(rng *rand.Rand) []sparkline.WeeklyVolume {
+	return generateWeeklyVolumeData(rng, 52, 700_000, 100_000, false, 0)
+}
+
+// syntheticYearlyVolumeGrowing generates a year with steadily increasing weekly volume.
+func syntheticYearlyVolumeGrowing(rng *rand.Rand) []sparkline.WeeklyVolume {
+	weeks := make([]sparkline.WeeklyVolume, 52)
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+	// find most recent Monday
+	for now.Weekday() != time.Monday {
+		now = now.AddDate(0, 0, -1)
+	}
+	for i := 0; i < 52; i++ {
+		base := 300_000 + i*12_000
+		weeks[i] = sparkline.WeeklyVolume{
+			WeekStart: now.AddDate(0, 0, (i-51)*7),
+			ENPosts:   base + rng.Intn(50_000),
+		}
+	}
+	return weeks
+}
+
+// syntheticYearlyVolumeWithTotal generates 52 weeks with paired total + EN bars.
+func syntheticYearlyVolumeWithTotal(rng *rand.Rand) []sparkline.WeeklyVolume {
+	return generateWeeklyVolumeData(rng, 52, 650_000, 80_000, true, 2.8)
+}
+
+// syntheticYearlyVolumeSeasonal generates a year with a seasonal sine pattern.
+func syntheticYearlyVolumeSeasonal(rng *rand.Rand) []sparkline.WeeklyVolume {
+	weeks := make([]sparkline.WeeklyVolume, 52)
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+	for now.Weekday() != time.Monday {
+		now = now.AddDate(0, 0, -1)
+	}
+	for i := 0; i < 52; i++ {
+		seasonal := math.Sin(float64(i)/52.0*2*math.Pi) * 200_000
+		enPosts := 600_000 + int(seasonal) + rng.Intn(60_000) - 30_000
+		if enPosts < 50_000 {
+			enPosts = 50_000
+		}
+		weeks[i] = sparkline.WeeklyVolume{
+			WeekStart: now.AddDate(0, 0, (i-51)*7),
+			ENPosts:   enPosts,
+		}
+	}
+	return weeks
+}
+
+func generateWeeklyVolumeData(rng *rand.Rand, count, center, amplitude int, withTotal bool, totalMultiplier float64) []sparkline.WeeklyVolume {
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+	// find most recent Monday
+	for now.Weekday() != time.Monday {
+		now = now.AddDate(0, 0, -1)
+	}
+	weeks := make([]sparkline.WeeklyVolume, count)
+	for i := 0; i < count; i++ {
+		enPosts := center + rng.Intn(amplitude*2) - amplitude
+		if enPosts < 10_000 {
+			enPosts = 10_000
+		}
+		w := sparkline.WeeklyVolume{
+			WeekStart: now.AddDate(0, 0, (i-count+1)*7),
+			ENPosts:   enPosts,
+		}
+		if withTotal {
+			w.TotalPosts = int(float64(enPosts)*totalMultiplier) + rng.Intn(amplitude)
+		}
+		weeks[i] = w
+	}
+	return weeks
 }

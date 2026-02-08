@@ -57,7 +57,7 @@ func main() {
 	}
 	yearlyAverage := sum / float64(len(yearlyData))
 
-	log.Printf("Yearly stats: min=%.2f%% (%s), max=%.2f%% (%s), avg=%.2f%%", 
+	log.Printf("Yearly stats: min=%.2f%% (%s), max=%.2f%% (%s), avg=%.2f%%",
 		minSentiment, minDate, maxSentiment, maxDate, yearlyAverage)
 
 	// Initialize yearly sparkline generator
@@ -79,7 +79,7 @@ func main() {
 	} else {
 		postText = "📊 Bluesky Sentiment"
 	}
-	
+
 	// Generate Wikipedia links
 	generateWikipediaLink := func(dateStr string) string {
 		date, err := time.Parse("2006-01-02", dateStr)
@@ -121,7 +121,7 @@ func main() {
 			extremeMessages = append(extremeMessages, fmt.Sprintf("Highest: %.1f%%", maxSentiment))
 		}
 	}
-	
+
 	if len(extremeMessages) > 0 {
 		postText += "\n\n" + strings.Join(extremeMessages, "\n")
 	}
@@ -178,4 +178,3 @@ func main() {
 	fmt.Printf("📝 Post text: %s\n", textPath)
 	fmt.Printf("🎨 Alt text: %s\n", altPath)
 }
-

@@ -163,7 +163,7 @@ func (h *SparklinePosterHandler) HandleRequest(ctx context.Context, event StepFu
 	// Check if we have a top post URI to reply to
 	if runState.TopPostURI != "" && runState.TopPostCID != "" {
 		log.Printf("Posting sparkline as reply to top post: %s", runState.TopPostURI)
-		if err := blueskyClient.PostWithImageAsReply(ctx, postText, imageData, altText, runState.TopPostURI, runState.TopPostCID); err != nil {
+		if _, _, err := blueskyClient.PostWithImageAsReply(ctx, postText, imageData, altText, runState.TopPostURI, runState.TopPostCID); err != nil {
 			log.Printf("Failed to post sparkline as reply: %v", err)
 			// Fall back to standalone posting
 			return h.postStandaloneSparkline(ctx, blueskyClient, postText, imageData, altText)

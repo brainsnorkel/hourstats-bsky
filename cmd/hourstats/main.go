@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -22,6 +23,10 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
+
+// firehosePostCount tracks ALL posts seen from the Jetstream firehose
+// (before the English filter). It is snapshotted and reset each analysis cycle.
+var firehosePostCount atomic.Int64
 
 func main() {
 	profile := envOr("HOURSTATS_PROFILE", "staging")
@@ -88,6 +93,9 @@ func main() {
 		case <-backupTicker.C:
 			runBackup(db, dataDir, profile, backupRetainDays)
 			runDailyAggregation(ctx, db)
+			if time.Now().UTC().Day() == 1 {
+				runYearlyPosting(ctx, db, handle, password, dryRun)
+			}
 		}
 	}
 }
@@ -99,14 +107,14 @@ func main() {
 func runJetstream(ctx context.Context, db *store.Store) {
 	cfg := jetstream.ConsumerConfig{
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
+			firehosePostCount.Add(1)
+
 			if rec.Reply != nil {
 				return
 			}
 			if strings.TrimSpace(rec.Text) == "" {
 				return
 			}
-			// Filter to English posts only — VADER sentiment is English-only,
-			// non-English posts score near-zero and dilute the average.
 			if !isEnglish(rec.Langs) {
 				return
 			}
@@ -233,6 +241,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		slog.Error("create run failed", "error", err)
 	}
 
+	firehoseSnapshot := int(firehosePostCount.Swap(0))
+
 	avgCompound := netSentimentPct / 100.0
 	sdp := store.SentimentDataPoint{
 		RunID:                runID,
@@ -241,6 +251,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		NetSentimentPercent:  netSentimentPct,
 		SentimentCategory:    overallSentiment,
 		TotalPosts:           len(posts),
+		TotalFirehosePosts:   firehoseSnapshot,
 		CreatedAt:            time.Now().UTC(),
 		TTL:                  time.Now().Add(30 * 24 * time.Hour).Unix(),
 	}
@@ -263,7 +274,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			_ = db.UpdateRun(ctx, runState)
 		}
 
-		postSparkline(ctx, db, bskyClient, postedURI, postedCID, dryRun)
+		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, postedURI, postedCID, dryRun)
+		if sparkURI != "" {
+			postDailyVolumeChart(ctx, db, bskyClient, sparkURI, sparkCID, dryRun)
+		}
 	}
 
 	purged, _ := db.PurgeExpiredPosts(ctx, 2*time.Hour)
@@ -283,23 +297,24 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 // Sparkline
 // ---------------------------------------------------------------------------
 
-func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, parentURI, parentCID string, dryRun bool) {
+func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, parentURI, parentCID string, dryRun bool) (string, string) {
 	history, err := db.GetSentimentHistory(ctx, 7*24*time.Hour)
 	if err != nil {
 		slog.Error("get sentiment history failed", "error", err)
-		return
+		return "", ""
 	}
 	if len(history) < 2 {
 		slog.Info("insufficient data for sparkline", "points", len(history))
-		return
+		return "", ""
 	}
 
 	statePoints := toStateSentimentPoints(history)
+
 	gen := sparkline.NewSparklineGenerator(nil)
 	imgData, err := gen.GenerateSentimentSparkline(statePoints)
 	if err != nil {
 		slog.Error("generate sparkline failed", "error", err)
-		return
+		return "", ""
 	}
 
 	postText := "Seven day Bluesky sentiment"
@@ -307,18 +322,63 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 
 	if dryRun {
 		slog.Info("DRY_RUN: would post sparkline", "points", len(history), "image_bytes", len(imgData))
+		return "", ""
+	}
+
+	var sparkURI, sparkCID string
+	if parentURI != "" && parentCID != "" {
+		sparkURI, sparkCID, err = bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, parentURI, parentCID)
+		if err != nil {
+			slog.Warn("sparkline reply failed, posting standalone", "error", err)
+			sparkURI, sparkCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+		}
+	} else {
+		sparkURI, sparkCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+	}
+	slog.Info("sparkline posted", "points", len(history))
+	return sparkURI, sparkCID
+}
+
+func postDailyVolumeChart(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, parentURI, parentCID string, dryRun bool) {
+	dailyCounts, err := db.GetDailyPostCounts(ctx, 7*24*time.Hour)
+	if err != nil {
+		slog.Warn("get daily post counts failed", "error", err)
+		return
+	}
+	if len(dailyCounts) < 2 {
+		slog.Info("insufficient data for daily volume chart", "days", len(dailyCounts))
+		return
+	}
+
+	days := make([]sparkline.DailyVolume, len(dailyCounts))
+	for i, dc := range dailyCounts {
+		days[i] = sparkline.DailyVolume{Date: dc.Date, TotalPosts: dc.TotalFirehosePosts, ENPosts: dc.Count}
+	}
+
+	gen := sparkline.NewDailyVolumeGenerator(nil)
+	imgData, err := gen.GenerateDailyVolumeChart(days)
+	if err != nil {
+		slog.Error("generate daily volume chart failed", "error", err)
+		return
+	}
+
+	postText := "Post Volumes (UTC)"
+	altText := fmt.Sprintf("Daily post volume chart showing %d days of English posts analysed.", len(days))
+
+	if dryRun {
+		slog.Info("DRY_RUN: would post daily volume chart", "days", len(days), "image_bytes", len(imgData))
 		return
 	}
 
 	if parentURI != "" && parentCID != "" {
-		if err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, parentURI, parentCID); err != nil {
-			slog.Warn("sparkline reply failed, posting standalone", "error", err)
+		if _, _, err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, parentURI, parentCID); err != nil {
+			slog.Warn("daily volume reply failed, posting standalone", "error", err)
 			_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
 		}
 	} else {
 		_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
 	}
-	slog.Info("sparkline posted", "points", len(history))
+	slog.Info("daily volume chart posted", "days", len(days))
 }
 
 func generateSparklineAltText(points []state.SentimentDataPoint) string {
@@ -341,6 +401,220 @@ func generateSparklineAltText(points []state.SentimentDataPoint) string {
 	avg := sum / float64(len(points))
 	return fmt.Sprintf("Seven day Bluesky sentiment. Latest: %.1f%%. High: %.1f%%. Low: %.1f%%. Average: %.1f%%.",
 		latest.NetSentimentPercent, hi, lo, avg)
+}
+
+// ---------------------------------------------------------------------------
+// Yearly posting (1st of each month)
+// ---------------------------------------------------------------------------
+
+func runYearlyPosting(ctx context.Context, db *store.Store, handle, password string, dryRun bool) {
+	slog.Info("yearly posting check triggered")
+
+	yearlyData, err := db.GetYearlySentimentData(ctx)
+	if err != nil {
+		slog.Error("get yearly sentiment data failed", "error", err)
+		return
+	}
+	if len(yearlyData) < 7 {
+		slog.Info("insufficient data for yearly chart", "days", len(yearlyData))
+		return
+	}
+
+	statePoints := toStateYearlyPoints(yearlyData)
+
+	gen := sparkline.NewYearlySparklineGenerator(nil)
+	imgData, err := gen.GenerateYearlySentimentSparkline(statePoints)
+	if err != nil {
+		slog.Error("generate yearly sparkline failed", "error", err)
+		return
+	}
+
+	postText := buildYearlyPostText(statePoints)
+	altText := buildYearlyAltText(statePoints)
+
+	if dryRun {
+		slog.Info("DRY_RUN: would post yearly charts", "days", len(yearlyData), "image_bytes", len(imgData))
+		return
+	}
+
+	bskyClient := client.New(handle, password)
+	if err := bskyClient.Authenticate(); err != nil {
+		slog.Error("bluesky auth for yearly post failed", "error", err)
+		return
+	}
+
+	eventDates := buildEventDates(statePoints)
+	facets := client.CreateWikipediaLinkFacets(postText, eventDates...)
+
+	var sentimentURI, sentimentCID string
+	if len(facets) > 0 {
+		sentimentURI, sentimentCID, err = bskyClient.PostWithImage(ctx, postText, imgData, altText, facets)
+	} else {
+		sentimentURI, sentimentCID, err = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+	}
+	if err != nil {
+		slog.Error("post yearly sentiment chart failed", "error", err)
+		return
+	}
+	slog.Info("yearly sentiment chart posted", "uri", sentimentURI)
+
+	if err := bskyClient.PinPost(ctx, sentimentURI, sentimentCID); err != nil {
+		slog.Warn("pin yearly post failed", "error", err)
+	}
+
+	postYearlyVolumeChart(ctx, db, bskyClient, sentimentURI, sentimentCID, dryRun)
+}
+
+func postYearlyVolumeChart(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, parentURI, parentCID string, dryRun bool) {
+	weeklyTotals, err := db.GetWeeklyPostTotals(ctx)
+	if err != nil {
+		slog.Warn("get weekly post totals failed", "error", err)
+		return
+	}
+	if len(weeklyTotals) < 2 {
+		slog.Info("insufficient data for yearly volume chart", "weeks", len(weeklyTotals))
+		return
+	}
+
+	weeks := make([]sparkline.WeeklyVolume, len(weeklyTotals))
+	for i, wt := range weeklyTotals {
+		weeks[i] = sparkline.WeeklyVolume{WeekStart: wt.WeekStart, TotalPosts: wt.TotalFirehosePosts, ENPosts: wt.Count}
+	}
+
+	gen := sparkline.NewYearlyVolumeGenerator(nil)
+	imgData, err := gen.GenerateYearlyVolumeChart(weeks)
+	if err != nil {
+		slog.Error("generate yearly volume chart failed", "error", err)
+		return
+	}
+
+	postText := "Post Volumes (UTC)"
+	altText := fmt.Sprintf("Yearly post volume chart showing %d weeks of data.", len(weeks))
+
+	if dryRun {
+		slog.Info("DRY_RUN: would post yearly volume chart", "weeks", len(weeks), "image_bytes", len(imgData))
+		return
+	}
+
+	if parentURI != "" && parentCID != "" {
+		if _, _, err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, parentURI, parentCID); err != nil {
+			slog.Warn("yearly volume reply failed, posting standalone", "error", err)
+			_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+		}
+	} else {
+		_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+	}
+	slog.Info("yearly volume chart posted", "weeks", len(weeks))
+}
+
+func toStateYearlyPoints(points []store.YearlySparklineDataPoint) []state.YearlySparklineDataPoint {
+	out := make([]state.YearlySparklineDataPoint, len(points))
+	for i, p := range points {
+		out[i] = state.YearlySparklineDataPoint{
+			Date:                p.Date,
+			AverageSentiment:    p.AverageSentiment,
+			MinSentiment:        p.MinSentiment,
+			MaxSentiment:        p.MaxSentiment,
+			Q1Sentiment:         p.Q1Sentiment,
+			MedianSentiment:     p.MedianSentiment,
+			Q3Sentiment:         p.Q3Sentiment,
+			Timestamp:           p.Timestamp,
+			NetSentimentPercent: p.NetSentimentPercent,
+		}
+	}
+	return out
+}
+
+func buildYearlyPostText(points []state.YearlySparklineDataPoint) string {
+	if len(points) == 0 {
+		return "Bluesky Sentiment"
+	}
+	startDate := points[0].Timestamp.Format("2006-01-02")
+	endDate := points[len(points)-1].Timestamp.Format("2006-01-02")
+	text := fmt.Sprintf("Bluesky Sentiment %s - %s", startDate, endDate)
+
+	var minSent, maxSent float64
+	var minDate, maxDate string
+	minSent = points[0].AverageSentiment
+	maxSent = points[0].AverageSentiment
+	for _, p := range points {
+		if p.AverageSentiment < minSent {
+			minSent = p.AverageSentiment
+			minDate = p.Date
+		}
+		if p.AverageSentiment > maxSent {
+			maxSent = p.AverageSentiment
+			maxDate = p.Date
+		}
+	}
+
+	var extremes []string
+	if t, err := time.Parse("2006-01-02", minDate); err == nil {
+		extremes = append(extremes, fmt.Sprintf("Lowest: %.1f%% %s events", minSent, t.Format("Jan 2")))
+	}
+	if t, err := time.Parse("2006-01-02", maxDate); err == nil {
+		extremes = append(extremes, fmt.Sprintf("Highest: %.1f%% %s events", maxSent, t.Format("Jan 2")))
+	}
+	if len(extremes) > 0 {
+		text += "\n\n" + strings.Join(extremes, "\n")
+	}
+	return text
+}
+
+func buildYearlyAltText(points []state.YearlySparklineDataPoint) string {
+	if len(points) == 0 {
+		return "Yearly Bluesky sentiment chart"
+	}
+	var sum, minS, maxS float64
+	var minDate, maxDate string
+	minS = points[0].AverageSentiment
+	maxS = points[0].AverageSentiment
+	for _, p := range points {
+		sum += p.AverageSentiment
+		if p.AverageSentiment < minS {
+			minS = p.AverageSentiment
+			minDate = p.Date
+		}
+		if p.AverageSentiment > maxS {
+			maxS = p.AverageSentiment
+			maxDate = p.Date
+		}
+	}
+	avg := sum / float64(len(points))
+	latest := points[len(points)-1]
+	return fmt.Sprintf("Yearly Bluesky sentiment trend. Current: %.1f%% (%s). High: %.1f%% (%s). Low: %.1f%% (%s). Average: %.1f%%.",
+		latest.AverageSentiment, latest.Date, maxS, maxDate, minS, minDate, avg)
+}
+
+func buildEventDates(points []state.YearlySparklineDataPoint) []client.EventDate {
+	if len(points) == 0 {
+		return nil
+	}
+	var minSent, maxSent float64
+	var minDate, maxDate string
+	minSent = points[0].AverageSentiment
+	maxSent = points[0].AverageSentiment
+	for _, p := range points {
+		if p.AverageSentiment < minSent {
+			minSent = p.AverageSentiment
+			minDate = p.Date
+		}
+		if p.AverageSentiment > maxSent {
+			maxSent = p.AverageSentiment
+			maxDate = p.Date
+		}
+	}
+	_ = minSent
+	_ = maxSent
+
+	var dates []client.EventDate
+	if t, err := time.Parse("2006-01-02", minDate); err == nil {
+		dates = append(dates, client.EventDate{DisplayText: t.Format("Jan 2"), FullDate: minDate})
+	}
+	if t, err := time.Parse("2006-01-02", maxDate); err == nil {
+		dates = append(dates, client.EventDate{DisplayText: t.Format("Jan 2"), FullDate: maxDate})
+	}
+	return dates
 }
 
 // ---------------------------------------------------------------------------
