@@ -155,6 +155,78 @@ func TestGroupAndLabel_RateLimit(t *testing.T) {
 	}
 }
 
+func TestGenerateAltText_Success(t *testing.T) {
+	altBody := "Bluesky users are discussing US Politics and Weather today. The bump chart shows Politics holding steady at number one while Weather climbed from number three."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{Content: geminiContent{
+					Parts: []geminiPart{{Text: altBody}},
+				}},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	ranked := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "US Politics", Description: "American politics"}, PostCount: 500}, TopicID: "t1", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather", Description: "Weather discussion"}, PostCount: 300}, TopicID: "t2", Rank: 2},
+	}
+	trajectories := map[string][]int{"t1": {1, 1, 1}, "t2": {3, 2, 2}}
+
+	alt := g.GenerateAltText(context.Background(), ranked, trajectories)
+	if alt != altBody {
+		t.Errorf("expected LLM alt text, got: %q", alt)
+	}
+}
+
+func TestGenerateAltText_APIError_Fallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	ranked := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics"}}, TopicID: "t1", Rank: 1},
+	}
+
+	alt := g.GenerateAltText(context.Background(), ranked, nil)
+	if alt != FormatAltText(ranked) {
+		t.Errorf("expected fallback alt text, got: %q", alt)
+	}
+}
+
+func TestGenerateAltText_TruncatesLongResponse(t *testing.T) {
+	longText := ""
+	for i := 0; i < 200; i++ {
+		longText += "This is a very long sentence. "
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{Content: geminiContent{
+					Parts: []geminiPart{{Text: longText}},
+				}},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	ranked := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Test"}}, TopicID: "t1", Rank: 1},
+	}
+
+	alt := g.GenerateAltText(context.Background(), ranked, nil)
+	if len(alt) > 1000 {
+		t.Errorf("expected alt text truncated to 1000 chars, got %d", len(alt))
+	}
+}
+
 func TestFallbackClusters(t *testing.T) {
 	terms := []TermScore{
 		{Term: "trump", Score: 12.5},

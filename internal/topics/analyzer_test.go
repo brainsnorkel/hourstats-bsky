@@ -222,6 +222,36 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 	}
 }
 
+func TestBuildTrajectories(t *testing.T) {
+	snapshots := []store.TopicSnapshotRow{
+		{SnapshotTime: "2026-01-01T00:00:00Z", TopicID: "t1", Rank: 3},
+		{SnapshotTime: "2026-01-01T00:00:00Z", TopicID: "t2", Rank: 1},
+		{SnapshotTime: "2026-01-01T01:00:00Z", TopicID: "t1", Rank: 1},
+		{SnapshotTime: "2026-01-01T01:00:00Z", TopicID: "t2", Rank: 2},
+		{SnapshotTime: "2026-01-01T02:00:00Z", TopicID: "t1", Rank: 1},
+	}
+	current := []IdentifiedTopic{
+		{TopicID: "t1", Rank: 1},
+		{TopicID: "t2", Rank: 2},
+	}
+
+	traj := buildTrajectories(snapshots, current)
+
+	if len(traj) != 2 {
+		t.Fatalf("expected 2 trajectories, got %d", len(traj))
+	}
+
+	t1 := traj["t1"]
+	if len(t1) != 3 || t1[0] != 3 || t1[1] != 1 || t1[2] != 1 {
+		t.Errorf("t1 trajectory: expected [3 1 1], got %v", t1)
+	}
+
+	t2 := traj["t2"]
+	if len(t2) != 3 || t2[0] != 1 || t2[1] != 2 || t2[2] != 0 {
+		t.Errorf("t2 trajectory: expected [1 2 0], got %v", t2)
+	}
+}
+
 func TestConvertFacets(t *testing.T) {
 	facets := []Facet{
 		{ByteStart: 0, ByteEnd: 9, Type: FacetTag, Value: "trending"},

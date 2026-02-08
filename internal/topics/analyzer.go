@@ -178,7 +178,10 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	}
 
 	text, facets := FormatTrendingPost(latestTopics, previous)
-	altText := FormatAltText(latestTopics)
+
+	trajectories := buildTrajectories(snapshots, latestTopics)
+	altText := a.grouper.GenerateAltText(ctx, latestTopics, trajectories)
+	log.Printf("topics: alt text (%d chars): %s", len(altText), altText)
 
 	chartData, err := sparkline.GenerateTrendingChart(snapshots)
 	if err != nil {
@@ -204,6 +207,42 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 
 	log.Printf("topics: trending post published (%.1fs)", time.Since(start).Seconds())
 	return nil
+}
+
+func buildTrajectories(snapshots []store.TopicSnapshotRow, current []IdentifiedTopic) map[string][]int {
+	timeSlots := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, s := range snapshots {
+		if !seen[s.SnapshotTime] {
+			seen[s.SnapshotTime] = true
+			timeSlots = append(timeSlots, s.SnapshotTime)
+		}
+	}
+
+	rankByTimeAndTopic := make(map[string]map[string]int)
+	for _, s := range snapshots {
+		if rankByTimeAndTopic[s.SnapshotTime] == nil {
+			rankByTimeAndTopic[s.SnapshotTime] = make(map[string]int)
+		}
+		rankByTimeAndTopic[s.SnapshotTime][s.TopicID] = s.Rank
+	}
+
+	currentIDs := make(map[string]bool)
+	for _, t := range current {
+		currentIDs[t.TopicID] = true
+	}
+
+	result := make(map[string][]int)
+	for id := range currentIDs {
+		ranks := make([]int, len(timeSlots))
+		for i, ts := range timeSlots {
+			if r, ok := rankByTimeAndTopic[ts][id]; ok {
+				ranks[i] = r
+			}
+		}
+		result[id] = ranks
+	}
+	return result
 }
 
 func convertFacets(facets []Facet) []*bsky.RichtextFacet {
