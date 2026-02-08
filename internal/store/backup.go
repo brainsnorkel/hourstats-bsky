@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +11,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 const (
@@ -89,6 +95,54 @@ func (s *Store) BackupToWriter(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("copy backup: %w", err)
 	}
 	return nil
+}
+
+// S3BackupConfig holds the configuration for S3 backup uploads.
+type S3BackupConfig struct {
+	Bucket          string
+	Region          string
+	AccessKeyID     string
+	SecretAccessKey string
+	Profile         string
+}
+
+// BackupToS3 creates a point-in-time backup and uploads it to S3.
+// The S3 key follows the pattern: <profile>/<timestamp>.db
+func (s *Store) BackupToS3(ctx context.Context, cfg S3BackupConfig) (string, error) {
+	ts := time.Now().UTC().Format(backupTimeFormat)
+	key := fmt.Sprintf("%s/%s.db", cfg.Profile, ts)
+
+	var buf bytes.Buffer
+	if err := s.BackupToWriter(ctx, &buf); err != nil {
+		return "", fmt.Errorf("backup to buffer: %w", err)
+	}
+
+	awsCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(cfg.Region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			cfg.AccessKeyID, cfg.SecretAccessKey, "",
+		)),
+	)
+	if err != nil {
+		return "", fmt.Errorf("load aws config: %w", err)
+	}
+
+	client := s3.NewFromConfig(awsCfg)
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(cfg.Bucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(buf.Bytes()),
+	})
+	if err != nil {
+		return "", fmt.Errorf("s3 put: %w", err)
+	}
+
+	slog.Info("backup uploaded to S3",
+		"bucket", cfg.Bucket,
+		"key", key,
+		"size_bytes", buf.Len(),
+	)
+	return fmt.Sprintf("s3://%s/%s", cfg.Bucket, key), nil
 }
 
 func pruneBackups(dir, profile string, retainDays int) (int, error) {

@@ -37,7 +37,12 @@ func main() {
 	password := os.Getenv("BLUESKY_PASSWORD")
 	dryRun := envBool("DRY_RUN", false)
 	analysisMinutes := envInt("ANALYSIS_INTERVAL_MINUTES", 30)
-	backupRetainDays := envInt("BACKUP_RETAIN_DAYS", 7)
+	backupRetainDays := envInt("BACKUP_RETAIN_DAYS", 1)
+
+	s3BackupBucket := os.Getenv("S3_BACKUP_BUCKET")
+	s3BackupRegion := envOr("S3_BACKUP_REGION", "us-west-2")
+	s3BackupKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
+	s3BackupSecret := os.Getenv("AWS_SECRET_ACCESS_KEY")
 
 	trendingEnabled := envBool("TRENDING_ENABLED", false)
 	geminiAPIKey := os.Getenv("GOOGLE_AI_API_KEY")
@@ -104,7 +109,19 @@ func main() {
 		trendingPostCh = tpTicker.C
 	}
 
-	runBackup(db, dataDir, profile, backupRetainDays)
+	var s3Cfg *store.S3BackupConfig
+	if s3BackupBucket != "" && s3BackupKeyID != "" && s3BackupSecret != "" {
+		s3Cfg = &store.S3BackupConfig{
+			Bucket:          s3BackupBucket,
+			Region:          s3BackupRegion,
+			AccessKeyID:     s3BackupKeyID,
+			SecretAccessKey: s3BackupSecret,
+			Profile:         profile,
+		}
+		slog.Info("s3 backup enabled", "bucket", s3BackupBucket, "region", s3BackupRegion)
+	}
+
+	runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 
 	slog.Info("scheduler started", "analysis_every", fmt.Sprintf("%dm", analysisMinutes))
 
@@ -119,7 +136,7 @@ func main() {
 			runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes)
 
 		case <-backupTicker.C:
-			runBackup(db, dataDir, profile, backupRetainDays)
+			runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 			runDailyAggregation(ctx, db)
 			runDailyTopPostQuote(ctx, db, handle, password, dryRun)
 			if time.Now().UTC().Day() == 1 {
@@ -804,14 +821,24 @@ func runDailyTopPostQuote(ctx context.Context, db *store.Store, handle, password
 // Backup
 // ---------------------------------------------------------------------------
 
-func runBackup(db *store.Store, dataDir, profile string, retainDays int) {
+func runBackup(db *store.Store, dataDir, profile string, retainDays int, s3Cfg *store.S3BackupConfig) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+
 	path, err := db.Backup(ctx, dataDir, profile, retainDays)
 	if err != nil {
-		slog.Error("backup failed", "error", err)
+		slog.Error("local backup failed", "error", err)
 	} else {
-		slog.Info("backup complete", "path", path)
+		slog.Info("local backup complete", "path", path)
+	}
+
+	if s3Cfg != nil {
+		s3Path, err := db.BackupToS3(ctx, *s3Cfg)
+		if err != nil {
+			slog.Error("s3 backup failed", "error", err)
+		} else {
+			slog.Info("s3 backup complete", "path", s3Path)
+		}
 	}
 }
 
