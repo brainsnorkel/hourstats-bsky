@@ -57,7 +57,7 @@ func TestFormatTrendingPost_MovementIndicators(t *testing.T) {
 
 	text, _ := FormatTrendingPost(ranked, previous)
 
-	if !strings.Contains(text, "#1 A (^2)") {
+	if !strings.Contains(text, "#1 A (+2)") {
 		t.Errorf("expected rose indicator, text: %q", text)
 	}
 	if !strings.Contains(text, "#2 B (->)") {
@@ -77,7 +77,7 @@ func TestFormatTrendingPost_FellIndicator(t *testing.T) {
 	}
 
 	text, _ := FormatTrendingPost(ranked, previous)
-	if !strings.Contains(text, "(v2)") {
+	if !strings.Contains(text, "(-2)") {
 		t.Errorf("expected fell indicator, text: %q", text)
 	}
 }
