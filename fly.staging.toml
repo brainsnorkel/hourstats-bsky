@@ -10,7 +10,7 @@ kill_timeout = 15
   TZ = "UTC"
   DATA_DIR = "/data"
   HOURSTATS_PROFILE = "staging"
-  DRY_RUN = "true"
+  DRY_RUN = "false"
 
 [mounts]
   source = "data"
