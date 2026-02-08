@@ -105,6 +105,11 @@ func runJetstream(ctx context.Context, db *store.Store) {
 			if strings.TrimSpace(rec.Text) == "" {
 				return
 			}
+			// Filter to English posts only — VADER sentiment is English-only,
+			// non-English posts score near-zero and dilute the average.
+			if !isEnglish(rec.Langs) {
+				return
+			}
 			cid := ""
 			if evt.Commit != nil {
 				cid = evt.Commit.CID
@@ -534,6 +539,18 @@ func percentile(sorted []float64, p float64) float64 {
 // ---------------------------------------------------------------------------
 // Env helpers
 // ---------------------------------------------------------------------------
+
+func isEnglish(langs []string) bool {
+	if len(langs) == 0 {
+		return true
+	}
+	for _, l := range langs {
+		if l == "en" || strings.HasPrefix(l, "en-") {
+			return true
+		}
+	}
+	return false
+}
 
 func normalizeTimestamp(raw string) string {
 	t, err := time.Parse(time.RFC3339, raw)
