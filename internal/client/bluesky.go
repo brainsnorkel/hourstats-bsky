@@ -30,9 +30,9 @@ type Post struct {
 
 // APIBatchStats contains statistics about the raw API response before filtering
 type APIBatchStats struct {
-	RawPostCount   int       // Number of posts returned by API (before time filtering)
-	EarliestPost   time.Time // Timestamp of earliest post from API
-	LatestPost     time.Time // Timestamp of latest post from API
+	RawPostCount int       // Number of posts returned by API (before time filtering)
+	EarliestPost time.Time // Timestamp of earliest post from API
+	LatestPost   time.Time // Timestamp of latest post from API
 }
 
 type BlueskyClient struct {
@@ -47,6 +47,10 @@ func New(handle, password string) *BlueskyClient {
 		handle:   handle,
 		password: password,
 	}
+}
+
+func (c *BlueskyClient) APIClient() *client.APIClient {
+	return c.client
 }
 
 func (c *BlueskyClient) Authenticate() error {
@@ -940,9 +944,9 @@ func (c *BlueskyClient) PinPost(ctx context.Context, postURI string, postCID str
 	// Get the DID from the authenticated client
 	// The authenticated APIClient has an AccountDID field that may be populated after login
 	handle := strings.Trim(c.handle, `"`)
-	
+
 	var did string
-	
+
 	// Check if authenticated client has AccountDID (set after login)
 	if c.client != nil && c.client.AccountDID != nil {
 		did = c.client.AccountDID.String()
@@ -968,7 +972,7 @@ func (c *BlueskyClient) PinPost(ctx context.Context, postURI string, postCID str
 		errMsg := err.Error()
 		log.Printf("RepoGetRecord with DID failed: %s", errMsg)
 		log.Printf("Full error details: %+v", err)
-		
+
 		// Try with handle as fallback
 		log.Printf("Attempting RepoGetRecord with handle as fallback: %s", handle)
 		profile, err = atproto.RepoGetRecord(ctx, c.client, "", "app.bsky.actor.profile", handle, "self")
