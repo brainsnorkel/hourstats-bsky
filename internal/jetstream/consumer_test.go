@@ -1,0 +1,216 @@
+package jetstream
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestEvent_IsPostCreate(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{
+			name: "post create",
+			json: `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"hello","createdAt":"2024-09-09T19:46:02Z"},"cid":"cid123"}}`,
+			want: true,
+		},
+		{
+			name: "like create",
+			json: `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.like","rkey":"xyz","cid":"cid123"}}`,
+			want: false,
+		},
+		{
+			name: "post delete",
+			json: `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"delete","collection":"app.bsky.feed.post","rkey":"xyz"}}`,
+			want: false,
+		},
+		{
+			name: "identity event",
+			json: `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"identity"}`,
+			want: false,
+		},
+		{
+			name: "account event",
+			json: `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"account"}`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var event Event
+			if err := json.Unmarshal([]byte(tt.json), &event); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := event.IsPostCreate(); got != tt.want {
+				t.Errorf("IsPostCreate() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvent_PostURI(t *testing.T) {
+	raw := `{"did":"did:plc:abc123","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz789","cid":"cid1"}}`
+	var event Event
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	want := "at://did:plc:abc123/app.bsky.feed.post/xyz789"
+	if got := event.PostURI(); got != want {
+		t.Errorf("PostURI() = %q, want %q", got, want)
+	}
+}
+
+func TestEvent_ParsePostRecord(t *testing.T) {
+	raw := `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"Hello world!","createdAt":"2024-09-09T19:46:02.102Z","langs":["en"]},"cid":"cid1"}}`
+
+	var event Event
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rec := event.ParsePostRecord()
+	if rec == nil {
+		t.Fatal("ParsePostRecord returned nil")
+	}
+	if rec.Text != "Hello world!" {
+		t.Errorf("Text = %q, want %q", rec.Text, "Hello world!")
+	}
+	if rec.CreatedAt != "2024-09-09T19:46:02.102Z" {
+		t.Errorf("CreatedAt = %q", rec.CreatedAt)
+	}
+	if len(rec.Langs) != 1 || rec.Langs[0] != "en" {
+		t.Errorf("Langs = %v, want [en]", rec.Langs)
+	}
+}
+
+func TestEvent_ParsePostRecord_WithReply(t *testing.T) {
+	raw := `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"reply text","createdAt":"2024-09-09T19:46:02Z","reply":{"parent":{"uri":"at://did:plc:parent/app.bsky.feed.post/p1","cid":"cidp"},"root":{"uri":"at://did:plc:root/app.bsky.feed.post/r1","cid":"cidr"}}},"cid":"cid1"}}`
+
+	var event Event
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rec := event.ParsePostRecord()
+	if rec == nil {
+		t.Fatal("ParsePostRecord returned nil")
+	}
+	if rec.Reply == nil {
+		t.Fatal("Reply is nil")
+	}
+	if rec.Reply.Parent.URI != "at://did:plc:parent/app.bsky.feed.post/p1" {
+		t.Errorf("Parent URI = %q", rec.Reply.Parent.URI)
+	}
+	if rec.Reply.Root.URI != "at://did:plc:root/app.bsky.feed.post/r1" {
+		t.Errorf("Root URI = %q", rec.Reply.Root.URI)
+	}
+}
+
+func TestEvent_ParsePostRecord_NilCommit(t *testing.T) {
+	event := Event{DID: "did:plc:abc", Kind: "identity"}
+	if rec := event.ParsePostRecord(); rec != nil {
+		t.Errorf("expected nil for non-commit event, got %v", rec)
+	}
+}
+
+func TestEvent_ParsePostRecord_EmptyRecord(t *testing.T) {
+	event := Event{
+		DID:  "did:plc:abc",
+		Kind: "commit",
+		Commit: &Commit{
+			Operation:  "create",
+			Collection: "app.bsky.feed.post",
+		},
+	}
+	if rec := event.ParsePostRecord(); rec != nil {
+		t.Errorf("expected nil for empty record, got %v", rec)
+	}
+}
+
+func TestConsumerConfig_Defaults(t *testing.T) {
+	cfg := ConsumerConfig{}
+	cfg.setDefaults()
+
+	if cfg.Endpoint != DefaultEndpoint {
+		t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, DefaultEndpoint)
+	}
+	if len(cfg.Collections) != 1 || cfg.Collections[0] != DefaultCollection {
+		t.Errorf("Collections = %v, want [%s]", cfg.Collections, DefaultCollection)
+	}
+	if cfg.CursorInterval != DefaultCursorInterval {
+		t.Errorf("CursorInterval = %v, want %v", cfg.CursorInterval, DefaultCursorInterval)
+	}
+}
+
+func TestConsumer_BuildURL(t *testing.T) {
+	c := NewConsumer(ConsumerConfig{
+		Endpoint:    "wss://jetstream2.us-east.bsky.network/subscribe",
+		Collections: []string{"app.bsky.feed.post"},
+	})
+
+	u := c.buildURL()
+	if u != "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post" {
+		t.Errorf("buildURL() = %q", u)
+	}
+
+	c.cursor.Store(1725911162329308)
+	u = c.buildURL()
+	if u != "wss://jetstream2.us-east.bsky.network/subscribe?cursor=1725911162329308&wantedCollections=app.bsky.feed.post" {
+		t.Errorf("buildURL() with cursor = %q", u)
+	}
+}
+
+func TestRealJetstreamEvent_FullParse(t *testing.T) {
+	raw := `{
+		"did": "did:plc:eygmaihciaxprqvxpfvl6flk",
+		"time_us": 1725911162329308,
+		"kind": "commit",
+		"commit": {
+			"rev": "3l3qo2vutsw2b",
+			"operation": "create",
+			"collection": "app.bsky.feed.post",
+			"rkey": "3l3qo2vuowo2b",
+			"record": {
+				"$type": "app.bsky.feed.post",
+				"createdAt": "2024-09-09T19:46:02.102Z",
+				"text": "This is a test post from the firehose"
+			},
+			"cid": "bafyreidwaivazkwu67xztlmuobx35hs2lnfh3kolmgfmucldvhd3sgzcqi"
+		}
+	}`
+
+	var event Event
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if event.DID != "did:plc:eygmaihciaxprqvxpfvl6flk" {
+		t.Errorf("DID = %q", event.DID)
+	}
+	if event.TimeUS != 1725911162329308 {
+		t.Errorf("TimeUS = %d", event.TimeUS)
+	}
+	if !event.IsPostCreate() {
+		t.Error("should be post create")
+	}
+	if event.Commit.CID != "bafyreidwaivazkwu67xztlmuobx35hs2lnfh3kolmgfmucldvhd3sgzcqi" {
+		t.Errorf("CID = %q", event.Commit.CID)
+	}
+
+	want := "at://did:plc:eygmaihciaxprqvxpfvl6flk/app.bsky.feed.post/3l3qo2vuowo2b"
+	if got := event.PostURI(); got != want {
+		t.Errorf("PostURI() = %q, want %q", got, want)
+	}
+
+	rec := event.ParsePostRecord()
+	if rec == nil {
+		t.Fatal("ParsePostRecord returned nil")
+	}
+	if rec.Text != "This is a test post from the firehose" {
+		t.Errorf("Text = %q", rec.Text)
+	}
+}
