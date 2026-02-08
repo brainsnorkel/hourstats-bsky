@@ -292,15 +292,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 		rootURI, rootCID := postedURI, postedCID
 		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
-		nextParentURI, nextParentCID := sparkURI, sparkCID
 		if sparkURI != "" {
-			trendURI, trendCID := postSentimentTrendline(ctx, db, bskyClient, rootURI, rootCID, sparkURI, sparkCID, dryRun)
-			if trendURI != "" {
-				nextParentURI, nextParentCID = trendURI, trendCID
-			}
-		}
-		if nextParentURI != "" {
-			postDailyVolumeChart(ctx, db, bskyClient, rootURI, rootCID, nextParentURI, nextParentCID, dryRun)
+			postSentimentTrendline(ctx, db, bskyClient, rootURI, rootCID, sparkURI, sparkCID, dryRun)
 		}
 	}
 
@@ -412,48 +405,6 @@ func postSentimentTrendline(ctx context.Context, db *store.Store, bskyClient *cl
 	return trendURI, trendCID
 }
 
-func postDailyVolumeChart(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, rootURI, rootCID, parentURI, parentCID string, dryRun bool) {
-	dailyCounts, err := db.GetDailyPostCounts(ctx, 7*24*time.Hour)
-	if err != nil {
-		slog.Warn("get daily post counts failed", "error", err)
-		return
-	}
-	if len(dailyCounts) < 2 {
-		slog.Info("insufficient data for daily volume chart", "days", len(dailyCounts))
-		return
-	}
-
-	days := make([]sparkline.DailyVolume, len(dailyCounts))
-	for i, dc := range dailyCounts {
-		days[i] = sparkline.DailyVolume{Date: dc.Date, TotalPosts: dc.TotalFirehosePosts, ENPosts: dc.Count}
-	}
-
-	gen := sparkline.NewDailyVolumeGenerator(nil)
-	imgData, err := gen.GenerateDailyVolumeChart(days)
-	if err != nil {
-		slog.Error("generate daily volume chart failed", "error", err)
-		return
-	}
-
-	postText := "Post Volumes (UTC)"
-	altText := fmt.Sprintf("Daily post volume chart showing %d days of English posts analysed.", len(days))
-
-	if dryRun {
-		slog.Info("DRY_RUN: would post daily volume chart", "days", len(days), "image_bytes", len(imgData))
-		return
-	}
-
-	if parentURI != "" && parentCID != "" {
-		if _, _, err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, rootURI, rootCID, parentURI, parentCID); err != nil {
-			slog.Warn("daily volume reply failed, posting standalone", "error", err)
-			_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
-		}
-	} else {
-		_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
-	}
-	slog.Info("daily volume chart posted", "days", len(days))
-}
-
 func generateSparklineAltText(points []state.SentimentDataPoint) string {
 	if len(points) < 2 {
 		return "Seven day sentiment trend chart"
@@ -541,50 +492,6 @@ func runYearlyPosting(ctx context.Context, db *store.Store, handle, password str
 	if err := bskyClient.PinPost(ctx, sentimentURI, sentimentCID); err != nil {
 		slog.Warn("pin yearly post failed", "error", err)
 	}
-
-	postYearlyVolumeChart(ctx, db, bskyClient, sentimentURI, sentimentCID, sentimentURI, sentimentCID, dryRun)
-}
-
-func postYearlyVolumeChart(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, rootURI, rootCID, parentURI, parentCID string, dryRun bool) {
-	weeklyTotals, err := db.GetWeeklyPostTotals(ctx)
-	if err != nil {
-		slog.Warn("get weekly post totals failed", "error", err)
-		return
-	}
-	if len(weeklyTotals) < 2 {
-		slog.Info("insufficient data for yearly volume chart", "weeks", len(weeklyTotals))
-		return
-	}
-
-	weeks := make([]sparkline.WeeklyVolume, len(weeklyTotals))
-	for i, wt := range weeklyTotals {
-		weeks[i] = sparkline.WeeklyVolume{WeekStart: wt.WeekStart, TotalPosts: wt.TotalFirehosePosts, ENPosts: wt.Count}
-	}
-
-	gen := sparkline.NewYearlyVolumeGenerator(nil)
-	imgData, err := gen.GenerateYearlyVolumeChart(weeks)
-	if err != nil {
-		slog.Error("generate yearly volume chart failed", "error", err)
-		return
-	}
-
-	postText := "Post Volumes (UTC)"
-	altText := fmt.Sprintf("Yearly post volume chart showing %d weeks of data.", len(weeks))
-
-	if dryRun {
-		slog.Info("DRY_RUN: would post yearly volume chart", "weeks", len(weeks), "image_bytes", len(imgData))
-		return
-	}
-
-	if parentURI != "" && parentCID != "" {
-		if _, _, err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, rootURI, rootCID, parentURI, parentCID); err != nil {
-			slog.Warn("yearly volume reply failed, posting standalone", "error", err)
-			_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
-		}
-	} else {
-		_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
-	}
-	slog.Info("yearly volume chart posted", "weeks", len(weeks))
 }
 
 func toStateYearlyPoints(points []store.YearlySparklineDataPoint) []state.YearlySparklineDataPoint {
