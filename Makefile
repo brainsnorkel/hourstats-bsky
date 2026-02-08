@@ -1,6 +1,7 @@
 # HourStats Makefile
 
-.PHONY: build test test-unit test-lambdas clean deps fmt lint graph-lab help
+.PHONY: build test test-unit test-lambdas clean deps fmt lint graph-lab help \
+	build-hourstats deploy-prod deploy-staging deploy-all fly-status fly-logs-prod fly-logs-staging
 
 # Build the application
 build:
@@ -79,7 +80,28 @@ lint:
 	}
 	golangci-lint run
 
-# Help
+build-hourstats:
+	CGO_ENABLED=0 go build -o bin/hourstats ./cmd/hourstats
+
+deploy-prod:
+	fly deploy -c fly.prod.toml --ha=false
+
+deploy-staging:
+	fly deploy -c fly.staging.toml --ha=false
+
+deploy-all: deploy-prod deploy-staging
+
+fly-status:
+	@fly status -a hourstats-prod 2>&1 | grep -E "(STATE|app)" || true
+	@echo "---"
+	@fly status -a hourstats-staging 2>&1 | grep -E "(STATE|app)" || true
+
+fly-logs-prod:
+	fly logs -a hourstats-prod
+
+fly-logs-staging:
+	fly logs -a hourstats-staging
+
 help:
 	@echo "Available targets:"
 	@echo "  build              - Build all Lambda functions (linux/amd64)"
@@ -96,4 +118,11 @@ help:
 	@echo "  graph-lab-yearly   - Generate only yearly chart experiments"
 	@echo "  fmt                - Format code"
 	@echo "  lint               - Lint code (requires golangci-lint)"
+	@echo "  build-hourstats    - Build Fly.io binary (cmd/hourstats)"
+	@echo "  deploy-prod        - Deploy to hourstats-prod on Fly.io"
+	@echo "  deploy-staging     - Deploy to hourstats-staging on Fly.io"
+	@echo "  deploy-all         - Deploy to both prod and staging"
+	@echo "  fly-status         - Show status of both Fly.io apps"
+	@echo "  fly-logs-prod      - Tail prod logs"
+	@echo "  fly-logs-staging   - Tail staging logs"
 	@echo "  help               - Show this help message"
