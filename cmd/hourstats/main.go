@@ -93,6 +93,7 @@ func main() {
 		case <-backupTicker.C:
 			runBackup(db, dataDir, profile, backupRetainDays)
 			runDailyAggregation(ctx, db)
+			runDailyTopPostQuote(ctx, db, handle, password, dryRun)
 			if time.Now().UTC().Day() == 1 {
 				runYearlyPosting(ctx, db, handle, password, dryRun)
 			}
@@ -530,6 +531,13 @@ func runYearlyPosting(ctx context.Context, db *store.Store, handle, password str
 	}
 	slog.Info("yearly sentiment chart posted", "uri", sentimentURI)
 
+	if err := db.SetKeyValue(ctx, "yearly_post_uri", sentimentURI); err != nil {
+		slog.Warn("persist yearly post URI failed", "error", err)
+	}
+	if err := db.SetKeyValue(ctx, "yearly_post_cid", sentimentCID); err != nil {
+		slog.Warn("persist yearly post CID failed", "error", err)
+	}
+
 	if err := bskyClient.PinPost(ctx, sentimentURI, sentimentCID); err != nil {
 		slog.Warn("pin yearly post failed", "error", err)
 	}
@@ -748,6 +756,74 @@ func runDailyAggregation(ctx context.Context, db *store.Store) {
 		return
 	}
 	slog.Info("daily aggregation complete", "date", yesterday, "runs", daily.TotalRuns, "avg", fmt.Sprintf("%.1f%%", avg))
+}
+
+// ---------------------------------------------------------------------------
+// Daily top-post quote reply
+// ---------------------------------------------------------------------------
+
+func runDailyTopPostQuote(ctx context.Context, db *store.Store, handle, password string, dryRun bool) {
+	today := time.Now().UTC().Format("2006-01-02")
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+
+	lastDate, _ := db.GetKeyValue(ctx, "daily_quote_last_date")
+	if lastDate == today {
+		slog.Info("daily quote already posted today", "date", today)
+		return
+	}
+
+	yearlyURI, _ := db.GetKeyValue(ctx, "yearly_post_uri")
+	yearlyCID, _ := db.GetKeyValue(ctx, "yearly_post_cid")
+	if yearlyURI == "" || yearlyCID == "" {
+		slog.Info("no yearly post URI/CID stored, skipping daily quote")
+		return
+	}
+
+	topPost, err := db.GetTopPostForDate(ctx, yesterday)
+	if err != nil {
+		slog.Warn("get top post for date failed", "date", yesterday, "error", err)
+		return
+	}
+	if topPost == nil {
+		slog.Info("no top post found for yesterday", "date", yesterday)
+		return
+	}
+
+	yesterdayTime, _ := time.Parse("2006-01-02", yesterday)
+	text := fmt.Sprintf("Most engaged post %s by @%s",
+		yesterdayTime.Format("Mon Jan 2"),
+		topPost.AuthorHandle,
+	)
+
+	if dryRun {
+		slog.Info("DRY_RUN: would post daily quote reply",
+			"date", yesterday,
+			"top_post_uri", topPost.URI,
+			"author", topPost.AuthorHandle,
+			"engagement", topPost.EngagementScore,
+		)
+		return
+	}
+
+	bskyClient := client.New(handle, password)
+	if err := bskyClient.Authenticate(); err != nil {
+		slog.Error("bluesky auth for daily quote failed", "error", err)
+		return
+	}
+
+	_, _, err = bskyClient.PostReplyWithQuote(ctx, text,
+		yearlyURI, yearlyCID, yearlyURI, yearlyCID,
+		topPost.URI, topPost.CID,
+	)
+	if err != nil {
+		slog.Warn("daily quote reply failed", "error", err)
+		return
+	}
+
+	if err := db.SetKeyValue(ctx, "daily_quote_last_date", today); err != nil {
+		slog.Warn("persist daily quote date failed", "error", err)
+	}
+	slog.Info("daily quote reply posted", "date", yesterday, "top_post", topPost.URI)
 }
 
 // ---------------------------------------------------------------------------

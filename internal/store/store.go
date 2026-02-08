@@ -214,6 +214,12 @@ func (s *Store) migrate() error {
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 			ttl INTEGER NOT NULL DEFAULT 0
 		)`,
+
+		`CREATE TABLE IF NOT EXISTS key_value (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`,
 	}
 
 	for _, stmt := range stmts {

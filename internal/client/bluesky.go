@@ -939,6 +939,47 @@ func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, i
 	return resp.Uri, resp.Cid, nil
 }
 
+func (c *BlueskyClient) PostReplyWithQuote(ctx context.Context, text string, rootURI, rootCID, parentURI, parentCID, quoteURI, quoteCID string) (string, string, error) {
+	if c.client == nil {
+		return "", "", fmt.Errorf("client not authenticated")
+	}
+
+	postRecord := &bsky.FeedPost{
+		Text:      text,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Reply: &bsky.FeedPost_ReplyRef{
+			Root: &atproto.RepoStrongRef{
+				Uri: rootURI,
+				Cid: rootCID,
+			},
+			Parent: &atproto.RepoStrongRef{
+				Uri: parentURI,
+				Cid: parentCID,
+			},
+		},
+		Embed: &bsky.FeedPost_Embed{
+			EmbedRecord: &bsky.EmbedRecord{
+				Record: &atproto.RepoStrongRef{
+					Uri: quoteURI,
+					Cid: quoteCID,
+				},
+			},
+		},
+	}
+
+	resp, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+		Repo:       c.handle,
+		Collection: "app.bsky.feed.post",
+		Record:     &util.LexiconTypeDecoder{Val: postRecord},
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to post reply with quote: %w", err)
+	}
+
+	log.Printf("Successfully posted reply with quote embed (root: %s, quote: %s)", rootURI, quoteURI)
+	return resp.Uri, resp.Cid, nil
+}
+
 // PinPost pins a post to the account's profile
 func (c *BlueskyClient) PinPost(ctx context.Context, postURI string, postCID string) error {
 	if c.client == nil {
