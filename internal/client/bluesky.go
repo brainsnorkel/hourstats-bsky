@@ -887,16 +887,17 @@ func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageDat
 	return postedURI, postedCID, nil
 }
 
-// PostWithImageAsReply posts a text with an embedded image as a reply to another post
-func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, imageData []byte, altText string, replyToURI, replyToCID string) error {
+// PostWithImageAsReply posts a text with an embedded image as a reply to another post.
+// Returns the URI and CID of the newly created reply post.
+func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, imageData []byte, altText string, replyToURI, replyToCID string) (string, string, error) {
 	if c.client == nil {
-		return fmt.Errorf("client not authenticated")
+		return "", "", fmt.Errorf("client not authenticated")
 	}
 
 	// Upload the image first
 	imageRef, err := c.UploadImage(ctx, imageData, altText)
 	if err != nil {
-		return fmt.Errorf("failed to upload image: %w", err)
+		return "", "", fmt.Errorf("failed to upload image: %w", err)
 	}
 
 	// Create the post with image embed and reply structure
@@ -921,18 +922,18 @@ func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, i
 	}
 
 	// Post the record
-	_, err = atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+	resp, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
 		Repo:       c.handle,
 		Collection: "app.bsky.feed.post",
 		Record:     &util.LexiconTypeDecoder{Val: postRecord},
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to post reply with image: %w", err)
+		return "", "", fmt.Errorf("failed to post reply with image: %w", err)
 	}
 
 	log.Printf("Successfully posted reply with embedded image: %s (replying to: %s)", text[:min(50, len(text))], replyToURI)
-	return nil
+	return resp.Uri, resp.Cid, nil
 }
 
 // PinPost pins a post to the account's profile

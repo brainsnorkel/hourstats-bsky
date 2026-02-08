@@ -219,4 +219,3 @@ func main() {
 	fmt.Println("\n✅ Successfully posted and pinned yearly sentiment chart to Bluesky!")
 	fmt.Printf("📍 Post URI: %s\n", postURI)
 }
-

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -50,8 +51,6 @@ type RunState struct {
 	TTL                     int64
 }
 
-// SentimentDataPoint records per-run sentiment for sparkline charts.
-// Field names match state.SentimentDataPoint for drop-in compatibility.
 type SentimentDataPoint struct {
 	RunID                string
 	Timestamp            time.Time
@@ -59,6 +58,7 @@ type SentimentDataPoint struct {
 	NetSentimentPercent  float64
 	SentimentCategory    string
 	TotalPosts           int
+	TotalFirehosePosts   int
 	CreatedAt            time.Time
 	TTL                  int64
 }
@@ -90,6 +90,18 @@ type YearlySparklineDataPoint struct {
 	Q3Sentiment         float64
 	Timestamp           time.Time
 	NetSentimentPercent float64
+}
+
+type DailyPostCount struct {
+	Date               time.Time
+	Count              int
+	TotalFirehosePosts int
+}
+
+type WeeklyPostTotal struct {
+	WeekStart          time.Time
+	Count              int
+	TotalFirehosePosts int
 }
 
 // New opens (or creates) a SQLite database at dbPath, enables WAL mode,
@@ -178,6 +190,8 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sentiment_history_timestamp ON sentiment_history(timestamp)`,
 
+		`ALTER TABLE sentiment_history ADD COLUMN total_firehose_posts INTEGER NOT NULL DEFAULT 0`,
+
 		`CREATE TABLE IF NOT EXISTS daily_sentiment (
 			date TEXT PRIMARY KEY,
 			run_id TEXT NOT NULL,
@@ -196,6 +210,10 @@ func (s *Store) migrate() error {
 
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
+			// ALTER TABLE fails with "duplicate column" on repeat runs — safe to ignore.
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
 			return fmt.Errorf("exec %q: %w", stmt[:60], err)
 		}
 	}

@@ -106,7 +106,7 @@ func NewYearlySparklineGenerator(config *YearlySparklineConfig) *YearlySparkline
 	return &YearlySparklineGenerator{config: config}
 }
 
-// GenerateYearlySentimentSparkline creates a PNG image of yearly sentiment data
+// GenerateYearlySentimentSparkline creates a PNG image of yearly sentiment data.
 func (yg *YearlySparklineGenerator) GenerateYearlySentimentSparkline(dataPoints []state.YearlySparklineDataPoint) ([]byte, error) {
 	if len(dataPoints) == 0 {
 		return nil, fmt.Errorf("no data points provided")
