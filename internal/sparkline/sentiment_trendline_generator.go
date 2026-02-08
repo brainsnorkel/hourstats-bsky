@@ -257,7 +257,8 @@ func (g *SentimentTrendlineGenerator) drawGaussianTrend(dc *gg.Context, dataPoin
 		values[i] = getValue(dp)
 	}
 
-	smoothed := gaussianSmoothing(values, 4.0)
+	// sigma=2.0 preserves local curvature with sparse data (~20 points over 7 days)
+	smoothed := gaussianSmoothing(values, 2.0)
 
 	startTime := dataPoints[0].Timestamp
 	endTime := dataPoints[len(dataPoints)-1].Timestamp
@@ -266,32 +267,32 @@ func (g *SentimentTrendlineGenerator) drawGaussianTrend(dc *gg.Context, dataPoin
 		return
 	}
 
+	// Build a continuous path to avoid antialiasing artifacts at segment joins
+	trendX := make([]float64, len(smoothed))
+	trendY := make([]float64, len(smoothed))
+	for i := range smoothed {
+		trendX[i] = x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*w
+		trendY[i] = y + h - ((smoothed[i]-yMin)/yRange)*h
+	}
+
 	dc.SetColor(color.RGBA{255, 255, 255, 200})
 	dc.SetLineWidth(3.5)
-	dc.SetDash(4, 3)
-
-	for i := 0; i < len(smoothed)-1; i++ {
-		x1 := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*w
-		y1 := y + h - ((smoothed[i]-yMin)/yRange)*h
-		x2 := x + (dataPoints[i+1].Timestamp.Sub(startTime).Seconds()/timeRange)*w
-		y2 := y + h - ((smoothed[i+1]-yMin)/yRange)*h
-		dc.DrawLine(x1, y1, x2, y2)
-		dc.Stroke()
+	dc.SetDash(6, 4)
+	dc.MoveTo(trendX[0], trendY[0])
+	for i := 1; i < len(trendX); i++ {
+		dc.LineTo(trendX[i], trendY[i])
 	}
+	dc.Stroke()
 	dc.SetDash()
 
 	dc.SetColor(lineColor)
 	dc.SetLineWidth(1.5)
-	dc.SetDash(4, 3)
-
-	for i := 0; i < len(smoothed)-1; i++ {
-		x1 := x + (dataPoints[i].Timestamp.Sub(startTime).Seconds()/timeRange)*w
-		y1 := y + h - ((smoothed[i]-yMin)/yRange)*h
-		x2 := x + (dataPoints[i+1].Timestamp.Sub(startTime).Seconds()/timeRange)*w
-		y2 := y + h - ((smoothed[i+1]-yMin)/yRange)*h
-		dc.DrawLine(x1, y1, x2, y2)
-		dc.Stroke()
+	dc.SetDash(6, 4)
+	dc.MoveTo(trendX[0], trendY[0])
+	for i := 1; i < len(trendX); i++ {
+		dc.LineTo(trendX[i], trendY[i])
 	}
+	dc.Stroke()
 	dc.SetDash()
 }
 
@@ -339,34 +340,31 @@ func (g *SentimentTrendlineGenerator) drawExtremeLabels(dc *gg.Context, dataPoin
 		textW, textH := dc.MeasureString(label)
 		pad := 3.0
 
-		offsetY := 15.0
-		if !above {
-			offsetY = -15.0
-		}
-		labelY := py - offsetY
-		anchorY := 0.5
+		var labelY float64
 		if above {
-			anchorY = 1.0
+			labelY = py - 15
 		} else {
-			anchorY = 0.0
+			labelY = py + 15
 		}
 
-		boxX := px - textW/2 - pad
-		boxY := labelY - textH*anchorY - pad
-		if boxX < x {
-			boxX = x
-			px = boxX + textW/2 + pad
+		labelX := px
+		halfBoxW := textW/2 + pad
+		if labelX-halfBoxW < x {
+			labelX = x + halfBoxW
 		}
-		if boxX+textW+pad*2 > x+w {
-			boxX = x + w - textW - pad*2
-			px = boxX + textW/2 + pad
+		if labelX+halfBoxW > x+w {
+			labelX = x + w - halfBoxW
 		}
 
+		// Box and text both use center anchoring (0.5, 0.5) so they stay aligned
+		boxX := labelX - textW/2 - pad
+		boxY := labelY - textH/2 - pad
 		dc.SetColor(color.RGBA{255, 255, 230, 255})
 		dc.DrawRoundedRectangle(boxX, boxY, textW+pad*2, textH+pad*2, 3)
 		dc.Fill()
+
 		dc.SetColor(lineColor)
-		dc.DrawStringAnchored(label, px, labelY, 0.5, anchorY)
+		dc.DrawStringAnchored(label, labelX, labelY, 0.5, 0.5)
 	}
 
 	drawLabel(latestIdx, "Latest", true)

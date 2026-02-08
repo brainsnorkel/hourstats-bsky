@@ -438,6 +438,115 @@ func TestBackup_CreatesAndPrunes(t *testing.T) {
 	}
 }
 
+func TestKeyValue_SetAndGet(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SetKeyValue(ctx, "test_key", "test_value"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+
+	val, err := s.GetKeyValue(ctx, "test_key")
+	if err != nil {
+		t.Fatalf("GetKeyValue: %v", err)
+	}
+	if val != "test_value" {
+		t.Errorf("value = %q, want %q", val, "test_value")
+	}
+}
+
+func TestKeyValue_Upsert(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SetKeyValue(ctx, "k", "v1"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+	if err := s.SetKeyValue(ctx, "k", "v2"); err != nil {
+		t.Fatalf("SetKeyValue upsert: %v", err)
+	}
+
+	val, err := s.GetKeyValue(ctx, "k")
+	if err != nil {
+		t.Fatalf("GetKeyValue: %v", err)
+	}
+	if val != "v2" {
+		t.Errorf("value = %q, want %q", val, "v2")
+	}
+}
+
+func TestKeyValue_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.GetKeyValue(ctx, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing key")
+	}
+}
+
+func TestGetTopPostForDate_MultipleRuns(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+
+	run1 := RunState{
+		RunID:                   "run-a",
+		Status:                  "complete",
+		AnalysisIntervalMinutes: 30,
+		CutoffTime:              now.Add(-30 * time.Minute),
+		TopPosts: []Post{
+			{URI: "at://did:plc:abc/app.bsky.feed.post/1", CID: "cid1", AuthorHandle: "user1.bsky.social", EngagementScore: 100},
+			{URI: "at://did:plc:abc/app.bsky.feed.post/2", CID: "cid2", AuthorHandle: "user2.bsky.social", EngagementScore: 50},
+		},
+	}
+	run2 := RunState{
+		RunID:                   "run-b",
+		Status:                  "complete",
+		AnalysisIntervalMinutes: 30,
+		CutoffTime:              now.Add(-60 * time.Minute),
+		TopPosts: []Post{
+			{URI: "at://did:plc:def/app.bsky.feed.post/3", CID: "cid3", AuthorHandle: "user3.bsky.social", EngagementScore: 200},
+		},
+	}
+
+	if err := s.CreateRun(ctx, run1); err != nil {
+		t.Fatalf("CreateRun 1: %v", err)
+	}
+	if err := s.CreateRun(ctx, run2); err != nil {
+		t.Fatalf("CreateRun 2: %v", err)
+	}
+
+	best, err := s.GetTopPostForDate(ctx, today)
+	if err != nil {
+		t.Fatalf("GetTopPostForDate: %v", err)
+	}
+	if best == nil {
+		t.Fatal("expected a top post, got nil")
+	}
+	if best.EngagementScore != 200 {
+		t.Errorf("EngagementScore = %f, want 200", best.EngagementScore)
+	}
+	if best.URI != "at://did:plc:def/app.bsky.feed.post/3" {
+		t.Errorf("URI = %q, want the highest-engagement post", best.URI)
+	}
+}
+
+func TestGetTopPostForDate_NoRuns(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	best, err := s.GetTopPostForDate(ctx, "2020-01-01")
+	if err != nil {
+		t.Fatalf("GetTopPostForDate: %v", err)
+	}
+	if best != nil {
+		t.Errorf("expected nil for date with no runs, got %+v", best)
+	}
+}
+
 func TestBackup_PrunesOldFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	backupDir := filepath.Join(tmpDir, "backups")
