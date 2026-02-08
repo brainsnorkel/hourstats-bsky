@@ -220,6 +220,37 @@ func (s *Store) migrate() error {
 			value TEXT NOT NULL,
 			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 		)`,
+
+		// Trending topics tables
+		`CREATE TABLE IF NOT EXISTS topic_tokens (
+			post_uri TEXT PRIMARY KEY,
+			tokens TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_topic_tokens_created_at ON topic_tokens(created_at)`,
+
+		`CREATE TABLE IF NOT EXISTS topic_snapshots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			snapshot_time TEXT NOT NULL,
+			rank INTEGER NOT NULL,
+			topic_id TEXT NOT NULL,
+			label TEXT NOT NULL,
+			description TEXT NOT NULL,
+			post_count INTEGER NOT NULL,
+			keywords TEXT NOT NULL,
+			exemplar_uri TEXT NOT NULL DEFAULT '',
+			exemplar_handle TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_topic_snapshots_time ON topic_snapshots(snapshot_time)`,
+
+		`CREATE TABLE IF NOT EXISTS topic_identity (
+			topic_id TEXT PRIMARY KEY,
+			canonical_label TEXT NOT NULL,
+			keywords TEXT NOT NULL,
+			first_seen TEXT NOT NULL,
+			last_seen TEXT NOT NULL,
+			peak_rank INTEGER NOT NULL
+		)`,
 	}
 
 	for _, stmt := range stmts {

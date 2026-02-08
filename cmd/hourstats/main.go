@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
+	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
 
 // firehosePostCount tracks ALL posts seen from the Jetstream firehose
@@ -36,6 +38,16 @@ func main() {
 	dryRun := envBool("DRY_RUN", false)
 	analysisMinutes := envInt("ANALYSIS_INTERVAL_MINUTES", 30)
 	backupRetainDays := envInt("BACKUP_RETAIN_DAYS", 7)
+
+	trendingEnabled := envBool("TRENDING_ENABLED", false)
+	geminiAPIKey := os.Getenv("GOOGLE_AI_API_KEY")
+	trendingInterval := envInt("TRENDING_INTERVAL", 15)
+	trendingPostHours := envInt("TRENDING_POST_HOURS", 6)
+
+	if trendingEnabled && geminiAPIKey == "" {
+		slog.Error("TRENDING_ENABLED=true but GOOGLE_AI_API_KEY is empty, disabling trending")
+		trendingEnabled = false
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -68,13 +80,29 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	go runJetstream(ctx, db)
+	go runJetstream(ctx, db, trendingEnabled)
 
 	analysisTicker := time.NewTicker(time.Duration(analysisMinutes) * time.Minute)
 	defer analysisTicker.Stop()
 
 	backupTicker := time.NewTicker(24 * time.Hour)
 	defer backupTicker.Stop()
+
+	var topicAnalyzer *topics.Analyzer
+	var topicAnalysisCh, trendingPostCh <-chan time.Time
+	if trendingEnabled {
+		slog.Info("trending topics enabled",
+			"analysis_interval", fmt.Sprintf("%dm", trendingInterval),
+			"post_interval", fmt.Sprintf("%dh", trendingPostHours),
+		)
+		taTicker := time.NewTicker(time.Duration(trendingInterval) * time.Minute)
+		defer taTicker.Stop()
+		topicAnalysisCh = taTicker.C
+
+		tpTicker := time.NewTicker(time.Duration(trendingPostHours) * time.Hour)
+		defer tpTicker.Stop()
+		trendingPostCh = tpTicker.C
+	}
 
 	runBackup(db, dataDir, profile, backupRetainDays)
 
@@ -97,6 +125,34 @@ func main() {
 			if time.Now().UTC().Day() == 1 {
 				runYearlyPosting(ctx, db, handle, password, dryRun)
 			}
+
+		case <-topicAnalysisCh:
+			if topicAnalyzer == nil {
+				bskyClient := client.New(handle, password)
+				if err := bskyClient.Authenticate(); err != nil {
+					slog.Error("trending auth failed", "error", err)
+					continue
+				}
+				fetcher := hydrator.NewBlueskyFetcher(bskyClient.APIClient())
+				topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey, fetcher)
+			}
+			if err := topicAnalyzer.RunAnalysisCycle(ctx); err != nil {
+				slog.Error("topic analysis cycle failed", "error", err)
+			}
+
+		case <-trendingPostCh:
+			bskyClient := client.New(handle, password)
+			if err := bskyClient.Authenticate(); err != nil {
+				slog.Error("trending post auth failed", "error", err)
+				continue
+			}
+			if topicAnalyzer == nil {
+				fetcher := hydrator.NewBlueskyFetcher(bskyClient.APIClient())
+				topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey, fetcher)
+			}
+			if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun); err != nil {
+				slog.Error("trending post failed", "error", err)
+			}
 		}
 	}
 }
@@ -105,7 +161,7 @@ func main() {
 // Jetstream consumer
 // ---------------------------------------------------------------------------
 
-func runJetstream(ctx context.Context, db *store.Store) {
+func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
 	cfg := jetstream.ConsumerConfig{
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
 			firehosePostCount.Add(1)
@@ -131,6 +187,17 @@ func runJetstream(ctx context.Context, db *store.Store) {
 			}
 			if err := db.InsertPost(ctx, post); err != nil {
 				slog.Error("insert post failed", "uri", post.URI, "error", err)
+			}
+
+			// Tokenize root posts for trending topic analysis.
+			if trendingEnabled && rec.Reply == nil {
+				toks := topics.Tokenize(rec.Text)
+				if len(toks) > 0 {
+					tokJSON, _ := json.Marshal(toks)
+					if err := db.InsertTopicTokens(ctx, post.URI, string(tokJSON), createdAt); err != nil {
+						slog.Warn("insert topic tokens failed", "uri", post.URI, "error", err)
+					}
+				}
 			}
 		},
 		SaveCursor: func(saveCtx context.Context, cursor int64) error {

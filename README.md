@@ -120,8 +120,17 @@ make run
 - ✅ 48-hour sentiment sparklines
 - ✅ Yearly sentiment charts with month markers
 - ✅ Daily sentiment aggregation
+- ✅ Trending topics with bump chart (TF-IDF + Gemini Flash, posted every 6h)
 - ✅ AWS serverless deployment
 - ✅ CI/CD pipeline via GitHub Actions
+
+### Trending Topics
+
+Every 6 hours, the bot identifies the top 5 trending topics on Bluesky and posts a standalone update with a bump chart showing topic trajectories over 24 hours. Topics are extracted using TF-IDF analysis of root posts, grouped by Google Gemini Flash for semantic understanding, and tracked with persistent identities so the same topic keeps its colour and position history across posts.
+
+Each topic includes the highest-engagement exemplar post and movement indicators showing rank changes. Users can mute trending posts via `#trending` or `#hourstatstrend` without affecting the sentiment feed.
+
+See [docs/TRENDING_TOPICS.md](docs/TRENDING_TOPICS.md) for a detailed technical walkthrough.
 
 ## Development
 
