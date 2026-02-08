@@ -126,6 +126,7 @@ func runJetstream(ctx context.Context, db *store.Store) {
 				Text:      rec.Text,
 				AuthorDID: evt.DID,
 				CreatedAt: createdAt,
+				IsReply:   rec.Reply != nil,
 			}
 			if err := db.InsertPost(ctx, post); err != nil {
 				slog.Error("insert post failed", "uri", post.URI, "error", err)
@@ -215,6 +216,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	}
 
 	overallSentiment, netSentimentPct := calculateOverallSentiment(analyzed)
+	rootSentimentPct, replySentimentPct := calculateSplitSentiment(analyzed)
 
 	sort.Slice(analyzed, func(i, j int) bool {
 		return analyzed[i].EngagementScore > analyzed[j].EngagementScore
@@ -263,6 +265,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		SentimentCategory:    overallSentiment,
 		TotalPosts:           len(posts),
 		TotalFirehosePosts:   firehoseSnapshot,
+		RootSentimentPct:     rootSentimentPct,
+		ReplySentimentPct:    replySentimentPct,
 		CreatedAt:            time.Now().UTC(),
 		TTL:                  time.Now().Add(30 * 24 * time.Hour).Unix(),
 	}
@@ -285,9 +289,17 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			_ = db.UpdateRun(ctx, runState)
 		}
 
-		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, postedURI, postedCID, dryRun)
+		rootURI, rootCID := postedURI, postedCID
+		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
+		nextParentURI, nextParentCID := sparkURI, sparkCID
 		if sparkURI != "" {
-			postDailyVolumeChart(ctx, db, bskyClient, sparkURI, sparkCID, dryRun)
+			trendURI, trendCID := postSentimentTrendline(ctx, db, bskyClient, rootURI, rootCID, sparkURI, sparkCID, dryRun)
+			if trendURI != "" {
+				nextParentURI, nextParentCID = trendURI, trendCID
+			}
+		}
+		if nextParentURI != "" {
+			postDailyVolumeChart(ctx, db, bskyClient, rootURI, rootCID, nextParentURI, nextParentCID, dryRun)
 		}
 	}
 
@@ -308,7 +320,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 // Sparkline
 // ---------------------------------------------------------------------------
 
-func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, parentURI, parentCID string, dryRun bool) (string, string) {
+func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, rootURI, rootCID, parentURI, parentCID string, dryRun bool) (string, string) {
 	history, err := db.GetSentimentHistory(ctx, 7*24*time.Hour)
 	if err != nil {
 		slog.Error("get sentiment history failed", "error", err)
@@ -338,7 +350,7 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 
 	var sparkURI, sparkCID string
 	if parentURI != "" && parentCID != "" {
-		sparkURI, sparkCID, err = bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, parentURI, parentCID)
+		sparkURI, sparkCID, err = bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, rootURI, rootCID, parentURI, parentCID)
 		if err != nil {
 			slog.Warn("sparkline reply failed, posting standalone", "error", err)
 			sparkURI, sparkCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
@@ -350,7 +362,56 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 	return sparkURI, sparkCID
 }
 
-func postDailyVolumeChart(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, parentURI, parentCID string, dryRun bool) {
+func postSentimentTrendline(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, rootURI, rootCID, parentURI, parentCID string, dryRun bool) (string, string) {
+	history, err := db.GetSentimentHistory(ctx, 7*24*time.Hour)
+	if err != nil {
+		slog.Error("get sentiment history for trendline failed", "error", err)
+		return "", ""
+	}
+
+	var withSplitData []store.SentimentDataPoint
+	for _, dp := range history {
+		if dp.RootSentimentPct != 0 || dp.ReplySentimentPct != 0 {
+			withSplitData = append(withSplitData, dp)
+		}
+	}
+	if len(withSplitData) < 2 {
+		slog.Info("insufficient split sentiment data for trendline", "points", len(withSplitData))
+		return "", ""
+	}
+
+	gen := sparkline.NewSentimentTrendlineGenerator(nil)
+	imgData, err := gen.GenerateSentimentTrendline(withSplitData)
+	if err != nil {
+		slog.Error("generate sentiment trendline failed", "error", err)
+		return "", ""
+	}
+
+	postText := "Original vs Reply Sentiment"
+	latest := withSplitData[len(withSplitData)-1]
+	altText := fmt.Sprintf("Seven day sentiment trendline. Original posts: %.1f%%. Replies: %.1f%%.",
+		latest.RootSentimentPct, latest.ReplySentimentPct)
+
+	if dryRun {
+		slog.Info("DRY_RUN: would post sentiment trendline", "points", len(withSplitData), "image_bytes", len(imgData))
+		return "", ""
+	}
+
+	var trendURI, trendCID string
+	if parentURI != "" && parentCID != "" {
+		trendURI, trendCID, err = bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, rootURI, rootCID, parentURI, parentCID)
+		if err != nil {
+			slog.Warn("sentiment trendline reply failed, posting standalone", "error", err)
+			trendURI, trendCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+		}
+	} else {
+		trendURI, trendCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+	}
+	slog.Info("sentiment trendline posted", "points", len(withSplitData))
+	return trendURI, trendCID
+}
+
+func postDailyVolumeChart(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, rootURI, rootCID, parentURI, parentCID string, dryRun bool) {
 	dailyCounts, err := db.GetDailyPostCounts(ctx, 7*24*time.Hour)
 	if err != nil {
 		slog.Warn("get daily post counts failed", "error", err)
@@ -382,7 +443,7 @@ func postDailyVolumeChart(ctx context.Context, db *store.Store, bskyClient *clie
 	}
 
 	if parentURI != "" && parentCID != "" {
-		if _, _, err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, parentURI, parentCID); err != nil {
+		if _, _, err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, rootURI, rootCID, parentURI, parentCID); err != nil {
 			slog.Warn("daily volume reply failed, posting standalone", "error", err)
 			_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
 		}
@@ -473,10 +534,10 @@ func runYearlyPosting(ctx context.Context, db *store.Store, handle, password str
 		slog.Warn("pin yearly post failed", "error", err)
 	}
 
-	postYearlyVolumeChart(ctx, db, bskyClient, sentimentURI, sentimentCID, dryRun)
+	postYearlyVolumeChart(ctx, db, bskyClient, sentimentURI, sentimentCID, sentimentURI, sentimentCID, dryRun)
 }
 
-func postYearlyVolumeChart(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, parentURI, parentCID string, dryRun bool) {
+func postYearlyVolumeChart(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, rootURI, rootCID, parentURI, parentCID string, dryRun bool) {
 	weeklyTotals, err := db.GetWeeklyPostTotals(ctx)
 	if err != nil {
 		slog.Warn("get weekly post totals failed", "error", err)
@@ -508,7 +569,7 @@ func postYearlyVolumeChart(ctx context.Context, db *store.Store, bskyClient *cli
 	}
 
 	if parentURI != "" && parentCID != "" {
-		if _, _, err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, parentURI, parentCID); err != nil {
+		if _, _, err := bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, rootURI, rootCID, parentURI, parentCID); err != nil {
 			slog.Warn("yearly volume reply failed, posting standalone", "error", err)
 			_, _, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
 		}
@@ -755,6 +816,39 @@ func calculateOverallSentiment(posts []analyzer.AnalyzedPost) (string, float64) 
 	return category, avg * 100
 }
 
+// calculateSplitSentiment calculates separate net sentiment percentages
+// for root posts and reply posts. Returns (rootPct, replyPct).
+// If a group has no posts, its percentage is 0.
+func calculateSplitSentiment(posts []analyzer.AnalyzedPost) (float64, float64) {
+	var rootTotal, replyTotal float64
+	var rootCount, replyCount int
+
+	for _, p := range posts {
+		score := p.SentimentScore
+		if score > 1 {
+			score = 1
+		} else if score < -1 {
+			score = -1
+		}
+		if p.IsReply {
+			replyTotal += score
+			replyCount++
+		} else {
+			rootTotal += score
+			rootCount++
+		}
+	}
+
+	var rootPct, replyPct float64
+	if rootCount > 0 {
+		rootPct = (rootTotal / float64(rootCount)) * 100
+	}
+	if replyCount > 0 {
+		replyPct = (replyTotal / float64(replyCount)) * 100
+	}
+	return rootPct, replyPct
+}
+
 // ---------------------------------------------------------------------------
 // Type conversion helpers
 // ---------------------------------------------------------------------------
@@ -767,6 +861,7 @@ func toAnalyzerPosts(posts []store.Post) []analyzer.Post {
 			Author: p.AuthorHandle,
 			Likes:  p.Likes, Reposts: p.Reposts, Replies: p.Replies,
 			CreatedAt: p.CreatedAt,
+			IsReply:   p.IsReply,
 		}
 	}
 	return out
