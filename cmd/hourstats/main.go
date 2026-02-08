@@ -109,9 +109,6 @@ func runJetstream(ctx context.Context, db *store.Store) {
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
 			firehosePostCount.Add(1)
 
-			if rec.Reply != nil {
-				return
-			}
 			if strings.TrimSpace(rec.Text) == "" {
 				return
 			}
