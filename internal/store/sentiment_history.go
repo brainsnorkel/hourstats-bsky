@@ -12,17 +12,20 @@ func (s *Store) StoreSentimentDataPoint(ctx context.Context, dp SentimentDataPoi
 	ttl := time.Now().UTC().Add(8 * 24 * time.Hour).Unix() // 8 days TTL
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sentiment_history (run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, created_at, ttl)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO sentiment_history (run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, root_sentiment_pct, reply_sentiment_pct, created_at, ttl)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(run_id, timestamp) DO UPDATE SET
 			average_compound_score=excluded.average_compound_score,
 			net_sentiment_percent=excluded.net_sentiment_percent,
 			sentiment_category=excluded.sentiment_category,
 			total_posts=excluded.total_posts,
-			total_firehose_posts=excluded.total_firehose_posts`,
+			total_firehose_posts=excluded.total_firehose_posts,
+			root_sentiment_pct=excluded.root_sentiment_pct,
+			reply_sentiment_pct=excluded.reply_sentiment_pct`,
 		dp.RunID, timeToStr(dp.Timestamp), dp.AverageCompoundScore,
 		dp.NetSentimentPercent, dp.SentimentCategory, dp.TotalPosts,
-		dp.TotalFirehosePosts, now, ttl,
+		dp.TotalFirehosePosts, dp.RootSentimentPct, dp.ReplySentimentPct,
+		now, ttl,
 	)
 	if err != nil {
 		return fmt.Errorf("store sentiment: %w", err)
@@ -36,7 +39,7 @@ func (s *Store) GetSentimentHistory(ctx context.Context, duration time.Duration)
 	since := time.Now().UTC().Add(-duration)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, created_at, ttl
+		`SELECT run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, root_sentiment_pct, reply_sentiment_pct, created_at, ttl
 		 FROM sentiment_history
 		 WHERE timestamp >= ?
 		 ORDER BY timestamp ASC`,
@@ -53,7 +56,8 @@ func (s *Store) GetSentimentHistory(ctx context.Context, duration time.Duration)
 		var tsStr, createdStr string
 		if err := rows.Scan(&dp.RunID, &tsStr, &dp.AverageCompoundScore,
 			&dp.NetSentimentPercent, &dp.SentimentCategory, &dp.TotalPosts,
-			&dp.TotalFirehosePosts, &createdStr, &dp.TTL); err != nil {
+			&dp.TotalFirehosePosts, &dp.RootSentimentPct, &dp.ReplySentimentPct,
+			&createdStr, &dp.TTL); err != nil {
 			return nil, fmt.Errorf("scan sentiment: %w", err)
 		}
 		dp.Timestamp = strToTime(tsStr)

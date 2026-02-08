@@ -32,6 +32,7 @@ type Post struct {
 	Sentiment       string
 	EngagementScore float64
 	CreatedAt       string
+	IsReply         bool
 }
 
 // RunState tracks a single 30-minute analysis cycle.
@@ -59,6 +60,8 @@ type SentimentDataPoint struct {
 	SentimentCategory    string
 	TotalPosts           int
 	TotalFirehosePosts   int
+	RootSentimentPct     float64
+	ReplySentimentPct    float64
 	CreatedAt            time.Time
 	TTL                  int64
 }
@@ -191,6 +194,11 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_sentiment_history_timestamp ON sentiment_history(timestamp)`,
 
 		`ALTER TABLE sentiment_history ADD COLUMN total_firehose_posts INTEGER NOT NULL DEFAULT 0`,
+
+		`ALTER TABLE post_buffer ADD COLUMN is_reply INTEGER NOT NULL DEFAULT 0`,
+
+		`ALTER TABLE sentiment_history ADD COLUMN root_sentiment_pct REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE sentiment_history ADD COLUMN reply_sentiment_pct REAL NOT NULL DEFAULT 0`,
 
 		`CREATE TABLE IF NOT EXISTS daily_sentiment (
 			date TEXT PRIMARY KEY,

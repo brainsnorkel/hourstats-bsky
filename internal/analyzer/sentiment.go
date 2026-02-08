@@ -25,6 +25,7 @@ type Post struct {
 	Reposts   int
 	Replies   int
 	CreatedAt string
+	IsReply   bool
 }
 
 type SentimentAnalyzer struct {

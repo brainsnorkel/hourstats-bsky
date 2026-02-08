@@ -888,8 +888,11 @@ func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageDat
 }
 
 // PostWithImageAsReply posts a text with an embedded image as a reply to another post.
+// rootURI/rootCID must always point to the thread's original (root) post.
+// parentURI/parentCID point to the immediate parent being replied to.
+// For direct replies to the root post, root and parent will be the same.
 // Returns the URI and CID of the newly created reply post.
-func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, imageData []byte, altText string, replyToURI, replyToCID string) (string, string, error) {
+func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, imageData []byte, altText string, rootURI, rootCID, parentURI, parentCID string) (string, string, error) {
 	if c.client == nil {
 		return "", "", fmt.Errorf("client not authenticated")
 	}
@@ -911,12 +914,12 @@ func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, i
 		},
 		Reply: &bsky.FeedPost_ReplyRef{
 			Root: &atproto.RepoStrongRef{
-				Uri: replyToURI,
-				Cid: replyToCID,
+				Uri: rootURI,
+				Cid: rootCID,
 			},
 			Parent: &atproto.RepoStrongRef{
-				Uri: replyToURI,
-				Cid: replyToCID,
+				Uri: parentURI,
+				Cid: parentCID,
 			},
 		},
 	}
@@ -932,7 +935,7 @@ func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, i
 		return "", "", fmt.Errorf("failed to post reply with image: %w", err)
 	}
 
-	log.Printf("Successfully posted reply with embedded image: %s (replying to: %s)", text[:min(50, len(text))], replyToURI)
+	log.Printf("Successfully posted reply with embedded image: %s (root: %s, parent: %s)", text[:min(50, len(text))], rootURI, parentURI)
 	return resp.Uri, resp.Cid, nil
 }
 

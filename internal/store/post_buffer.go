@@ -8,8 +8,8 @@ import (
 
 // InsertPost inserts a single post into the buffer (upsert on URI).
 func (s *Store) InsertPost(ctx context.Context, post Post) error {
-	const q = `INSERT INTO post_buffer (uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, inserted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	const q = `INSERT INTO post_buffer (uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, inserted_at, is_reply)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(uri) DO UPDATE SET
 			cid=excluded.cid,
 			text=excluded.text,
@@ -19,12 +19,18 @@ func (s *Store) InsertPost(ctx context.Context, post Post) error {
 			reposts=excluded.reposts,
 			replies=excluded.replies,
 			sentiment=excluded.sentiment,
-			engagement_score=excluded.engagement_score`
+			engagement_score=excluded.engagement_score,
+			is_reply=excluded.is_reply`
+
+	isReply := 0
+	if post.IsReply {
+		isReply = 1
+	}
 
 	_, err := s.db.ExecContext(ctx, q,
 		post.URI, post.CID, post.Text, post.AuthorDID, post.AuthorHandle,
 		post.Likes, post.Reposts, post.Replies, post.Sentiment, post.EngagementScore,
-		post.CreatedAt, nowUTC(),
+		post.CreatedAt, nowUTC(), isReply,
 	)
 	if err != nil {
 		return fmt.Errorf("insert post: %w", err)
@@ -40,8 +46,8 @@ func (s *Store) InsertPostsBatch(ctx context.Context, posts []Post) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO post_buffer (uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, inserted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO post_buffer (uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, inserted_at, is_reply)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(uri) DO UPDATE SET
 			cid=excluded.cid,
 			text=excluded.text,
@@ -51,7 +57,8 @@ func (s *Store) InsertPostsBatch(ctx context.Context, posts []Post) error {
 			reposts=excluded.reposts,
 			replies=excluded.replies,
 			sentiment=excluded.sentiment,
-			engagement_score=excluded.engagement_score`)
+			engagement_score=excluded.engagement_score,
+			is_reply=excluded.is_reply`)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
@@ -59,9 +66,13 @@ func (s *Store) InsertPostsBatch(ctx context.Context, posts []Post) error {
 
 	now := nowUTC()
 	for _, p := range posts {
+		isReply := 0
+		if p.IsReply {
+			isReply = 1
+		}
 		_, err := stmt.ExecContext(ctx, p.URI, p.CID, p.Text, p.AuthorDID, p.AuthorHandle,
 			p.Likes, p.Reposts, p.Replies, p.Sentiment, p.EngagementScore,
-			p.CreatedAt, now)
+			p.CreatedAt, now, isReply)
 		if err != nil {
 			return fmt.Errorf("insert post %s: %w", p.URI, err)
 		}
@@ -72,7 +83,7 @@ func (s *Store) InsertPostsBatch(ctx context.Context, posts []Post) error {
 
 // GetPostsSince returns all posts with created_at >= since, ordered by created_at.
 func (s *Store) GetPostsSince(ctx context.Context, since time.Time) ([]Post, error) {
-	const q = `SELECT uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at
+	const q = `SELECT uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, is_reply
 		FROM post_buffer
 		WHERE created_at >= ?
 		ORDER BY created_at ASC`
@@ -86,11 +97,13 @@ func (s *Store) GetPostsSince(ctx context.Context, since time.Time) ([]Post, err
 	var posts []Post
 	for rows.Next() {
 		var p Post
+		var isReply int
 		if err := rows.Scan(&p.URI, &p.CID, &p.Text, &p.AuthorDID, &p.AuthorHandle,
 			&p.Likes, &p.Reposts, &p.Replies, &p.Sentiment, &p.EngagementScore,
-			&p.CreatedAt); err != nil {
+			&p.CreatedAt, &isReply); err != nil {
 			return nil, fmt.Errorf("scan post: %w", err)
 		}
+		p.IsReply = isReply != 0
 		posts = append(posts, p)
 	}
 	return posts, rows.Err()
