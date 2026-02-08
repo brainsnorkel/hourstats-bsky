@@ -111,7 +111,7 @@ type WeeklyPostTotal struct {
 // and runs schema migrations.
 func New(dbPath string) (*Store, error) {
 	params := url.Values{}
-	params.Add("_pragma", "busy_timeout(10000)")
+	params.Add("_pragma", "busy_timeout(30000)")
 	params.Add("_pragma", "journal_mode(WAL)")
 	params.Add("_pragma", "synchronous(NORMAL)")
 	params.Add("_pragma", "foreign_keys(ON)")
@@ -121,6 +121,11 @@ func New(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+
+	// Limit connection pool to reduce SQLite write contention.
+	// WAL mode allows concurrent reads, but only one writer at a time.
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
 
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
