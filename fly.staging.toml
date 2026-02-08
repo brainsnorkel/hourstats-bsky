@@ -1,0 +1,21 @@
+app = "hourstats-staging"
+primary_region = "sjc"
+kill_signal = "SIGTERM"
+kill_timeout = 15
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TZ = "UTC"
+  DATA_DIR = "/data"
+  HOURSTATS_PROFILE = "staging"
+  DRY_RUN = "true"
+
+[mounts]
+  source = "data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = 256

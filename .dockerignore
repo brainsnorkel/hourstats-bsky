@@ -1,0 +1,8 @@
+.git
+.beads
+backups
+test-results
+terraform/.terraform
+terraform/*.tfstate*
+*.test
+bin/
