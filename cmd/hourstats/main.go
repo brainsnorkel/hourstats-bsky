@@ -30,6 +30,9 @@ import (
 // (before the English filter). It is snapshotted and reset each analysis cycle.
 var firehosePostCount atomic.Int64
 
+// lastPostReceived tracks the last time a post was processed from Jetstream.
+var lastPostReceived atomic.Int64
+
 func main() {
 	profile := envOr("HOURSTATS_PROFILE", "staging")
 	dataDir := envOr("DATA_DIR", "/data")
@@ -121,6 +124,9 @@ func main() {
 		slog.Info("s3 backup enabled", "bucket", s3BackupBucket, "region", s3BackupRegion)
 	}
 
+	stallCheckTicker := time.NewTicker(5 * time.Minute)
+	defer stallCheckTicker.Stop()
+
 	runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 
 	slog.Info("scheduler started", "analysis_every", fmt.Sprintf("%dm", analysisMinutes))
@@ -170,6 +176,18 @@ func main() {
 			if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun); err != nil {
 				slog.Error("trending post failed", "error", err)
 			}
+
+		case <-stallCheckTicker.C:
+			lastMs := lastPostReceived.Load()
+			if lastMs > 0 {
+				sinceLastPost := time.Since(time.UnixMilli(lastMs))
+				if sinceLastPost > 5*time.Minute {
+					slog.Warn("jetstream stall detected: no posts received recently",
+						"last_post_age", sinceLastPost.Round(time.Second),
+						"firehose_total", firehosePostCount.Load(),
+					)
+				}
+			}
 		}
 	}
 }
@@ -182,6 +200,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
 	cfg := jetstream.ConsumerConfig{
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
 			firehosePostCount.Add(1)
+			lastPostReceived.Store(time.Now().UnixMilli())
 
 			if strings.TrimSpace(rec.Text) == "" {
 				return
@@ -225,9 +244,31 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
 		},
 	}
 
-	consumer := jetstream.NewConsumer(cfg)
-	if err := consumer.Run(ctx); err != nil && ctx.Err() == nil {
-		slog.Error("jetstream consumer exited with error", "error", err)
+	backoff := 1 * time.Second
+	maxBackoff := 60 * time.Second
+
+	for {
+		consumer := jetstream.NewConsumer(cfg)
+		err := consumer.Run(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+
+		slog.Error("jetstream consumer exited unexpectedly, will restart",
+			"error", err,
+			"restart_in", backoff,
+		)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
 }
 
