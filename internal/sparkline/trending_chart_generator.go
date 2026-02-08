@@ -60,7 +60,7 @@ func GenerateTrendingChart(snapshots []store.TopicSnapshotRow) ([]byte, error) {
 
 	dc.SetColor(color.RGBA{33, 37, 41, 255})
 	loadFont(dc, 18)
-	dc.DrawStringAnchored("Bluesky Trending Topics (24h)", float64(width)/2, drawY-30, 0.5, 0.5)
+	dc.DrawStringAnchored("Bluesky Trending Topics (24h UTC)", float64(width)/2, drawY-30, 0.5, 0.5)
 
 	loadFont(dc, 12)
 	dc.SetColor(color.RGBA{100, 100, 100, 150})
