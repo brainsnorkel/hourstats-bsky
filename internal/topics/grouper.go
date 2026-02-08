@@ -198,6 +198,117 @@ func fallbackClusters(terms []TermScore) []TopicCluster {
 	return clusters
 }
 
+// GenerateAltText asks Gemini to produce accessible alt text that narrates
+// the trending topics and describes the bump chart for screen-reader users.
+// Falls back to FormatAltText on any failure.
+func (g *Grouper) GenerateAltText(ctx context.Context, ranked []IdentifiedTopic, trajectories map[string][]int) string {
+	fallback := FormatAltText(ranked)
+
+	if !g.checkAndIncrementRate() {
+		return fallback
+	}
+
+	prompt := buildAltTextPrompt(ranked, trajectories)
+
+	reqBody := geminiRequest{
+		Contents: []geminiContent{
+			{Parts: []geminiPart{{Text: prompt}}},
+		},
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return fallback
+	}
+
+	url := g.endpoint + "?key=" + g.apiKey
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		return fallback
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		log.Printf("alt-text: API call failed: %v, using fallback", err)
+		return fallback
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("alt-text: API returned %d: %s, using fallback", resp.StatusCode, string(respBody))
+		return fallback
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fallback
+	}
+
+	var gemResp geminiResponse
+	if err := json.Unmarshal(respBody, &gemResp); err != nil {
+		return fallback
+	}
+
+	if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
+		return fallback
+	}
+
+	alt := strings.TrimSpace(gemResp.Candidates[0].Content.Parts[0].Text)
+	if alt == "" {
+		return fallback
+	}
+
+	const maxAltLen = 1000
+	if len(alt) > maxAltLen {
+		alt = alt[:maxAltLen-3] + "..."
+	}
+	return alt
+}
+
+func buildAltTextPrompt(ranked []IdentifiedTopic, trajectories map[string][]int) string {
+	var b strings.Builder
+	b.WriteString("Write alt text for a social media image. The image contains:\n")
+	b.WriteString("1. A bump chart showing how topic rankings changed over 24 hours\n")
+	b.WriteString("2. The current top trending topics on Bluesky\n\n")
+	b.WriteString("Current rankings:\n")
+
+	for _, t := range ranked {
+		line := fmt.Sprintf("- #%d: \"%s\" — %s (%d posts)", t.Rank, t.Cluster.Label, t.Cluster.Description, t.PostCount)
+		if t.ExemplarHandle != "" {
+			line += fmt.Sprintf(", exemplar by @%s", t.ExemplarHandle)
+		}
+		b.WriteString(line + "\n")
+	}
+
+	if len(trajectories) > 0 {
+		b.WriteString("\nRank history (oldest→newest, 0 = not in top 5):\n")
+		for _, t := range ranked {
+			if ranks, ok := trajectories[t.TopicID]; ok {
+				strs := make([]string, len(ranks))
+				for i, r := range ranks {
+					if r == 0 {
+						strs[i] = "-"
+					} else {
+						strs[i] = fmt.Sprintf("#%d", r)
+					}
+				}
+				fmt.Fprintf(&b, "- \"%s\": %s\n", t.Cluster.Label, strings.Join(strs, " → "))
+			}
+		}
+	}
+
+	b.WriteString("\nRequirements:\n")
+	b.WriteString("- Write 2-4 sentences of plain English accessible alt text\n")
+	b.WriteString("- First describe what people are talking about (the narrative)\n")
+	b.WriteString("- Then briefly describe the bump chart visual (rising/falling lines, colors)\n")
+	b.WriteString("- Do NOT use markdown, hashtags, or @mentions\n")
+	b.WriteString("- Keep it under 900 characters\n")
+	b.WriteString("- Return only the alt text, nothing else\n")
+	return b.String()
+}
+
 func (g *Grouper) checkAndIncrementRate() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
