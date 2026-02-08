@@ -90,11 +90,10 @@ func main() {
 
 	go runJetstream(ctx, db, trendingEnabled)
 
-	analysisTicker := time.NewTicker(time.Duration(analysisMinutes) * time.Minute)
-	defer analysisTicker.Stop()
-
-	backupTicker := time.NewTicker(24 * time.Hour)
-	defer backupTicker.Stop()
+	// Wall-clock aligned tickers: fire at clean UTC clock boundaries
+	// so that deploys/restarts don't shift the schedule.
+	analysisCh := newWallClockTicker(time.Duration(analysisMinutes) * time.Minute)
+	backupCh := newWallClockTicker(24 * time.Hour)
 
 	var topicAnalyzer *topics.Analyzer
 	var topicAnalysisCh, trendingPostCh <-chan time.Time
@@ -103,13 +102,8 @@ func main() {
 			"analysis_interval", fmt.Sprintf("%dm", trendingInterval),
 			"post_interval", fmt.Sprintf("%dh", trendingPostHours),
 		)
-		taTicker := time.NewTicker(time.Duration(trendingInterval) * time.Minute)
-		defer taTicker.Stop()
-		topicAnalysisCh = taTicker.C
-
-		tpTicker := time.NewTicker(time.Duration(trendingPostHours) * time.Hour)
-		defer tpTicker.Stop()
-		trendingPostCh = tpTicker.C
+		topicAnalysisCh = newWallClockTicker(time.Duration(trendingInterval) * time.Minute)
+		trendingPostCh = newWallClockTicker(time.Duration(trendingPostHours) * time.Hour)
 	}
 
 	var s3Cfg *store.S3BackupConfig
@@ -129,7 +123,10 @@ func main() {
 
 	runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 
-	slog.Info("scheduler started", "analysis_every", fmt.Sprintf("%dm", analysisMinutes))
+	slog.Info("scheduler started, wall-clock aligned",
+		"analysis_every", fmt.Sprintf("%dm", analysisMinutes),
+		"backup_every", "24h",
+	)
 
 	for {
 		select {
@@ -138,10 +135,10 @@ func main() {
 			cancel()
 			return
 
-		case <-analysisTicker.C:
+		case <-analysisCh:
 			runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes)
 
-		case <-backupTicker.C:
+		case <-backupCh:
 			runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 			runDailyAggregation(ctx, db)
 			runDailyTopPostQuote(ctx, db, handle, password, dryRun)
@@ -1087,4 +1084,28 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// newWallClockTicker returns a channel that fires at wall-clock aligned UTC
+// boundaries. For example, a 30m interval fires at :00 and :30 past the hour;
+// a 3h interval fires at 00:00, 03:00, 06:00, etc. This ensures deploys and
+// restarts don't shift the posting schedule.
+func newWallClockTicker(interval time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	go func() {
+		for {
+			now := time.Now().UTC()
+			next := now.Truncate(interval).Add(interval)
+			delay := next.Sub(now)
+			slog.Info("wall-clock ticker scheduled",
+				"interval", interval,
+				"next_fire", next.Format(time.RFC3339),
+				"delay", delay.Round(time.Second),
+			)
+			timer := time.NewTimer(delay)
+			<-timer.C
+			ch <- time.Now()
+		}
+	}()
+	return ch
 }
