@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -107,14 +106,29 @@ type S3BackupConfig struct {
 }
 
 // BackupToS3 creates a point-in-time backup and uploads it to S3.
+// Uses a temp file to avoid holding the entire backup in memory.
 // The S3 key follows the pattern: <profile>/<timestamp>.db
 func (s *Store) BackupToS3(ctx context.Context, cfg S3BackupConfig) (string, error) {
 	ts := time.Now().UTC().Format(backupTimeFormat)
 	key := fmt.Sprintf("%s/%s.db", cfg.Profile, ts)
 
-	var buf bytes.Buffer
-	if err := s.BackupToWriter(ctx, &buf); err != nil {
-		return "", fmt.Errorf("backup to buffer: %w", err)
+	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("hourstats-s3-%d.db", time.Now().UnixNano()))
+	defer os.Remove(tmpPath)
+
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`VACUUM INTO '%s'`, tmpPath))
+	if err != nil {
+		return "", fmt.Errorf("vacuum into temp: %w", err)
+	}
+
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("open temp backup: %w", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat temp backup: %w", err)
 	}
 
 	awsCfg, err := config.LoadDefaultConfig(ctx,
@@ -127,11 +141,11 @@ func (s *Store) BackupToS3(ctx context.Context, cfg S3BackupConfig) (string, err
 		return "", fmt.Errorf("load aws config: %w", err)
 	}
 
-	client := s3.NewFromConfig(awsCfg)
-	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+	s3Client := s3.NewFromConfig(awsCfg)
+	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(cfg.Bucket),
 		Key:    aws.String(key),
-		Body:   bytes.NewReader(buf.Bytes()),
+		Body:   f,
 	})
 	if err != nil {
 		return "", fmt.Errorf("s3 put: %w", err)
@@ -140,7 +154,7 @@ func (s *Store) BackupToS3(ctx context.Context, cfg S3BackupConfig) (string, err
 	slog.Info("backup uploaded to S3",
 		"bucket", cfg.Bucket,
 		"key", key,
-		"size_bytes", buf.Len(),
+		"size_bytes", info.Size(),
 	)
 	return fmt.Sprintf("s3://%s/%s", cfg.Bucket, key), nil
 }
