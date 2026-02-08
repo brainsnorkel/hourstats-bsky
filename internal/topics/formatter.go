@@ -52,10 +52,10 @@ func movementIndicator(topicID string, rank int, prevRank map[string]int) string
 	}
 	diff := prev - rank
 	if diff > 0 {
-		return fmt.Sprintf("(^%d)", diff)
+		return fmt.Sprintf("(+%d)", diff)
 	}
 	if diff < 0 {
-		return fmt.Sprintf("(v%d)", -diff)
+		return fmt.Sprintf("(-%d)", -diff)
 	}
 	return "(->)"
 }
