@@ -830,7 +830,7 @@ func percentile(sorted []float64, p float64) float64 {
 
 func isEnglish(langs []string) bool {
 	if len(langs) == 0 {
-		return true
+		return false
 	}
 	for _, l := range langs {
 		if l == "en" || strings.HasPrefix(l, "en-") {
