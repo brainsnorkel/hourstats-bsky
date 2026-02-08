@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -94,23 +95,16 @@ type YearlySparklineDataPoint struct {
 // New opens (or creates) a SQLite database at dbPath, enables WAL mode,
 // and runs schema migrations.
 func New(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	params := url.Values{}
+	params.Add("_pragma", "busy_timeout(10000)")
+	params.Add("_pragma", "journal_mode(WAL)")
+	params.Add("_pragma", "synchronous(NORMAL)")
+	params.Add("_pragma", "foreign_keys(ON)")
+	dsn := fmt.Sprintf("file:%s?%s", dbPath, params.Encode())
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
-	}
-
-	// SQLite pragmas for performance and safety.
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA foreign_keys=ON",
-	}
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("pragma %q: %w", p, err)
-		}
 	}
 
 	s := &Store{db: db}

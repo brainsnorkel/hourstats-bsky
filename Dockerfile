@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /import-dynamodb ./cmd/imp
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata sqlite
 
 COPY --from=builder /hourstats /usr/local/bin/hourstats
 COPY --from=builder /import-dynamodb /usr/local/bin/import-dynamodb
