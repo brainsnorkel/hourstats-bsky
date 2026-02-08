@@ -54,6 +54,12 @@ cmd/*/main
 /dynamodb-backup
 /dynamodb-restore
 /graph-lab
+/hourstats
+/import-dynamodb
+
+# Backup data
+backups/
+backups-*/
 
 # Configuration files with secrets
 config.yaml
