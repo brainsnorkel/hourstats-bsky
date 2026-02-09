@@ -118,9 +118,12 @@ func (s *Store) GetTopicTokenURIsByKeywords(ctx context.Context, keywords []stri
 	args = append(args, limit)
 
 	q := fmt.Sprintf(
-		`SELECT DISTINCT t.post_uri FROM topic_tokens t, json_each(t.tokens) AS je
+		`SELECT t.post_uri
+		 FROM topic_tokens t, json_each(t.tokens) AS je
 		 WHERE t.created_at >= ? AND je.value IN (%s)
-		 ORDER BY t.created_at DESC LIMIT ?`,
+		 GROUP BY t.post_uri
+		 ORDER BY COUNT(DISTINCT je.value) DESC, t.created_at DESC
+		 LIMIT ?`,
 		strings.Join(placeholders, ","),
 	)
 

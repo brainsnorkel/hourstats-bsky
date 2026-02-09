@@ -5,8 +5,16 @@ import (
 	"log"
 	"time"
 
+	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
 )
+
+var adultLabels = map[string]bool{
+	"porn":          true,
+	"sexual":        true,
+	"nudity":        true,
+	"graphic-media": true,
+}
 
 type ExemplarPostFetcher interface {
 	GetPosts(ctx context.Context, uris []string) ([]*bsky.FeedDefs_PostView, error)
@@ -73,6 +81,9 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 				if v == nil || v.Author == nil {
 					continue
 				}
+				if hasAdultLabel(v.Labels) {
+					continue
+				}
 				if usedHandles[v.Author.Handle] {
 					continue
 				}
@@ -82,6 +93,10 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 					bestURI = v.Uri
 					bestHandle = v.Author.Handle
 				}
+			}
+
+			if bestURI != "" {
+				break
 			}
 		}
 
@@ -107,4 +122,13 @@ func postEngagement(v *bsky.FeedDefs_PostView) int {
 		total += int(*v.ReplyCount)
 	}
 	return total
+}
+
+func hasAdultLabel(labels []*atproto.LabelDefs_Label) bool {
+	for _, l := range labels {
+		if l != nil && adultLabels[l.Val] {
+			return true
+		}
+	}
+	return false
 }
