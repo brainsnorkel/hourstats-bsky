@@ -10,6 +10,14 @@ kill_timeout = 15
   TZ = "UTC"
   DATA_DIR = "/data"
   HOURSTATS_PROFILE = "prod"
+  DRY_RUN = "true"
+  ANALYSIS_INTERVAL_MINUTES = "30"
+  TRENDING_ENABLED = "true"
+  TRENDING_INTERVAL = "15"
+  TRENDING_POST_HOURS = "6"
+  S3_BACKUP_BUCKET = "hourstats-sqlite-backups"
+  S3_BACKUP_REGION = "us-west-2"
+  BACKUP_RETAIN_DAYS = "7"
 
 [mounts]
   source = "data"
@@ -17,4 +25,4 @@ kill_timeout = 15
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = 256
+  memory = 512
