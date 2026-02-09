@@ -2,7 +2,7 @@ package topics
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/bluesky-social/indigo/api/atproto"
@@ -54,11 +54,11 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 
 		uris, err := h.store.GetTopicTokenURIsByKeywords(ctx, allKeywords, cutoff, 50)
 		if err != nil {
-			log.Printf("exemplar: query URIs for %q: %v", topic.Cluster.Label, err)
+			slog.Warn("exemplar: query URIs failed", "topic", topic.Cluster.Label, "error", err)
 			continue
 		}
 		if len(uris) == 0 {
-			log.Printf("exemplar: no matching URIs for %q", topic.Cluster.Label)
+			slog.Info("exemplar: no matching URIs", "topic", topic.Cluster.Label)
 			continue
 		}
 
@@ -73,7 +73,7 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 
 			views, err := h.fetcher.GetPosts(ctx, uris[start:end])
 			if err != nil {
-				log.Printf("exemplar: fetch posts for %q: %v", topic.Cluster.Label, err)
+				slog.Warn("exemplar: fetch posts failed", "topic", topic.Cluster.Label, "error", err)
 				continue
 			}
 

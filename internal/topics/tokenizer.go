@@ -195,12 +195,18 @@ var stopwords = map[string]bool{
 	"amazing": true, "awesome": true, "beautiful": true, "funny": true,
 	"crazy": true, "cool": true, "nice": true, "weird": true,
 
-	// generic activity verbs
+	// generic activity verbs & gerunds
 	"watch": true, "watching": true, "show": true, "play": true, "playing": true,
 	"read": true, "post": true, "posted": true, "share": true, "follow": true,
 	"work": true, "working": true, "stop": true, "wait": true, "talk": true, "talking": true,
 	"remember": true, "believe": true, "understand": true, "happen": true, "happened": true,
 	"change": true, "live": true, "win": true, "lost": true, "lose": true,
+	"doing": true, "getting": true, "having": true, "making": true, "trying": true,
+	"looking": true, "saying": true, "coming": true,
+	"taking": true, "giving": true, "telling": true, "thinking": true, "feeling": true,
+	"leaving": true, "running": true, "putting": true, "keeping": true, "calling": true,
+	"asking": true, "using": true, "seeing": true, "hearing": true, "starting": true,
+	"wanting": true, "needing": true, "caring": true, "meaning": true,
 
 	// URL / web noise
 	"www": true, "http": true, "https": true, "url": true,
@@ -226,4 +232,7 @@ var stopwords = map[string]bool{
 	"off": true, "finally": true, "tonight": true, "today": true, "tomorrow": true,
 	"yesterday": true, "ago": true, "since": true, "until": true,
 	"ever": true, "away": true, "enough": true, "else": true,
+	"fun": true, "friends": true, "friend": true, "care": true, "needs": true,
+	"might": true, "check": true, "face": true, "art": true, "media": true,
+	"house": true, "goes": true, "gone": true,
 }

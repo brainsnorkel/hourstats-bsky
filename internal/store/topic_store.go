@@ -103,6 +103,8 @@ func (s *Store) PurgeTopicTokens(ctx context.Context, cutoff string) (int64, err
 	return result.RowsAffected()
 }
 
+const exemplarScanLimit = 10000
+
 func (s *Store) GetTopicTokenURIsByKeywords(ctx context.Context, keywords []string, cutoff string, limit int) ([]string, error) {
 	if len(keywords) == 0 {
 		return nil, nil
@@ -119,11 +121,13 @@ func (s *Store) GetTopicTokenURIsByKeywords(ctx context.Context, keywords []stri
 
 	q := fmt.Sprintf(
 		`SELECT t.post_uri
-		 FROM topic_tokens t, json_each(t.tokens) AS je
-		 WHERE t.created_at >= ? AND je.value IN (%s)
+		 FROM (SELECT post_uri, tokens, created_at FROM topic_tokens WHERE created_at >= ? ORDER BY created_at DESC LIMIT %d) t,
+		      json_each(t.tokens) AS je
+		 WHERE je.value IN (%s)
 		 GROUP BY t.post_uri
 		 ORDER BY COUNT(DISTINCT je.value) DESC, t.created_at DESC
 		 LIMIT ?`,
+		exemplarScanLimit,
 		strings.Join(placeholders, ","),
 	)
 
