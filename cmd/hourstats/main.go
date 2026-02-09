@@ -513,10 +513,18 @@ func postSentimentTrendline(ctx context.Context, db *store.Store, bskyClient *cl
 		return "", ""
 	}
 
-	postText := "Original vs Reply Sentiment"
-	latest := withSplitData[len(withSplitData)-1]
-	altText := fmt.Sprintf("Seven day sentiment trendline. Original posts: %.1f%%. Replies: %.1f%%.",
-		latest.RootSentimentPct, latest.ReplySentimentPct)
+	var rootSum, replySum float64
+	for _, dp := range withSplitData {
+		rootSum += dp.RootSentimentPct
+		replySum += dp.ReplySentimentPct
+	}
+	n := float64(len(withSplitData))
+	rootAvg := rootSum / n
+	replyAvg := replySum / n
+
+	postText := fmt.Sprintf("Seven day original post vs reply sentiment\nOriginal post average: %.1f%%\nReply post average: %.1f%%", rootAvg, replyAvg)
+	altText := fmt.Sprintf("Seven day sentiment trendline. Original posts average: %.1f%%. Replies average: %.1f%%.",
+		rootAvg, replyAvg)
 
 	if dryRun {
 		slog.Info("DRY_RUN: would post sentiment trendline", "points", len(withSplitData), "image_bytes", len(imgData))
