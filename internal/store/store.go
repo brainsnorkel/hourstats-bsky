@@ -16,7 +16,8 @@ import (
 
 // Store wraps a SQLite database connection with all hourstats storage operations.
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	dbPath string
 }
 
 // Post represents a Bluesky post in the buffer.
@@ -127,7 +128,7 @@ func New(dbPath string) (*Store, error) {
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(2)
 
-	s := &Store{db: db}
+	s := &Store{db: db, dbPath: dbPath}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)

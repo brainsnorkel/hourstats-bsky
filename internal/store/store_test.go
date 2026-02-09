@@ -400,10 +400,14 @@ func TestBackup_CreatesAndPrunes(t *testing.T) {
 
 	ctx := context.Background()
 
+	if err := s.SetKeyValue(ctx, "backup_test", "hello"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+
 	if err := s.InsertPost(ctx, Post{
 		URI:       "at://did:plc:abc/app.bsky.feed.post/1",
 		CID:       "cid1",
-		Text:      "backup test",
+		Text:      "transient post",
 		AuthorDID: "did:plc:abc",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
@@ -429,12 +433,20 @@ func TestBackup_CreatesAndPrunes(t *testing.T) {
 	}
 	defer verifyStore.Close()
 
+	val, err := verifyStore.GetKeyValue(ctx, "backup_test")
+	if err != nil {
+		t.Fatalf("GetKeyValue from backup: %v", err)
+	}
+	if val != "hello" {
+		t.Errorf("key_value = %q, want %q", val, "hello")
+	}
+
 	posts, err := verifyStore.GetPostsSince(ctx, time.Time{})
 	if err != nil {
 		t.Fatalf("GetPostsSince from backup: %v", err)
 	}
-	if len(posts) != 1 {
-		t.Errorf("expected 1 post in backup, got %d", len(posts))
+	if len(posts) != 0 {
+		t.Errorf("expected 0 posts in backup (transient data excluded), got %d", len(posts))
 	}
 }
 
