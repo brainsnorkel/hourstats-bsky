@@ -1,135 +1,101 @@
 # Jetstream Migration — Implementation Tasks
 
-## Phase 1: Jetstream Consumer Service
+## Phase 1: Infrastructure (Fly.io)
+- [x] Create `fly.prod.toml` and `fly.staging.toml` with shared-cpu-1x config
+- [x] Create multi-stage `Dockerfile` (golang:1.24-alpine builder → alpine:3.21 runtime)
+- [x] Create `.dockerignore`
+- [x] Create Fly.io apps in sjc region with persistent volumes
+- [x] Set secrets via `fly secrets set`
 
-### Task 1.1: Jetstream Client Library
-- [ ] Create `internal/jetstream/client.go` with WebSocket connection management
-- [ ] Implement `Connect(ctx, endpoint, cursor)` that opens WebSocket and returns an event channel
-- [ ] Implement exponential backoff reconnection (1s, 2s, 4s, 8s, max 30s)
-- [ ] Implement cursor query parameter for resuming from last position
-- [ ] Parse Jetstream JSON events into a `JetstreamEvent` struct
-- [ ] Filter for `kind="commit"`, `operation="create"`, `collection="app.bsky.feed.post"`
-- [ ] Extract: DID, rkey, CID, text, createdAt, langs from `commit.record`
-- [ ] Construct AT-URI: `at://<did>/app.bsky.feed.post/<rkey>`
-- [ ] **Test:** Unit test event parsing with sample Jetstream JSON payloads
-- [ ] **Test:** Unit test AT-URI construction
-- [ ] **Reference:** Jetstream event format at https://github.com/bluesky-social/jetstream
+## Phase 2: SQLite Store (`internal/store/`)
+- [x] Create `store.go` with connection management, WAL mode, busy timeout, schema migration
+- [x] Create `post_buffer.go` with InsertPost, GetPostsSince, PurgeOldPosts
+- [x] Create `cursor.go` with SaveCursor, GetCursor for Jetstream position tracking
+- [x] Create `runs.go` with SaveRun, GetRun, UpdateRun for analysis cycle state
+- [x] Create `sentiment_history.go` with SaveSentimentDataPoint, GetSentimentHistory
+- [x] Create `daily_sentiment.go` with SaveDailySentiment, GetDailySentimentRange
+- [x] Create `daily_top_post.go` for tracking highest engagement posts per day
+- [x] Create `key_value.go` for general key-value storage
+- [x] Create `topic_store.go` for trending topics data (tokens, snapshots, identities)
+- [x] Create `backup.go` with S3 backup streaming (essential tables only, temp file to avoid OOM)
+- [x] Create `store_test.go` and `topic_store_test.go` with comprehensive unit tests
 
-### Task 1.2: DynamoDB Buffer Writer
-- [ ] Add `WindowBufferManager` to `internal/state/` (new file `window_buffer.go`)
-- [ ] Implement `WritePost(ctx, post)` that writes to `PK="window-buffer"`, `SK="<ISO-minute>#<CID>"`
-- [ ] Implement `WriteCursor(ctx, cursor int64)` that writes to `PK="jetstream-cursor"`, `SK="latest"`
-- [ ] Implement `ReadCursor(ctx) (int64, error)` to read stored cursor on startup
-- [ ] Set TTL = current time + 7200 seconds (2 hours) on buffer items
-- [ ] Set TTL = current time + 86400 seconds (24 hours) on cursor item
-- [ ] Use the existing `hourstats-state` DynamoDB table — no new tables required
-- [ ] **Test:** Integration test with DynamoDB Local or mocked client
-- [ ] **Constraint:** Post items must use the existing `state.Post` struct for compatibility
+## Phase 3: Jetstream Consumer (`internal/jetstream/`)
+- [x] Create `types.go` with Event, Commit, PostRecord structs
+- [x] Create `consumer.go` with WebSocket connection to Jetstream, event parsing, cursor management
+- [x] Implement ConsumerConfig with OnPost callback, SaveCursor/LoadCursor hooks
+- [x] Filter for kind=commit, operation=create, collection=app.bsky.feed.post
+- [x] English language filter (require explicit lang=en tag)
+- [x] Create `consumer_test.go` with unit tests
 
-### Task 1.3: Consumer Binary
-- [ ] Create `cmd/jetstream-consumer/main.go`
-- [ ] Wire up: Jetstream client → event channel → buffer writer
-- [ ] Persist cursor every 10 seconds in a background goroutine
-- [ ] Handle SIGTERM: flush cursor, close WebSocket, exit within 30s
-- [ ] Add CloudWatch metrics via embedded metric format (EMF) logs:
-  - `PostsIngested`, `ConnectionStatus`, `WriteErrors`, `EventsDiscarded`
-- [ ] Add structured logging with `log/slog`
-- [ ] **Test:** Manual test against live Jetstream endpoint
-- [ ] **Build:** Add to Makefile and Dockerfile (multi-stage Go build)
+## Phase 4: Engagement Hydrator (`internal/hydrator/`)
+- [x] Create `hydrator.go` with batch getPosts API calls (25 URIs/batch)
+- [x] Implement concurrent hydration with semaphore
+- [x] Handle resolution from DID via getPosts response
+- [x] Adult content label filtering
+- [x] Create `hydrator_test.go` with unit tests
 
-### Task 1.4: ECS Fargate Infrastructure
-- [ ] Create ECR repository: `hourstats-jetstream-consumer`
-- [ ] Create ECS cluster (or reference existing): `hourstats`
-- [ ] Create ECS task definition: 0.25 vCPU, 0.5 GB RAM, Fargate Spot
-- [ ] Create ECS service: desired count = 1, min healthy = 0, max = 1
-- [ ] IAM task role: `dynamodb:PutItem`, `dynamodb:GetItem` on `hourstats-state`
-- [ ] IAM task execution role: ECR pull, CloudWatch Logs
-- [ ] Security group: egress-only (443 for WebSocket + DynamoDB endpoint)
-- [ ] CloudWatch log group: `/ecs/hourstats-jetstream-consumer`, 7-day retention
-- [ ] CloudWatch alarm: `ConnectionStatus` metric < 1 for 5 minutes → SNS notification
-- [ ] All Terraform in `terraform/` directory, following existing conventions
-- [ ] **Validate:** `terraform plan` shows only additive changes
+## Phase 5: Main Binary (`cmd/hourstats/`)
+- [x] Create `main.go` with single-binary architecture
+- [x] Wire Jetstream consumer as auto-restarting goroutine with exponential backoff
+- [x] Implement wall-clock aligned scheduler (fires at clean UTC boundaries)
+- [x] 30-min analysis cycle: read buffer → hydrate → analyze → post → sparkline → trendline
+- [x] Daily cycle: backup + daily aggregation + daily top-post quote reply
+- [x] Yearly cycle: yearly chart + profile pin (monthly on 1st at 01:00 UTC)
+- [x] Stall detection: warn if no Jetstream posts received for 5+ minutes
+- [x] Graceful shutdown on SIGTERM/SIGINT with cursor persistence
+- [x] Root vs reply sentiment tracking in analysis cycle
 
-## Phase 2: Window Trigger Lambda
+## Phase 6: Charting Extensions
+- [x] Sentiment trendline chart (root vs reply) in `internal/sparkline/sentiment_trendline_generator.go`
+- [x] Daily volume chart in `internal/sparkline/daily_volume_generator.go`
+- [x] Yearly volume chart in `internal/sparkline/yearly_volume_generator.go`
+- [x] Trending topics bump chart in `internal/sparkline/trending_chart_generator.go`
+- [x] LLM-generated alt text for trending chart via Gemini
 
-### Task 2.1: Buffer Query Logic
-- [ ] Add `QueryWindowBuffer(ctx, from, to time.Time) ([]Post, error)` to `WindowBufferManager`
-- [ ] Query: `PK="window-buffer"` AND `SK BETWEEN "<from-minute>#" AND "<to-minute>#~"`
-- [ ] Handle DynamoDB pagination (LastEvaluatedKey loop)
-- [ ] Return posts sorted by createdAt
-- [ ] **Test:** Unit test with mocked DynamoDB responses
+## Phase 7: Trending Topics (`internal/topics/`)
+- [x] Create `tokenizer.go` — lowercase, strip URLs/@mentions/emoji, stopword removal
+- [x] Create `tfidf.go` — TF-IDF scoring across 24h corpus
+- [x] Create `grouper.go` — Gemini Flash semantic grouping with synonym maps
+- [x] Create `ranker.go` — volume-based ranking (top 5 by post count)
+- [x] Create `tracker.go` — Jaccard similarity identity tracking with stable UUIDs
+- [x] Create `exemplar.go` — highest-engagement exemplar post selection
+- [x] Create `formatter.go` — post text formatting with movement indicators
+- [x] Create `analyzer.go` — orchestrates 15-min analysis cycle and 6-hour posting
+- [x] Create `types.go` — shared type definitions
+- [x] Unit tests for all packages (tokenizer, tfidf, grouper, ranker, tracker, exemplar, formatter, analyzer)
 
-### Task 2.2: Engagement Hydration
-- [ ] Add `HydrateEngagement(ctx, posts []Post) ([]Post, error)` to `internal/client/bluesky.go`
-- [ ] Call `app.bsky.feed.getPosts` in batches of 25 URIs
-- [ ] Run 10 concurrent goroutines with a semaphore
-- [ ] Rate limit: max 500 requests per minute (well under 3,000/5min limit)
-- [ ] For each response, update: likes, reposts, replies, author handle
-- [ ] For failed/missing posts: retain with zero engagement, log warning
-- [ ] Apply adult content label filtering (reuse existing `hasAdultContentLabel`)
-- [ ] **Test:** Unit test with mocked API responses
-- [ ] **Test:** Verify rate limiting doesn't exceed API limits
+## Phase 8: Data Migration Tools
+- [x] Create `cmd/import-dynamodb/main.go` for seeding SQLite from DynamoDB exports
+- [x] Create `cmd/force-trending/main.go` for manual trending topic triggers
 
-### Task 2.3: Modify Fetcher Lambda
-- [ ] Refactor `cmd/lambda-fetcher/main.go` Handle method:
-  1. Create run (existing `createRun` — unchanged)
-  2. Query buffer via `WindowBufferManager.QueryWindowBuffer`
-  3. If buffer has >= 250 posts: hydrate engagement, re-key as PostBatch, dispatch processor
-  4. If buffer has < 250 posts: fall back to existing `fetchAllPostsInParallel` (search API)
-  5. Dispatch processor (existing `dispatchProcessor` — unchanged)
-- [ ] Add 12-minute time budget for hydration step (leave 3 min for dispatch + overhead)
-- [ ] Log which path was taken (buffer vs fallback) and post counts
-- [ ] **Test:** Unit test both paths (buffer path and fallback path)
-- [ ] **Test:** Integration test: run consumer for 35 min, trigger window trigger, verify processor receives data
+## Phase 9: Parallel Run (IN PROGRESS)
+- [ ] Verify daily aggregation runs at midnight UTC
+- [ ] Verify yearly chart posting on staging
+- [ ] Verify cursor persistence survives Fly.io restarts
+- [ ] Verify consumer auto-reconnect on WebSocket failure
+- [ ] Run 1 week stable on staging
+- [ ] Compare sentiment distribution vs Lambda production
 
-### Task 2.4: PostBatch Re-keying
-- [ ] After hydration, write posts using existing `StateManager.AddPosts(ctx, runId, posts)`
-- [ ] This already handles batching into groups of 100 and correct DynamoDB key format
-- [ ] Update RunState with `totalPostsRetrieved`, `totalAPIPostsReturned`, timestamps
-- [ ] **Verify:** Processor's `GetAllPosts(ctx, runId)` returns the re-keyed posts correctly
+## Phase 10: Production Cutover (NOT STARTED)
+- [ ] Configure prod Fly.io secrets
+- [ ] Seed prod SQLite with DynamoDB historical data
+- [ ] Deploy to hourstats-prod
+- [ ] Disable AWS EventBridge rules
+- [ ] Monitor first 6 runs
 
-## Phase 3: Cutover
+## Phase 11: AWS Decommission (NOT STARTED)
+- [ ] Export final DynamoDB archive
+- [ ] terraform destroy Lambda + EventBridge
+- [ ] 30-day DynamoDB retention period
+- [ ] Final terraform destroy
+- [ ] Remove Lambda CI/CD workflow
+- [ ] Clean up cmd/lambda-* and internal/state/ code
 
-### Task 3.1: Deploy Consumer
-- [ ] Build and push Docker image to ECR
-- [ ] `terraform apply` to create ECS resources
-- [ ] Verify consumer connects and writes to buffer (check CloudWatch logs + DynamoDB scan)
-- [ ] Let run for 1 hour to accumulate data
+## Documentation Updates (IN PROGRESS)
+- [x] Create docs/TRENDING_TOPICS.md
+- [ ] Update ARCHITECTURE.md for Fly.io architecture
+- [ ] Update README.md (architecture, tech stack, project structure)
+- [ ] Mark AWS docs as legacy
+- [ ] Update BACKUP_RECOVERY.md for SQLite/S3
 
-### Task 3.2: Deploy Modified Fetcher
-- [ ] Deploy new Lambda code (same function name, new code)
-- [ ] First run: verify it reads from buffer, hydrates engagement, dispatches processor
-- [ ] Monitor CloudWatch logs for the first 3 runs (90 minutes):
-  - Post count should be 5-10x higher than previous runs
-  - Sentiment analysis should produce valid results
-  - Top-5 posts should have non-zero engagement and clickable handles
-  - Sparkline should post correctly as reply
-
-### Task 3.3: Validate
-- [ ] Compare 3 consecutive runs against recent historical runs:
-  - Total posts retrieved (expect 30,000–100,000 vs previous 2,000–10,000)
-  - Sentiment distribution (should be similar — more data, but similar ratio)
-  - Top-5 engagement scores (should be equal or higher — larger pool)
-  - Bluesky post format unchanged (mood hashtag, 5 authors with links, sentiment symbols)
-- [ ] Verify DynamoDB costs are within acceptable range (check Billing console)
-- [ ] Verify ECS Fargate costs (check Cost Explorer)
-
-## Phase 4: Cleanup
-
-### Task 4.1: Remove Dead Code
-- [ ] Remove `fetchAllPostsInParallel` from `cmd/lambda-fetcher/main.go` (keep as fallback if desired)
-- [ ] Remove timeout-skipping cursor heuristics (no longer needed)
-- [ ] Remove `maxIterations` and `earlyStopTime` constants (no longer applicable)
-- [ ] Keep `GetTrendingPostsBatch` and `GetTrendingPosts` in `internal/client/bluesky.go` (useful for testing)
-
-### Task 4.2: Update Specifications
-- [ ] Update `openspec/specs/post-fetching/spec.md` to reference Jetstream consumer + window trigger
-- [ ] Move current post-fetching spec to an archive section
-- [ ] Update `asyncapi.yaml` with new event flow (Jetstream → Consumer → DynamoDB → Window Trigger → Processor)
-- [ ] Add `openspec/specs/jetstream-consumer/spec.md` (from this change)
-- [ ] Add `openspec/specs/window-trigger/spec.md` (from this change)
-
-### Task 4.3: Documentation
-- [ ] Update `README.md` Architecture section to describe Jetstream-based pipeline
-- [ ] Update project structure diagram to include `cmd/jetstream-consumer/`
-- [ ] Add operational runbook: how to restart consumer, check cursor, manually trigger window

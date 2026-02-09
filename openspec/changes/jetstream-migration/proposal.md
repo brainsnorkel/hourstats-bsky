@@ -12,19 +12,27 @@ Jetstream is Bluesky's official real-time JSON event stream. It delivers **every
 
 ## What Changes
 
-- **Replace** the search-API-based `lambda-fetcher` with a persistent Jetstream consumer service (ECS Fargate) that buffers posts into DynamoDB continuously
-- **Simplify** the fetcher Lambda into a lightweight "window closer" that stamps a run and dispatches the processor
-- **Preserve** the entire downstream pipeline unchanged: processor, sparkline poster, daily aggregator, yearly poster all continue to work with the same DynamoDB state and event contracts
+- **Replace** the search-API-based Lambda pipeline with a single Go binary running on Fly.io
+- **Replace** DynamoDB state management with SQLite on a persistent volume
+- **Replace** the ECS Fargate Jetstream consumer with a goroutine within the same binary
+- **Replace** EventBridge scheduled triggers with wall-clock aligned in-process tickers
+- **Add** trending topics feature (TF-IDF + Gemini Flash, bump chart, every 6h)
+- **Add** S3 backup for SQLite database
+- **Preserve** the entire downstream logic: VADER sentiment, post formatting, chart generation
 
 ## Capabilities
 
 ### New Capabilities
-- `jetstream-consumer`: Persistent WebSocket consumer that ingests all `app.bsky.feed.post` events from Jetstream and writes them to DynamoDB in rolling 30-minute windows
-- `window-trigger`: Replaces the search-based fetcher — creates a run, closes the current window, and dispatches the processor
+- `jetstream-consumer`: Goroutine within the main binary that ingests all `app.bsky.feed.post` events from Jetstream and buffers them in SQLite
+- `analysis-scheduler`: Wall-clock aligned tickers that trigger analysis cycles
+- `sqlite-store`: Local SQLite storage for buffered posts and run state
+- `engagement-hydrator`: Hydrates real-time engagement metrics for buffered posts
+- `trending-topics`: Extracts and tracks trending topics using TF-IDF and Gemini Flash
+- `s3-backup`: Periodic backup of the SQLite database to S3
 
 ### Modified Capabilities
-- `post-fetching`: Replaced entirely by `jetstream-consumer` + `window-trigger`
-- `run-coordination`: Minor update — run creation now references a pre-populated window rather than triggering a fetch
+- `post-fetching`: Replaced by `jetstream-consumer` + `engagement-hydrator`
+- `run-coordination`: Now internal to the single binary
 
 ### Unchanged Capabilities
 - `sentiment-analysis`
@@ -36,10 +44,12 @@ Jetstream is Bluesky's official real-time JSON event stream. It delivers **every
 
 ## Impact
 
-- `cmd/lambda-fetcher/` — gutted and replaced with window-trigger logic
-- `cmd/jetstream-consumer/` — new ECS service
-- `internal/client/bluesky.go` — `GetTrendingPostsBatch` and `GetTrendingPosts` become unused (retained for fallback/testing)
-- `internal/state/state.go` — new `WindowManager` for writing/reading windowed post buffers
-- `terraform/` — new ECS Fargate task definition, ECR repository, security groups, CloudWatch log group
-- `asyncapi.yaml` — updated event flow diagram
-- No changes to: processor, sparkline poster, daily aggregator, yearly poster, formatter, analyzer
+- `cmd/hourstats/` — new single binary entry point (replaces all `cmd/lambda-*`)
+- `internal/store/` — new SQLite storage layer (replaces `internal/state/`)
+- `internal/jetstream/` — new Jetstream consumer package
+- `internal/hydrator/` — new engagement hydration package
+- `internal/topics/` — new trending topics package
+- `internal/sparkline/` — extended with trendline, volume, trending chart generators
+- `fly.prod.toml`, `fly.staging.toml` — Fly.io deployment configs
+- `Dockerfile` — multi-stage build for Fly.io
+- No changes to: `internal/analyzer/`, `internal/formatter/`, `internal/client/` (core logic reused)

@@ -19,19 +19,56 @@ type Facet struct {
 	Value     string // tag text (without #) or URL
 }
 
+const maxGraphemes = 300
+
 func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (string, []Facet) {
 	prevRank := make(map[string]int)
 	for _, p := range previous {
 		prevRank[p.TopicID] = p.Rank
 	}
 
+	showExemplar := make([]bool, len(ranked))
+	for i := range ranked {
+		showExemplar[i] = true
+	}
+
+	text := buildTrendingText(ranked, prevRank, showExemplar)
+	for len([]rune(text)) > maxGraphemes {
+		dropped := false
+		for i := len(ranked) - 1; i >= 0; i-- {
+			if showExemplar[i] {
+				showExemplar[i] = false
+				dropped = true
+				break
+			}
+		}
+		if !dropped {
+			break
+		}
+		text = buildTrendingText(ranked, prevRank, showExemplar)
+	}
+
+	filtered := make([]IdentifiedTopic, len(ranked))
+	for i, t := range ranked {
+		filtered[i] = t
+		if !showExemplar[i] {
+			filtered[i].ExemplarHandle = ""
+			filtered[i].ExemplarURI = ""
+		}
+	}
+
+	facets := buildFacets(text, filtered)
+	return text, facets
+}
+
+func buildTrendingText(ranked []IdentifiedTopic, prevRank map[string]int, showExemplar []bool) string {
 	var b strings.Builder
 	b.WriteString("Bluesky trending topics\n\n")
 
-	for _, topic := range ranked {
+	for i, topic := range ranked {
 		movement := movementIndicator(topic.TopicID, topic.Rank, prevRank)
 		line := fmt.Sprintf("#%d %s %s", topic.Rank, topic.Cluster.Label, movement)
-		if topic.ExemplarHandle != "" {
+		if showExemplar[i] && topic.ExemplarHandle != "" {
 			line += fmt.Sprintf(" @%s", topic.ExemplarHandle)
 		}
 		b.WriteString(line)
@@ -39,10 +76,7 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (s
 	}
 
 	b.WriteString("\n#trending #hourstatstrend")
-
-	text := b.String()
-	facets := buildFacets(text, ranked)
-	return text, facets
+	return b.String()
 }
 
 func movementIndicator(topicID string, rank int, prevRank map[string]int) string {
@@ -61,22 +95,21 @@ func movementIndicator(topicID string, rank int, prevRank map[string]int) string
 }
 
 func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
-	textBytes := []byte(text)
 	var facets []Facet
 
+	searchFrom := 0
 	for _, topic := range ranked {
 		if topic.ExemplarHandle == "" || topic.ExemplarURI == "" {
 			continue
 		}
 		mention := "@" + topic.ExemplarHandle
-		idx := strings.Index(text, mention)
+		idx := strings.Index(text[searchFrom:], mention)
 		if idx < 0 {
 			continue
 		}
-		byteStart := len(textBytes[:idx])
-		_ = byteStart
-		byteStart = idx
+		byteStart := searchFrom + idx
 		byteEnd := byteStart + len([]byte(mention))
+		searchFrom = byteEnd
 
 		webURL := convertExemplarURI(topic.ExemplarURI)
 		facets = append(facets, Facet{

@@ -36,6 +36,8 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 	result := make([]IdentifiedTopic, len(topics))
 	copy(result, topics)
 
+	usedHandles := make(map[string]bool)
+
 	for i, topic := range result {
 		allKeywords := append(topic.Cluster.Keywords, topic.Cluster.Synonyms...)
 		if len(allKeywords) == 0 {
@@ -68,16 +70,17 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			}
 
 			for _, v := range views {
-				if v == nil {
+				if v == nil || v.Author == nil {
+					continue
+				}
+				if usedHandles[v.Author.Handle] {
 					continue
 				}
 				eng := postEngagement(v)
 				if eng > bestEngagement {
 					bestEngagement = eng
 					bestURI = v.Uri
-					if v.Author != nil {
-						bestHandle = v.Author.Handle
-					}
+					bestHandle = v.Author.Handle
 				}
 			}
 		}
@@ -85,6 +88,7 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 		if bestURI != "" {
 			result[i].ExemplarURI = bestURI
 			result[i].ExemplarHandle = bestHandle
+			usedHandles[bestHandle] = true
 		}
 	}
 

@@ -4,11 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/bluesky-social/indigo/api/bsky"
-	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
@@ -16,6 +15,7 @@ type AnalyzerStore interface {
 	TopicStore
 	ExemplarTokenStore
 	GetTopicTokensSince(ctx context.Context, cutoff string) ([]store.TopicTokenRow, error)
+	GetTopicTokensSinceLimit(ctx context.Context, cutoff string, limit int) ([]store.TopicTokenRow, error)
 	CountTopicTokensSince(ctx context.Context, cutoff string) (int64, error)
 	PurgeTopicTokens(ctx context.Context, cutoff string) (int64, error)
 	InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string) error
@@ -25,7 +25,7 @@ type AnalyzerStore interface {
 }
 
 type TrendingPoster interface {
-	PostWithImage(ctx context.Context, text string, imageData []byte, altText string, facets ...[]*bsky.RichtextFacet) (string, string, error)
+	PostWithFacets(ctx context.Context, text string, facets []*bsky.RichtextFacet) error
 }
 
 type Analyzer struct {
@@ -48,6 +48,8 @@ func NewAnalyzer(s AnalyzerStore, geminiAPIKey string, fetcher ExemplarPostFetch
 	}
 }
 
+const maxTFIDFRows = 20000
+
 func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 	start := time.Now()
 
@@ -57,7 +59,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		return fmt.Errorf("purge tokens: %w", err)
 	}
 	if purged > 0 {
-		log.Printf("topics: purged %d expired tokens", purged)
+		slog.Info("topics: purged expired tokens", "count", purged)
 	}
 
 	snapshotPurge := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
@@ -71,33 +73,35 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		return fmt.Errorf("count tokens: %w", err)
 	}
 	if count < int64(MinCorpusSize) {
-		log.Printf("topics: corpus too small (%d < %d), skipping cycle", count, MinCorpusSize)
+		slog.Info("topics: corpus too small, skipping", "count", count, "min", MinCorpusSize)
 		return nil
 	}
 
-	rows, err := a.store.GetTopicTokensSince(ctx, tokenCutoff)
+	rows, err := a.store.GetTopicTokensSinceLimit(ctx, tokenCutoff, maxTFIDFRows)
 	if err != nil {
 		return fmt.Errorf("get tokens: %w", err)
 	}
+	slog.Info("topics: loaded tokens for TF-IDF", "rows", len(rows), "total_available", count)
 
 	terms := ComputeTFIDF(rows)
 	if len(terms) == 0 {
-		log.Printf("topics: no significant terms found, skipping")
+		slog.Warn("topics: no significant terms found, skipping")
 		return nil
 	}
-	log.Printf("topics: TF-IDF computed, %d terms (%.1fs)", len(terms), time.Since(start).Seconds())
+	slog.Info("topics: TF-IDF computed", "terms", len(terms), "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 
 	clusters, err := a.grouper.GroupAndLabel(ctx, terms)
 	if err != nil {
-		log.Printf("topics: grouper error (using fallback): %v", err)
+		slog.Warn("topics: grouper error, using fallback", "error", err)
 	}
 	if len(clusters) == 0 {
-		log.Printf("topics: no clusters produced, skipping")
+		slog.Warn("topics: no clusters produced, skipping")
 		return nil
 	}
 
 	ranked := RankTopics(clusters, rows)
 	if len(ranked) == 0 {
+		slog.Warn("topics: no ranked topics produced")
 		return nil
 	}
 
@@ -116,7 +120,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("topics: analysis cycle complete, %d topics ranked (%.1fs total)", len(identified), time.Since(start).Seconds())
+	slog.Info("topics: analysis cycle complete", "topics", len(identified), "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 	return nil
 }
 
@@ -130,7 +134,7 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	}
 
 	if len(snapshots) == 0 {
-		log.Printf("topics: no snapshots for trending post, skipping")
+		slog.Info("topics: no snapshots for trending post, skipping")
 		return nil
 	}
 
@@ -157,7 +161,7 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 
 	latestTopics, err = a.hydrator.HydrateExemplars(ctx, latestTopics)
 	if err != nil {
-		log.Printf("topics: exemplar hydration error: %v", err)
+		slog.Warn("topics: exemplar hydration error", "error", err)
 	}
 
 	previousCutoff := time.Now().UTC().Add(-12 * time.Hour).Format(time.RFC3339)
@@ -179,19 +183,8 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 
 	text, facets := FormatTrendingPost(latestTopics, previous)
 
-	trajectories := buildTrajectories(snapshots, latestTopics)
-	altText := a.grouper.GenerateAltText(ctx, latestTopics, trajectories)
-	log.Printf("topics: alt text (%d chars): %s", len(altText), altText)
-
-	chartData, err := sparkline.GenerateTrendingChart(snapshots)
-	if err != nil {
-		log.Printf("topics: chart generation error: %v", err)
-	}
-
 	if dryRun {
-		log.Printf("topics: DRY RUN trending post:\n%s", text)
-		log.Printf("topics: alt text: %s", altText)
-		log.Printf("topics: %d facets, chart=%d bytes", len(facets), len(chartData))
+		slog.Info("topics: DRY RUN trending post", "text", text, "facets", len(facets))
 		return nil
 	}
 
@@ -200,12 +193,11 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	}
 
 	bskyFacets := convertFacets(facets)
-	_, _, err = poster.PostWithImage(ctx, text, chartData, altText, bskyFacets)
-	if err != nil {
+	if err := poster.PostWithFacets(ctx, text, bskyFacets); err != nil {
 		return fmt.Errorf("post trending: %w", err)
 	}
 
-	log.Printf("topics: trending post published (%.1fs)", time.Since(start).Seconds())
+	slog.Info("topics: trending post published", "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 	return nil
 }
 

@@ -1,184 +1,212 @@
 # HourStats Architecture
 
-HourStats is a Bluesky sentiment analysis bot that runs on AWS Lambda. It fetches trending posts from Bluesky's public API, analyzes sentiment using VADER, and posts hourly summaries back to Bluesky along with sparkline and yearly trend charts.
+HourStats is a Bluesky sentiment analysis bot. It ingests every public English-language Bluesky post in real time via Jetstream, analyzes sentiment using VADER, and posts 30-minute summaries with the top 5 most engaged posts, sparkline charts, and trending topics.
 
-## System Overview
+> **Migration status:** The project is migrating from AWS Lambda to Fly.io. Production currently runs on AWS Lambda; the `migrate-to-jetstream` branch contains the complete Fly.io reimplementation. See the [Migration Plan](openspec/changes/jetstream-migration/MIGRATION_PLAN.md) for details.
+
+## System Overview (Fly.io Architecture)
 
 ```
-EventBridge (every 30 min)
+Bluesky Network (all posts)
         |
+        | Jetstream WebSocket
         v
-  +-----------+     async invoke     +-------------+     async invoke     +-------------------+
-  |  Fetcher  | ------------------> |  Processor   | ------------------> | Sparkline Poster  |
-  +-----------+                     +-------------+                      +-------------------+
-  Creates run state                 Analyzes sentiment                   Generates 7-day chart
-  Fetches posts from Bluesky API    Ranks top posts                      Posts as reply to summary
-  Stores posts in DynamoDB          Posts summary to Bluesky
-                                    Stores sentiment history
+  +-------------------+
+  | Jetstream Consumer |  goroutine — always running
+  | (internal/jetstream)|  filters: English, post creates only
+  +-------------------+
+        |
+        | InsertPost()
+        v
+  +-------------------+
+  | SQLite Database   |  /data/hourstats-{profile}.db
+  | (internal/store)  |  WAL mode, busy timeout
+  +-------------------+
+        |
+        | Wall-clock aligned tickers
+        v
+  +---------+  every 30 min   +---------+  every 15 min   +----------+  every 6h
+  | Analysis|                 | Topic   |                 | Trending |
+  | Cycle   |                 | Analysis|                 | Post     |
+  +---------+                 +---------+                 +----------+
+  Read posts since cutoff     TF-IDF extraction           Hydrate exemplar posts
+  Hydrate engagement          Gemini Flash grouping       Generate bump chart
+  VADER sentiment analysis    Volume-based ranking        Format + post to Bluesky
+  Post summary to Bluesky     Identity tracking
+  Generate sparkline reply    Store snapshot
+  Generate trendline reply
 
-EventBridge (daily midnight UTC)         EventBridge (daily 1am UTC)
-        |                                        |
-        v                                        v
-  +-------------------+                  +----------------+
-  | Daily Aggregator  |                  | Yearly Poster  |
-  +-------------------+                  +----------------+
-  Aggregates 24h sentiment               Generates 365-day chart
-  into daily summary                     Posts to Bluesky + pins
+  +----------+  daily midnight   +----------+  monthly 1st 01:00 UTC
+  | Daily    |                   | Yearly   |
+  | Cycle    |                   | Cycle    |
+  +----------+                   +----------+
+  SQLite backup → S3             Generate yearly chart
+  Daily aggregation              Post + pin to profile
+  Top-post quote reply
 ```
 
-## Lambda Functions
+## Single Binary Architecture
 
-### Hourly Pipeline (async invocation chain)
+Everything runs inside a single Go binary (`cmd/hourstats/main.go`) on Fly.io:
 
-| Function | Trigger | Timeout | Memory | Purpose |
-|----------|---------|---------|--------|---------|
-| `hourstats-fetcher` | EventBridge `rate(30 minutes)` | 15 min | 128 MB | Creates run state, fetches posts from Bluesky API, stores in DynamoDB, dispatches processor |
-| `hourstats-processor` | Async invoke from fetcher | 5 min | 128 MB | Analyzes sentiment (VADER), ranks posts by engagement, posts summary to Bluesky, stores sentiment history, dispatches sparkline poster |
-| `hourstats-sparkline-poster` | Async invoke from processor | 5 min | 256 MB | Generates 7-day sparkline PNG, posts as reply to main summary |
+| Component | Implementation | Trigger |
+|-----------|---------------|---------|
+| **Jetstream Consumer** | Goroutine calling `internal/jetstream/consumer.go` | Always running (auto-restart on failure) |
+| **Analysis Cycle** | `runAnalysisCycle()` | Wall-clock ticker every 30 min |
+| **Sparkline + Trendline** | Called sequentially after analysis | Part of analysis cycle |
+| **Topic Analysis** | `topics.Analyzer.RunAnalysisCycle()` | Wall-clock ticker every 15 min |
+| **Trending Post** | `topics.Analyzer.RunTrendingPost()` | Wall-clock ticker every 6h |
+| **Daily Cycle** | `runBackup()` + `runDailyAggregation()` + `runDailyTopPostQuote()` | Wall-clock ticker daily midnight UTC |
+| **Yearly Posting** | `runYearlyPosting()` | Wall-clock ticker daily 01:00 UTC (posts on 1st) |
+| **Stall Detection** | Checks `lastPostReceived` atomic | Ticker every 5 min |
 
-### Scheduled Functions (independent)
+### Wall-Clock Aligned Scheduling
 
-| Function | Trigger | Timeout | Memory | Purpose |
-|----------|---------|---------|--------|---------|
-| `hourstats-daily-aggregator` | EventBridge `cron(0 0 * * ? *)` | 5 min | 256 MB | Aggregates 24h of sentiment history into daily summary |
-| `hourstats-yearly-poster` | EventBridge `cron(0 1 * * ? *)` | 10 min | 512 MB | Generates yearly sentiment chart, posts to Bluesky, pins to profile |
+Tickers fire at clean UTC clock boundaries (e.g., :00 and :30 for the 30-minute cycle) rather than at fixed intervals from process start. This means deploys and restarts don't shift the schedule.
 
 ## Data Flow
 
-### Hourly Pipeline
+### 30-Minute Sentiment Pipeline
 
-1. **EventBridge** fires every 30 minutes
-2. **Fetcher** creates a `RunState` in DynamoDB with a unique run ID and cutoff time, then fetches posts from Bluesky's trending/search API using cursor-based pagination. Posts are stored in DynamoDB in batches. When complete, it asynchronously invokes the processor.
-3. **Processor** reads all posts for the run from DynamoDB, deduplicates by URI, filters by cutoff time, analyzes sentiment using the VADER algorithm, selects top 5 posts by engagement score, formats and posts a summary to Bluesky, stores a sentiment data point for sparkline generation, and asynchronously invokes the sparkline poster.
-4. **Sparkline Poster** reads 7 days of sentiment history, generates a sparkline chart image using the `gg` graphics library, and posts it as a reply to the main summary post.
+1. **Jetstream** → Consumer goroutine receives ~1,500–3,000 posts/min via WebSocket
+2. **Consumer** → Filters for English (`lang=en`), post creates only → inserts to SQLite `post_buffer`
+3. **Ticker** fires at :00 or :30 UTC → `runAnalysisCycle()`
+4. **Read** posts from SQLite since cutoff (30 min ago)
+5. **Hydrate** engagement via `app.bsky.feed.getPosts` (25 URIs/batch, concurrent) — resolves handles from DIDs
+6. **Analyze** sentiment using VADER, categorize posts (+/-/x), select top 5 by engagement
+7. **Post** summary to Bluesky with mood hashtag, clickable handle facets, embed card
+8. **Generate** 7-day sparkline chart PNG → post as reply
+9. **Generate** sentiment trendline chart (root vs reply) → post as reply
+10. **Save** run state and sentiment data point to SQLite
+
+### Trending Topics Pipeline
+
+1. **On ingest**: Root posts (non-replies) are tokenized and stored in `topic_tokens`
+2. **Every 15 min**: TF-IDF extracts top 30 terms → Gemini Flash groups into 5 topics → rank by post volume → track identities via Jaccard similarity → store snapshot
+3. **Every 6h**: Hydrate exemplar posts → generate bump chart → format post text with movement indicators → post to Bluesky (standalone, not threaded)
 
 ### Daily/Yearly Pipeline
 
-1. **Daily Aggregator** runs at midnight UTC, reads all sentiment data points from the past 24 hours, calculates min/max/average sentiment, and stores a daily summary.
-2. **Yearly Poster** runs at 1am UTC, reads up to 365 days of daily summaries, generates a yearly trend chart, and posts it to Bluesky with Wikipedia event links for sentiment extremes.
+1. **Daily** (midnight UTC): Back up SQLite to S3 → aggregate day's sentiment → quote-reply the day's top post
+2. **Yearly** (1st of month, 01:00 UTC): Generate 365-day chart → post to Bluesky → pin to profile
 
-## DynamoDB Tables
+## SQLite Database
 
-### `hourstats-state`
+All state stored in a single SQLite file on Fly.io persistent volume (`/data/hourstats-{profile}.db`). WAL mode enabled, 10-second busy timeout.
 
-Primary state table for run coordination and post storage.
+### Tables
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `runId` (PK) | String | Unique run identifier (`run-{unixnano}`) |
-| `postId` (SK) | String | Either step name (`orchestrator`, `fetcher`, `analyzer`, `aggregator`) for run metadata, or `post-{index}` / `batch-{index}` for post data |
+| Table | Purpose | Retention |
+|-------|---------|-----------|
+| `post_buffer` | Buffered posts from Jetstream | 2 hours (purged each cycle) |
+| `runs` | Analysis cycle state (run ID, status, post count, sentiment) | 48 hours |
+| `sentiment_history` | Per-run sentiment data points (for sparklines) | 8 days |
+| `daily_sentiment` | Aggregated daily sentiment (for yearly charts) | 3 years |
+| `daily_top_post` | Highest engagement post per day | 3 years |
+| `key_value` | Jetstream cursor, general settings | Permanent |
+| `topic_tokens` | Tokenized root posts for TF-IDF | 26 hours |
+| `topic_snapshots` | 15-min topic analysis results | 48 hours |
+| `topic_identity` | Persistent topic UUIDs and colours | 7 days |
 
-**Global Secondary Indexes:**
-- `status-index` (PK: `status`, SK: `createdAt`) — query runs by status
-- `posts-index` (PK: `runId`, SK: `postId`) — efficient post retrieval
-- `runs-index` (PK: `runId`, SK: `createdAt`) — run listing
+## Environment Configuration
 
-**TTL:** 2 days (automatic cleanup)
-
-### `hourstats-sentiment-history`
-
-Stores per-run sentiment data points for sparkline generation.
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `runId` (PK) | String | Run identifier |
-| `timestamp` (SK) | String | ISO 8601 timestamp |
-
-**Key fields:** `netSentimentPercent`, `sentimentCategory`, `totalPosts`, `averageCompoundScore`
-
-**GSI:** `timestamp-index` (PK: `timestamp`, SK: `runId`)
-
-### `hourstats-daily-sentiment`
-
-Stores aggregated daily sentiment summaries.
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `date` (PK) | String | Date in `YYYY-MM-DD` format |
-| `runId` (SK) | String | Daily aggregate identifier |
-
-**Key fields:** `averageSentiment`, `minSentiment`, `maxSentiment`, `totalRuns`, `totalPosts`
-
-**GSI:** `date-index` (PK: `date`, SK: `createdAt`)
-
-**TTL:** 3 years
-
-## AWS Resources
-
-### EventBridge Rules
-
-| Rule | Schedule | Target |
-|------|----------|--------|
-| `hourstats-schedule` | `rate(30 minutes)` | `hourstats-fetcher` |
-| `hourstats-daily-aggregation-schedule` | `cron(0 0 * * ? *)` | `hourstats-daily-aggregator` |
-| `hourstats-yearly-posting-schedule` | `cron(0 1 * * ? *)` | `hourstats-yearly-poster` |
-
-### SSM Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `/hourstats/bluesky/handle` | String | Bluesky account handle |
-| `/hourstats/bluesky/password` | SecureString | Bluesky app password |
-| `/hourstats/settings/analysis_interval_minutes` | String | Analysis window (default: 60) |
-| `/hourstats/settings/top_posts_count` | String | Number of top posts (default: 5) |
-| `/hourstats/settings/min_engagement_score` | String | Minimum engagement threshold |
-| `/hourstats/settings/dry_run` | String | Kill switch — prevents posting to Bluesky |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOURSTATS_PROFILE` | `staging` | Profile name (used in DB filename and logging) |
+| `DATA_DIR` | `/data` | Directory for SQLite database and backups |
+| `BLUESKY_HANDLE` | (required) | Bluesky account handle |
+| `BLUESKY_PASSWORD` | (required) | Bluesky app password |
+| `DRY_RUN` | `false` | Prevents all posting to Bluesky |
+| `ANALYSIS_INTERVAL_MINUTES` | `30` | Sentiment analysis window |
+| `TRENDING_ENABLED` | `false` | Enable trending topics feature |
+| `GOOGLE_AI_API_KEY` | (required if trending) | Gemini API key for topic grouping |
+| `TRENDING_INTERVAL` | `15` | Topic analysis frequency (minutes) |
+| `TRENDING_POST_HOURS` | `6` | Trending post frequency (hours) |
+| `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily SQLite backups |
+| `S3_BACKUP_REGION` | `us-west-2` | AWS region for S3 backups |
+| `BACKUP_RETAIN_DAYS` | `1` | Local backup retention |
+| `AWS_ACCESS_KEY_ID` | (optional) | AWS credentials for S3 backups |
+| `AWS_SECRET_ACCESS_KEY` | (optional) | AWS credentials for S3 backups |
 
 ## Project Structure
 
 ```
-cmd/
-  lambda-fetcher/          # Entry point: EventBridge -> fetch posts -> invoke processor
-  lambda-processor/        # Entry point: Analyze, aggregate, post summary
-  lambda-sparkline-poster/ # Entry point: Generate + post 7-day sparkline chart
-  lambda-daily-aggregator/ # Entry point: Aggregate daily sentiment
-  lambda-yearly-poster/    # Entry point: Generate + post yearly chart
-  graph-lab/               # Local tool for chart design experimentation
-  diagnostics/             # Local diagnostic utilities
-  dynamodb-backup/         # DynamoDB backup utility
-  dynamodb-restore/        # DynamoDB restore utility
-
-internal/
-  analyzer/    # VADER sentiment analysis (govader)
-  client/      # Bluesky AT Protocol client (post creation, image upload, facets)
-  config/      # Configuration types
-  formatter/   # Post content formatting (character counting, Bluesky limits)
-  lambda/      # SSM config loader for Lambda environment
-  sparkline/   # Chart generation (7-day sparkline + yearly chart via gg library)
-  state/       # DynamoDB state management (RunState, Post, SentimentHistory, DailySentiment)
-
-terraform/     # Infrastructure as Code (Terraform)
-  main.tf      # Lambda functions, DynamoDB tables, EventBridge rules, IAM
-  backend.tf   # S3 remote state with DynamoDB locking
-  daily-sentiment.tf   # Daily aggregator + yearly poster infrastructure
-  sentiment-history.tf # Sentiment history table
+hourstats-bsky/
+├── cmd/
+│   ├── hourstats/             # Main binary — Fly.io entry point (single process)
+│   ├── import-dynamodb/       # Tool: seed SQLite from DynamoDB exports
+│   ├── force-trending/        # Tool: manually trigger trending topic analysis
+│   ├── graph-lab/             # Tool: chart design experimentation
+│   ├── lambda-fetcher/        # [Legacy] AWS Lambda fetcher
+│   ├── lambda-processor/      # [Legacy] AWS Lambda processor
+│   ├── lambda-sparkline-poster/ # [Legacy] AWS Lambda sparkline
+│   ├── lambda-daily-aggregator/ # [Legacy] AWS Lambda daily aggregation
+│   ├── lambda-yearly-poster/  # [Legacy] AWS Lambda yearly chart (still in use by production)
+│   ├── dynamodb-backup/       # [Legacy] DynamoDB backup utility
+│   └── dynamodb-restore/      # [Legacy] DynamoDB restore utility
+├── internal/
+│   ├── store/                 # SQLite storage layer (post buffer, runs, sentiment, topics, backups)
+│   ├── jetstream/             # Jetstream WebSocket consumer (event parsing, cursor management)
+│   ├── hydrator/              # Engagement hydration (batch getPosts, handle resolution)
+│   ├── topics/                # Trending topics (TF-IDF, Gemini grouping, ranking, tracking, charting)
+│   ├── analyzer/              # VADER sentiment analysis (govader)
+│   ├── client/                # Bluesky AT Protocol client (posting, image upload, facets)
+│   ├── formatter/             # Post content formatting (character counting, Bluesky limits)
+│   ├── sparkline/             # Chart generation (sparkline, trendline, volume, yearly, trending)
+│   ├── state/                 # [Legacy] DynamoDB state management
+│   ├── lambda/                # [Legacy] SSM config loader for Lambda
+│   ├── awsutil/               # [Legacy] AWS utilities
+│   ├── backup/                # [Legacy] DynamoDB backup/restore
+│   └── config/                # Configuration types
+├── fly.prod.toml              # Fly.io production config (sjc, shared-cpu-1x, 256MB)
+├── fly.staging.toml           # Fly.io staging config (sjc, shared-cpu-1x, 512MB)
+├── Dockerfile                 # Multi-stage build (golang:1.24-alpine → alpine:3.21)
+├── Makefile                   # Build, test, deploy targets
+├── terraform/                 # [Legacy] AWS infrastructure as Code
+├── openspec/                  # Architecture specifications
+│   ├── specs/                 # Main specs (post-fetching, sentiment, charting, etc.)
+│   └── changes/               # Change proposals (jetstream-migration, trending-topics, etc.)
+└── docs/                      # Feature documentation
 ```
 
 ## Key Design Decisions
 
-1. **Async Lambda chain vs Step Functions**: The pipeline uses direct async Lambda invocations (`InvocationType: Event`) rather than Step Functions. This is simpler to deploy and debug, with the tradeoff of less built-in retry/error handling.
+1. **Single binary on Fly.io**: All components run in one process as goroutines. No networking between components, no IAM, no managed databases. $5/month for the Hobby plan covers everything.
 
-2. **DynamoDB for state coordination**: Run state is shared between Lambdas via DynamoDB rather than passing large payloads between invocations. This avoids Lambda payload size limits (256 KB) when dealing with thousands of posts.
+2. **SQLite over DynamoDB**: At ~58 writes/sec (Bluesky post volume), SQLite handles the load trivially in WAL mode. DynamoDB would cost $29–190/month for the same write volume; SQLite costs $0.
 
-3. **Separate sparkline poster**: Image generation requires more memory (256 MB vs 128 MB) and the `gg` graphics library. Keeping it separate isolates potential failures from the critical summary-posting path.
+3. **Jetstream over search API**: The search API captures ~10% of posts with a 10,000-result pagination cap. Jetstream delivers 100% of posts in real time via WebSocket.
 
-4. **VADER for sentiment**: Uses the govader library (Go port of VADER) for lightweight, rule-based sentiment analysis that runs within Lambda's memory constraints without requiring ML model loading.
+4. **VADER for sentiment**: Lightweight, rule-based sentiment analysis (govader library) that works well for short social media text without requiring ML model loading.
 
-5. **Embedded images**: Sparkline and yearly charts are uploaded directly to Bluesky's blob service rather than stored in S3, eliminating the need for presigned URLs or public buckets.
+5. **Embedded images**: All charts are uploaded directly to Bluesky's blob service as image embeds, eliminating the need for external image hosting.
+
+6. **Wall-clock aligned scheduling**: Tickers fire at UTC clock boundaries (:00, :30) rather than at intervals from process start. This ensures consistent posting times regardless of deploys or restarts.
+
+7. **English-only filter**: The Jetstream consumer requires explicit `lang=en` tags on posts for sentiment analysis parity with the production Lambda system.
 
 ## Deployment
 
-- **CI/CD**: GitHub Actions (`.github/workflows/deploy-lambda.yml`)
-- **Deploy trigger**: Push to `main` branch (only paths matching `cmd/lambda*/**`, `internal/**`, `terraform/**`)
-- **Build**: Each Lambda is cross-compiled for `linux/amd64` and packaged as a zip
-- **IaC**: Terraform with S3 remote state and DynamoDB state locking
-- **Rollback**: Git revert + push to main triggers redeploy. Tag `pre-lambda-simplification` marks the last known-good state before architecture changes.
+- **Build**: `make build-hourstats` (CGO_ENABLED=0 for Alpine)
+- **Deploy staging**: `make deploy-staging` (runs `fly deploy -c fly.staging.toml --ha=false`)
+- **Deploy production**: `make deploy-prod` (runs `fly deploy -c fly.prod.toml --ha=false`)
+- **Container**: Multi-stage Docker build — Go builder then Alpine runtime with ca-certificates, tzdata, sqlite CLI
+- **Secrets**: `fly secrets set BLUESKY_HANDLE=... BLUESKY_PASSWORD=... -a hourstats-staging`
+- **Logs**: `make fly-logs-prod` or `make fly-logs-staging`
+- **Status**: `make fly-status`
 
 ## Operational Controls
 
 | Control | Mechanism | Effect |
 |---------|-----------|--------|
-| **Kill switch** | SSM `/hourstats/settings/dry_run` = `"true"` | Prevents all posting to Bluesky |
-| **Minimum posts** | Processor requires 1000+ filtered posts | Skips sentiment analysis if insufficient data |
-| **Early stop** | Fetcher stops at 14 min to leave buffer for processor dispatch | Prevents Lambda timeout with partial work |
-| **TTL cleanup** | DynamoDB TTL on all tables | Automatic data expiry (2 days for runs, 3 years for daily sentiment) |
+| **Kill switch** | `DRY_RUN=true` env var | Prevents all posting to Bluesky |
+| **Trending toggle** | `TRENDING_ENABLED=false` env var | Disables trending topics feature |
+| **Stall detection** | 5-minute silence check on Jetstream | Logs warning if consumer stops receiving posts |
+| **Auto-restart** | Consumer goroutine with exponential backoff (1s → 60s) | Recovers from WebSocket disconnections |
+| **Cursor persistence** | SQLite key_value table | Jetstream resumes from last position on restart |
+| **Data retention** | Per-table TTL enforcement in purge cycles | Automatic cleanup (2h posts, 8d history, 3y daily) |
+| **S3 backups** | Daily SQLite → S3 with configurable retention | Disaster recovery for persistent data |
+
+## Legacy Architecture (AWS Lambda)
+
+The production system currently runs on AWS Lambda. See [AWS_SERVERLESS_DESIGN.md](AWS_SERVERLESS_DESIGN.md) for the legacy architecture documentation. The [Migration Plan](openspec/changes/jetstream-migration/MIGRATION_PLAN.md) tracks the transition to Fly.io.

@@ -28,6 +28,9 @@ type mockAnalyzerStore struct {
 func (m *mockAnalyzerStore) GetTopicTokensSince(_ context.Context, _ string) ([]store.TopicTokenRow, error) {
 	return m.tokens, nil
 }
+func (m *mockAnalyzerStore) GetTopicTokensSinceLimit(_ context.Context, _ string, _ int) ([]store.TopicTokenRow, error) {
+	return m.tokens, nil
+}
 func (m *mockAnalyzerStore) CountTopicTokensSince(_ context.Context, _ string) (int64, error) {
 	return m.tokenCount, nil
 }
@@ -192,9 +195,9 @@ type mockPoster struct {
 	posted bool
 }
 
-func (m *mockPoster) PostWithImage(_ context.Context, _ string, _ []byte, _ string, _ ...[]*bsky.RichtextFacet) (string, string, error) {
+func (m *mockPoster) PostWithFacets(_ context.Context, _ string, _ []*bsky.RichtextFacet) error {
 	m.posted = true
-	return "at://posted/1", "cid123", nil
+	return nil
 }
 
 func TestRunTrendingPost_Posts(t *testing.T) {

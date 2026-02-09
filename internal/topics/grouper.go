@@ -176,6 +176,9 @@ func buildPrompt(terms []TermScore) string {
 	b.WriteString("- Every input term must appear in exactly one group's keywords\n")
 	b.WriteString("- Groups should be meaningful topics, not just word pairs\n")
 	b.WriteString("- If a term doesn't fit any group, put it in its own single-term group\n")
+	b.WriteString("- Terms containing underscores are multi-word phrases (e.g. bad_bunny means \"Bad Bunny\", super_bowl means \"Super Bowl\")\n")
+	b.WriteString("- Prefer grouping underscore phrases with their component single-word terms\n")
+	b.WriteString("- Use the multi-word form in labels when appropriate (e.g. label \"Bad Bunny\" not \"Bunny\")\n")
 	return b.String()
 }
 

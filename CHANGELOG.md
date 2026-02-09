@@ -7,10 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Jetstream Firehose Consumer**: Real-time WebSocket connection to Bluesky Jetstream, replacing polling via search API. Filters English posts, stores in SQLite. Auto-reconnects with exponential backoff (1s → 60s).
+- **SQLite Database Layer**: Complete data layer using modernc.org/sqlite (pure Go, no CGO). WAL mode, 10s busy timeout. Schemas for posts, runs, sentiment history, daily sentiment, topic analysis, and key-value config. See `internal/store/`.
+- **Engagement Hydrator**: Fetches likes, reposts, and reply counts for posts via Bluesky API batch calls. Filters deleted/private posts. See `internal/hydrator/`.
+- **Trending Topics**: TF-IDF analysis of root posts grouped by Google Gemini Flash for semantic understanding. Bump charts with persistent topic identities, exemplar posts, and rank movement indicators. Posts every 6 hours. See `internal/topics/`.
+- **Sentiment Trendlines**: Original-post vs reply sentiment comparison chart, posted as a reply in the analysis thread.
+- **Daily Top-Post Quote Reply**: Automatically quotes the highest-engagement post from yesterday as a reply to the pinned yearly chart thread.
+- **Post Volume Charts**: Firehose post counting per analysis window, displayed in volume charts.
+- **Root vs Reply Sentiment Tracking**: Separate sentiment percentages for original posts and replies, stored per data point.
+- **Wall-Clock Aligned Scheduling**: All tickers fire at clean UTC clock boundaries (e.g. :00 and :30) so deploys/restarts don't shift the schedule.
+- **Stall Detection**: Warns if no Jetstream posts received for 5 minutes.
+- **S3 Database Backups**: Daily SQLite → S3 uploads of essential tables only (skips transient post/token data). Streaming via temp file to avoid OOM.
+- **Local Backup Pruning**: Automatic cleanup of old local backups based on `BACKUP_RETAIN_DAYS`.
+- **DynamoDB → SQLite Import Tool**: `cmd/import-dynamodb` for seeding SQLite from legacy DynamoDB data.
+- **Force Trending Tool**: `cmd/force-trending` for manually triggering trending topic analysis.
+- **Fly.io Deployment**: Docker-based deployment with `fly.prod.toml` and `fly.staging.toml`. Persistent volumes for SQLite storage. Two-app setup (prod in SJC, staging in SJC).
+- **Gemini Alt Text**: LLM-generated alt text for trending topics bump charts.
+
 ### Changed
-- Removed 10% engagement boost for positive posts. Posts are now ranked purely by raw engagement metrics (replies + likes + reposts) without any sentiment-based adjustment.
+- **Architecture**: Migrated from AWS Lambda/DynamoDB/EventBridge to a single Go binary on Fly.io with SQLite. All Lambda functions consolidated into goroutines within `cmd/hourstats/main.go`.
+- **Post Collection**: Changed from periodic Bluesky search API polling to real-time Jetstream firehose ingestion.
+- **Database**: Replaced DynamoDB (3 tables) with SQLite (8+ tables) on a persistent Fly.io volume.
+- **Scheduling**: Replaced AWS EventBridge cron rules with in-process wall-clock aligned tickers.
+- **Backup Strategy**: Replaced DynamoDB PITR + S3 exports with SQLite essential-table backups (local + S3).
+- **Sparkline Period**: Changed from 48-hour to 7-day sentiment sparklines.
+- **Trending Movement Indicators**: Changed from ^/v to +/- for topic rank movement.
+- **Container Base**: Docker build uses `golang:1.24-alpine` builder → `alpine:3.21` runtime.
+- **Cost**: Estimated ~$5/month (Fly.io) vs ~$30-50/month (AWS Lambda + DynamoDB).
 
 ### Fixed
+- **Jetstream Resilience**: Auto-restart with exponential backoff on disconnect, SQLite busy timeout handling, stall detection logging.
+- **S3 Backup OOM**: Stream backup via temp file instead of buffering entire database in memory.
+- **Timestamp Normalization**: Handles both RFC3339 and RFC3339Nano formats from Jetstream events.
+- **SQLite DSN Pragmas**: Correct pragma syntax for WAL mode and busy timeout in connection string.
+- **Backup Essential Tables Only**: Skip transient post_buffer and topic_tokens to reduce backup size and time.
+
+### Fixed (Pre-Migration)
 - **CRITICAL**: Fixed fetcher "starvation" issue where runs were consistently retrieving 0 posts. Added `since` time filter to `bsky.FeedSearchPosts` API call to ensure only recent posts are returned, preventing the fetcher from stopping early on old "top" posts.
 - **CRITICAL**: Fixed double-scaling bug in sentiment calculation where sentiment percentage was being multiplied by 100 twice, resulting in astronomical values (e.g., +1099%). Unified scaling in `internal/formatter/post_formatter.go`.
 - **CRITICAL**: Added early-stop logic to fetcher to prevent timeout and ensure posts are made. Fetcher now runs for up to 14 minutes and stops immediately if it has collected >1000 posts, leaving 1 minute buffer before the 15-minute Lambda timeout to ensure processor dispatch. Early-stop check happens both before starting new iterations and after completing iterations to avoid wasting time. This prevents fetcher from timing out and ensures reports are always posted even when fetching takes longer than expected.
@@ -27,12 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed**: Changed sparkline poster invocation from synchronous to asynchronous. Processor was blocking waiting for sparkline poster to complete, which could cause timeouts. Now uses `InvocationType: Event` so processor completes immediately.
 - **CRITICAL**: Fixed batch overwrite bug in `AddPosts` function where `batchIndex` always started at 0, causing each fetcher iteration to overwrite previous batches. This resulted in only ~97 posts being stored instead of thousands (99% data loss). Fix queries existing batches to find highest index and starts new batches from next available index.
 - **CRITICAL**: Fixed missing DynamoDB pagination in `GetAllPosts` causing only first page of results (~100 posts) to be retrieved instead of all posts (800+)
-- Fixed missing pagination in `GetSentimentHistory` and `GetSentimentHistoryForRun` functions
-- Added proper pagination handling using `LastEvaluatedKey` and `ExclusiveStartKey` for all DynamoDB queries and scans
-- Added logging to track pagination progress (page count and items per page)
-- Updated sentiment observations to use `TotalPostsRetrieved` instead of filtered post count for accurate reporting
+- **Fixed**: Fixed missing pagination in `GetSentimentHistory` and `GetSentimentHistoryForRun` functions
+- **Added proper pagination handling**: Added proper pagination handling using `LastEvaluatedKey` and `ExclusiveStartKey` for all DynamoDB queries and scans
+- **Added logging**: Added logging to track pagination progress (page count and items per page)
+- **Updated sentiment observations**: Updated sentiment observations to use `TotalPostsRetrieved` instead of filtered post count for accurate reporting
 
-### Technical Details
+### Changed (Pre-Migration)
+- Removed 10% engagement boost for positive posts. Posts are now ranked purely by raw engagement metrics (replies + likes + reposts) without any sentiment-based adjustment.
+
+### Technical Details (Pre-Migration)
 - DynamoDB Query/Scan operations return up to 1MB of data per request
 - When results exceed 1MB, DynamoDB paginates results using `LastEvaluatedKey`
 - Previously, only the first page was retrieved, causing ~90% of posts to be missing

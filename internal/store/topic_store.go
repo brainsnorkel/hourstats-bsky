@@ -46,10 +46,26 @@ func (s *Store) InsertTopicTokens(ctx context.Context, postURI, tokensJSON, crea
 }
 
 func (s *Store) GetTopicTokensSince(ctx context.Context, cutoff string) ([]TopicTokenRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT post_uri, tokens, created_at FROM topic_tokens WHERE created_at >= ? ORDER BY created_at ASC`,
-		cutoff,
-	)
+	return s.GetTopicTokensSinceLimit(ctx, cutoff, 0)
+}
+
+// GetTopicTokensSinceLimit returns topic tokens since cutoff, limited to the
+// most recent `limit` rows. A limit of 0 returns all rows.
+func (s *Store) GetTopicTokensSinceLimit(ctx context.Context, cutoff string, limit int) ([]TopicTokenRow, error) {
+	var query string
+	var args []any
+	if limit > 0 {
+		// Use a subquery to get the most recent `limit` rows, then re-order ASC.
+		query = `SELECT post_uri, tokens, created_at FROM (
+			SELECT post_uri, tokens, created_at FROM topic_tokens
+			WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?
+		) sub ORDER BY created_at ASC`
+		args = []any{cutoff, limit}
+	} else {
+		query = `SELECT post_uri, tokens, created_at FROM topic_tokens WHERE created_at >= ? ORDER BY created_at ASC`
+		args = []any{cutoff}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query topic_tokens: %w", err)
 	}
