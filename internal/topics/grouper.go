@@ -162,6 +162,7 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 var genericLabelWords = map[string]bool{
 	"miscellaneous": true, "general": true, "various": true, "other": true,
 	"everyday": true, "mixed": true, "assorted": true, "unrelated": true,
+	"uncategorized": true, "uncategorised": true, "unclassified": true,
 	"activities": true, "actions": true, "terms": true, "words": true,
 	"posts": true, "mentions": true, "discussions": true, "content": true,
 	"topics": true, "updates": true, "community": true, "online": true,
@@ -202,7 +203,7 @@ func buildPrompt(terms []TermScore) string {
 	b.WriteString("- Maximum 10 groups\n")
 	b.WriteString("- Every input term must appear in exactly one group's keywords\n")
 	b.WriteString("- Groups should be meaningful, specific topics — not vague categories\n")
-	b.WriteString("- NEVER create catch-all groups with labels like \"Miscellaneous\", \"General\", \"Various\", \"Other\", \"Everyday\", \"Actions\", \"Activities\", or \"Mixed\"\n")
+	b.WriteString("- NEVER create catch-all groups with labels like \"Miscellaneous\", \"General\", \"Various\", \"Other\", \"Everyday\", \"Actions\", \"Activities\", \"Mixed\", \"Uncategorized\", or \"Uncategorised\"\n")
 	b.WriteString("- If a term doesn't fit a specific topic, leave it as a single-term group rather than lumping unrelated terms together\n")
 	b.WriteString("- Terms containing underscores are multi-word phrases (e.g. bad_bunny means \"Bad Bunny\", super_bowl means \"Super Bowl\")\n")
 	b.WriteString("- Prefer grouping underscore phrases with their component single-word terms\n")
