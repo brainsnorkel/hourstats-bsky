@@ -15,11 +15,11 @@ func TestTokenize_PlainText(t *testing.T) {
 }
 
 func TestTokenize_URLs(t *testing.T) {
-	got := Tokenize("Check this https://example.com/foo and http://bar.org important earthquake")
+	got := Tokenize("Volcano this https://example.com/foo and http://bar.org important earthquake")
 	if contains(got, "https") || contains(got, "example") || contains(got, "http") {
 		t.Errorf("URLs should be stripped, got %v", got)
 	}
-	if !contains(got, "check") || !contains(got, "important") || !contains(got, "earthquake") {
+	if !contains(got, "volcano") || !contains(got, "important") || !contains(got, "earthquake") {
 		t.Errorf("non-URL words should remain, got %v", got)
 	}
 }
@@ -128,11 +128,11 @@ func TestTokenize_PureNumbers(t *testing.T) {
 }
 
 func TestTokenize_BareDomains(t *testing.T) {
-	got := Tokenize("check example.com and foo.org earthquake")
+	got := Tokenize("volcano example.com and foo.org earthquake")
 	if contains(got, "example") || contains(got, "foo") {
 		t.Errorf("bare domains should be stripped, got %v", got)
 	}
-	if !contains(got, "check") || !contains(got, "earthquake") {
+	if !contains(got, "volcano") || !contains(got, "earthquake") {
 		t.Errorf("non-domain words should remain, got %v", got)
 	}
 }

@@ -155,7 +155,32 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 		clusters = clusters[:MaxLLMGroups]
 	}
 
+	clusters = filterGenericClusters(clusters)
 	return clusters, nil
+}
+
+var genericLabelWords = map[string]bool{
+	"miscellaneous": true, "general": true, "various": true, "other": true,
+	"everyday": true, "mixed": true, "assorted": true, "unrelated": true,
+	"activities": true, "actions": true, "terms": true, "words": true,
+}
+
+func filterGenericClusters(clusters []TopicCluster) []TopicCluster {
+	var filtered []TopicCluster
+	for _, c := range clusters {
+		words := strings.Fields(strings.ToLower(c.Label))
+		generic := false
+		for _, w := range words {
+			if genericLabelWords[w] {
+				generic = true
+				break
+			}
+		}
+		if !generic {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
 }
 
 func buildPrompt(terms []TermScore) string {
@@ -174,8 +199,9 @@ func buildPrompt(terms []TermScore) string {
 	b.WriteString("\nRules:\n")
 	b.WriteString("- Maximum 10 groups\n")
 	b.WriteString("- Every input term must appear in exactly one group's keywords\n")
-	b.WriteString("- Groups should be meaningful topics, not just word pairs\n")
-	b.WriteString("- If a term doesn't fit any group, put it in its own single-term group\n")
+	b.WriteString("- Groups should be meaningful, specific topics — not vague categories\n")
+	b.WriteString("- NEVER create catch-all groups with labels like \"Miscellaneous\", \"General\", \"Various\", \"Other\", \"Everyday\", \"Actions\", \"Activities\", or \"Mixed\"\n")
+	b.WriteString("- If a term doesn't fit a specific topic, leave it as a single-term group rather than lumping unrelated terms together\n")
 	b.WriteString("- Terms containing underscores are multi-word phrases (e.g. bad_bunny means \"Bad Bunny\", super_bowl means \"Super Bowl\")\n")
 	b.WriteString("- Prefer grouping underscore phrases with their component single-word terms\n")
 	b.WriteString("- Use the multi-word form in labels when appropriate (e.g. label \"Bad Bunny\" not \"Bunny\")\n")
