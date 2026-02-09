@@ -63,11 +63,11 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (s
 
 func buildTrendingText(ranked []IdentifiedTopic, prevRank map[string]int, showExemplar []bool) string {
 	var b strings.Builder
-	b.WriteString("Trending\n\n")
+	b.WriteString("Topics\n\n")
 
 	for i, topic := range ranked {
 		movement := movementIndicator(topic.TopicID, topic.Rank, prevRank)
-		line := fmt.Sprintf("#%d %s %s", topic.Rank, topic.Cluster.Label, movement)
+		line := fmt.Sprintf("%d. %s %s", topic.Rank, topic.Cluster.Label, movement)
 		if showExemplar[i] && topic.ExemplarHandle != "" {
 			line += fmt.Sprintf(" @%s", topic.ExemplarHandle)
 		}
@@ -151,11 +151,11 @@ func convertExemplarURI(uri string) string {
 func FormatAltText(ranked []IdentifiedTopic) string {
 	var parts []string
 	for _, topic := range ranked {
-		part := fmt.Sprintf("#%d %s", topic.Rank, topic.Cluster.Label)
+		part := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)
 		if topic.ExemplarHandle != "" {
 			part += fmt.Sprintf(" (top post by @%s)", topic.ExemplarHandle)
 		}
 		parts = append(parts, part)
 	}
-	return "Trending: " + strings.Join(parts, ", ")
+	return "Topics: " + strings.Join(parts, ", ")
 }
