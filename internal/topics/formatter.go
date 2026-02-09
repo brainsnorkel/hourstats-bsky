@@ -63,7 +63,7 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (s
 
 func buildTrendingText(ranked []IdentifiedTopic, prevRank map[string]int, showExemplar []bool) string {
 	var b strings.Builder
-	b.WriteString("Bluesky trending topics\n\n")
+	b.WriteString("Trending\n\n")
 
 	for i, topic := range ranked {
 		movement := movementIndicator(topic.TopicID, topic.Rank, prevRank)
@@ -75,7 +75,7 @@ func buildTrendingText(ranked []IdentifiedTopic, prevRank map[string]int, showEx
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n#trending #hourstatstrend")
+	b.WriteString("\n#hstrend")
 	return b.String()
 }
 
@@ -120,7 +120,7 @@ func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
 		})
 	}
 
-	for _, tag := range []string{"#trending", "#hourstatstrend"} {
+	for _, tag := range []string{"#hstrend"} {
 		idx := strings.LastIndex(text, tag)
 		if idx < 0 {
 			continue
@@ -157,5 +157,5 @@ func FormatAltText(ranked []IdentifiedTopic) string {
 		}
 		parts = append(parts, part)
 	}
-	return "Bluesky trending topics: " + strings.Join(parts, ", ")
+	return "Trending: " + strings.Join(parts, ", ")
 }
