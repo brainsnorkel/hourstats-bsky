@@ -213,6 +213,13 @@ var stopwords = map[string]bool{
 	"facebook": true, "reddit": true, "bluesky": true, "bsky": true,
 	"feed": true, "app": true, "bot": true, "thread": true,
 
+	// commerce / spam (fake jersey bots, product listings)
+	"jersey": true, "jerseys": true, "stitched": true, "untouchable": true, "vapor": true,
+	"shipping": true, "discount": true, "coupon": true, "promo": true, "price": true,
+	"sale": true, "checkout": true, "cart": true,
+	"buy": true, "sell": true, "selling": true, "buying": true, "shop": true, "store": true,
+	"limited": true, "edition": true, "authentic": true, "replica": true, "wholesale": true,
+
 	// misc high-frequency filler
 	"dont": true, "doesnt": true, "cant": true, "wont": true, "didnt": true,
 	"isnt": true, "wasnt": true, "arent": true, "werent": true, "havent": true,
