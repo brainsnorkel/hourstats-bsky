@@ -56,6 +56,7 @@ cmd/*/main
 /graph-lab
 /hourstats
 /import-dynamodb
+/force-trending
 
 # Backup data
 backups/
