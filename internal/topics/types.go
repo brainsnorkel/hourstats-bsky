@@ -3,7 +3,7 @@ package topics
 const (
 	MinDocFrequency = 10
 	MinCorpusSize   = 100
-	MaxTFIDFTerms   = 30
+	MaxTFIDFTerms   = 50
 	MaxLLMGroups    = 10
 	TopTopics       = 5
 )
