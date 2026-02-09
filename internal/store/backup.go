@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,12 +24,18 @@ const (
 	defaultRetainDays = 7
 )
 
-// Backup creates a consistent point-in-time copy of the database using
-// SQLite's VACUUM INTO, which produces a standalone, defragmented backup
-// file that is safe to copy while the database is open and in WAL mode.
-//
-// Backups are written to <dataDir>/backups/hourstats-<profile>-<timestamp>.db
-// and old backups beyond retainDays are pruned.
+// essentialTables are the tables that contain irreplaceable data.
+// Transient tables (post_buffer, topic_tokens, cursor) are regenerated
+// from the live firehose and skipped to keep backups small and fast.
+var essentialTables = []string{
+	"runs",
+	"sentiment_history",
+	"daily_sentiment",
+	"topic_snapshots",
+	"topic_identity",
+	"key_value",
+}
+
 func (s *Store) Backup(ctx context.Context, dataDir, profile string, retainDays int) (string, error) {
 	if retainDays <= 0 {
 		retainDays = defaultRetainDays
@@ -43,13 +50,10 @@ func (s *Store) Backup(ctx context.Context, dataDir, profile string, retainDays 
 	filename := fmt.Sprintf("hourstats-%s-%s.db", profile, ts)
 	backupPath := filepath.Join(backupDir, filename)
 
-	slog.Info("starting database backup", "dest", backupPath)
+	slog.Info("starting essential-tables backup", "dest", backupPath, "tables", len(essentialTables))
 
-	// VACUUM INTO creates an atomic, consistent snapshot — works safely
-	// while the main DB is open and handles WAL checkpointing internally.
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`VACUUM INTO '%s'`, backupPath))
-	if err != nil {
-		return "", fmt.Errorf("vacuum into: %w", err)
+	if err := s.backupEssentialTables(ctx, backupPath); err != nil {
+		return "", err
 	}
 
 	info, err := os.Stat(backupPath)
@@ -57,10 +61,7 @@ func (s *Store) Backup(ctx context.Context, dataDir, profile string, retainDays 
 		return "", fmt.Errorf("stat backup: %w", err)
 	}
 
-	slog.Info("backup complete",
-		"path", backupPath,
-		"size_bytes", info.Size(),
-	)
+	slog.Info("backup complete", "path", backupPath, "size_bytes", info.Size())
 
 	pruned, err := pruneBackups(backupDir, profile, retainDays)
 	if err != nil {
@@ -72,16 +73,12 @@ func (s *Store) Backup(ctx context.Context, dataDir, profile string, retainDays 
 	return backupPath, nil
 }
 
-// BackupToWriter creates a backup and writes it to w, then removes the
-// temporary file. Useful for streaming backups to remote storage.
 func (s *Store) BackupToWriter(ctx context.Context, w io.Writer) error {
-	tmpDir := os.TempDir()
-	tmpPath := filepath.Join(tmpDir, fmt.Sprintf("hourstats-backup-%d.db", time.Now().UnixNano()))
+	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("hourstats-backup-%d.db", time.Now().UnixNano()))
 	defer os.Remove(tmpPath)
 
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`VACUUM INTO '%s'`, tmpPath))
-	if err != nil {
-		return fmt.Errorf("vacuum into temp: %w", err)
+	if err := s.backupEssentialTables(ctx, tmpPath); err != nil {
+		return err
 	}
 
 	f, err := os.Open(tmpPath)
@@ -96,7 +93,6 @@ func (s *Store) BackupToWriter(ctx context.Context, w io.Writer) error {
 	return nil
 }
 
-// S3BackupConfig holds the configuration for S3 backup uploads.
 type S3BackupConfig struct {
 	Bucket          string
 	Region          string
@@ -105,9 +101,6 @@ type S3BackupConfig struct {
 	Profile         string
 }
 
-// BackupToS3 creates a point-in-time backup and uploads it to S3.
-// Uses a temp file to avoid holding the entire backup in memory.
-// The S3 key follows the pattern: <profile>/<timestamp>.db
 func (s *Store) BackupToS3(ctx context.Context, cfg S3BackupConfig) (string, error) {
 	ts := time.Now().UTC().Format(backupTimeFormat)
 	key := fmt.Sprintf("%s/%s.db", cfg.Profile, ts)
@@ -115,9 +108,8 @@ func (s *Store) BackupToS3(ctx context.Context, cfg S3BackupConfig) (string, err
 	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("hourstats-s3-%d.db", time.Now().UnixNano()))
 	defer os.Remove(tmpPath)
 
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`VACUUM INTO '%s'`, tmpPath))
-	if err != nil {
-		return "", fmt.Errorf("vacuum into temp: %w", err)
+	if err := s.backupEssentialTables(ctx, tmpPath); err != nil {
+		return "", err
 	}
 
 	f, err := os.Open(tmpPath)
@@ -151,12 +143,43 @@ func (s *Store) BackupToS3(ctx context.Context, cfg S3BackupConfig) (string, err
 		return "", fmt.Errorf("s3 put: %w", err)
 	}
 
-	slog.Info("backup uploaded to S3",
-		"bucket", cfg.Bucket,
-		"key", key,
-		"size_bytes", info.Size(),
-	)
+	slog.Info("backup uploaded to S3", "bucket", cfg.Bucket, "key", key, "size_bytes", info.Size())
 	return fmt.Sprintf("s3://%s/%s", cfg.Bucket, key), nil
+}
+
+// backupEssentialTables creates a new SQLite DB at destPath containing only
+// the irreplaceable tables. Opens a separate connection to the source and
+// uses ATTACH to copy data — no VACUUM INTO, so the main DB's WAL writer
+// (firehose ingestion) is never blocked.
+func (s *Store) backupEssentialTables(ctx context.Context, destPath string) error {
+	destDB, err := sql.Open("sqlite", destPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return fmt.Errorf("open dest db: %w", err)
+	}
+	defer destDB.Close()
+
+	attachSQL := fmt.Sprintf(`ATTACH DATABASE 'file:%s?mode=ro' AS src`, s.dbPath)
+	if _, err := destDB.ExecContext(ctx, attachSQL); err != nil {
+		return fmt.Errorf("attach source db: %w", err)
+	}
+
+	for _, table := range essentialTables {
+		createSQL := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS main.%s AS SELECT * FROM src.%s WHERE 0`, table, table)
+		if _, err := destDB.ExecContext(ctx, createSQL); err != nil {
+			return fmt.Errorf("create table %s: %w", table, err)
+		}
+
+		insertSQL := fmt.Sprintf(`INSERT INTO main.%s SELECT * FROM src.%s`, table, table)
+		if _, err := destDB.ExecContext(ctx, insertSQL); err != nil {
+			return fmt.Errorf("copy table %s: %w", table, err)
+		}
+	}
+
+	if _, err := destDB.ExecContext(ctx, `DETACH DATABASE src`); err != nil {
+		return fmt.Errorf("detach source db: %w", err)
+	}
+
+	return nil
 }
 
 func pruneBackups(dir, profile string, retainDays int) (int, error) {
