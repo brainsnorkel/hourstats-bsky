@@ -94,6 +94,7 @@ func main() {
 	// so that deploys/restarts don't shift the schedule.
 	analysisCh := newWallClockTicker(time.Duration(analysisMinutes) * time.Minute)
 	backupCh := newWallClockTicker(24 * time.Hour)
+	yearlyPostCh := newDailyTickerAtHour(1)
 
 	var topicAnalyzer *topics.Analyzer
 	var topicAnalysisCh, trendingPostCh <-chan time.Time
@@ -142,9 +143,9 @@ func main() {
 			runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 			runDailyAggregation(ctx, db)
 			runDailyTopPostQuote(ctx, db, handle, password, dryRun)
-			if time.Now().UTC().Day() == 1 {
-				runYearlyPosting(ctx, db, handle, password, dryRun)
-			}
+
+		case <-yearlyPostCh:
+			runYearlyPosting(ctx, db, handle, password, dryRun)
 
 		case <-topicAnalysisCh:
 			if topicAnalyzer == nil {
@@ -344,9 +345,19 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	sort.Slice(analyzed, func(i, j int) bool {
 		return analyzed[i].EngagementScore > analyzed[j].EngagementScore
 	})
-	top5 := analyzed
-	if len(top5) > 5 {
-		top5 = top5[:5]
+	// Select top 5 posts, deduplicating by author so the same handle
+	// doesn't appear multiple times (which breaks facet linking).
+	var top5 []analyzer.AnalyzedPost
+	seenAuthors := make(map[string]bool)
+	for _, ap := range analyzed {
+		if seenAuthors[ap.Author] {
+			continue
+		}
+		seenAuthors[ap.Author] = true
+		top5 = append(top5, ap)
+		if len(top5) >= 5 {
+			break
+		}
 	}
 
 	topStorePosts := make([]store.Post, len(top5))
@@ -1090,6 +1101,29 @@ func envInt(key string, fallback int) int {
 // boundaries. For example, a 30m interval fires at :00 and :30 past the hour;
 // a 3h interval fires at 00:00, 03:00, 06:00, etc. This ensures deploys and
 // restarts don't shift the posting schedule.
+func newDailyTickerAtHour(hour int) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	go func() {
+		for {
+			now := time.Now().UTC()
+			next := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, time.UTC)
+			if !next.After(now) {
+				next = next.AddDate(0, 0, 1)
+			}
+			delay := next.Sub(now)
+			slog.Info("daily ticker scheduled",
+				"hour_utc", hour,
+				"next_fire", next.Format(time.RFC3339),
+				"delay", delay.Round(time.Second),
+			)
+			timer := time.NewTimer(delay)
+			<-timer.C
+			ch <- time.Now()
+		}
+	}()
+	return ch
+}
+
 func newWallClockTicker(interval time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
 	go func() {

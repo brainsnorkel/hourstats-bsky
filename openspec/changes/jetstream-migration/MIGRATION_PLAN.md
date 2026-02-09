@@ -1,6 +1,6 @@
-# AWS Lambda to Fly.io Migration Plan
+# AWS Lambda → Fly.io Migration Plan
 
-## Current State
+## Current State (Production — AWS Lambda)
 
 5 AWS Lambda functions orchestrated by EventBridge, backed by 3 DynamoDB tables and S3:
 
@@ -20,127 +20,163 @@
 
 Credentials stored in SSM Parameter Store. Charts uploaded directly to Bluesky blob service (no S3 dependency for images).
 
-## Target State
+## Target State (Fly.io — Implemented on `migrate-to-jetstream` branch)
 
-Two separate Fly.io apps, each running a single Go binary (`shared-cpu-1x`, 256MB, `sjc` region) with its own SQLite on a 1GB persistent volume.
+A single Go binary (`cmd/hourstats/main.go`) running on Fly.io with SQLite on a persistent volume. Two separate Fly.io apps share the same codebase, differentiated by environment variables.
 
 ```
 hourstats-prod (Fly.io app)              hourstats-staging (Fly.io app)
 ├── fly.prod.toml                        ├── fly.staging.toml
 ├── /data/hourstats-prod.db (SQLite)     ├── /data/hourstats-staging.db (SQLite)
-├── BLUESKY_HANDLE=hourstats.bsky.social ├── BLUESKY_HANDLE=hourstats-staging.bsky.social
-└── Machine sjc, 256MB                   └── Machine sjc, 256MB, DRY_RUN=true
+├── BLUESKY_HANDLE (Fly secret)          ├── BLUESKY_HANDLE (Fly secret)
+├── Machine sjc, shared-cpu-1x, 256MB    ├── Machine sjc, shared-cpu-1x, 512MB
+└── HOURSTATS_PROFILE=prod               ├── DRY_RUN=false
+                                         ├── TRENDING_ENABLED=true
+                                         └── S3_BACKUP_BUCKET=hourstats-sqlite-backups
 ```
 
 All 5 Lambda functions collapse into goroutines within a single binary:
 
 | Lambda | Fly.io Equivalent |
 |--------|-------------------|
-| `hourstats-fetcher` | Jetstream WebSocket consumer goroutine (always-on) |
-| `hourstats-processor` | Cron-triggered function call (every 30 min) |
+| `hourstats-fetcher` | Jetstream WebSocket consumer goroutine (always-on) + wall-clock aligned 30-min analysis cycle |
+| `hourstats-processor` | Called directly within the analysis cycle function |
 | `hourstats-sparkline-poster` | Called directly after processor completes |
-| `hourstats-daily-aggregator` | Cron-triggered function call (daily midnight UTC) |
-| `hourstats-yearly-poster` | Cron-triggered function call (monthly 1st 01:00 UTC) |
+| `hourstats-daily-aggregator` | Wall-clock aligned daily cycle (fires at midnight UTC) |
+| `hourstats-yearly-poster` | Wall-clock aligned daily check at 01:00 UTC (posts on 1st of month) |
 
-## Migration Strategy: Parallel Run then Cutover
+### Additional Features Built During Migration
 
-The migration is NOT a lift-and-shift. The Fly.io version is a greenfield reimplementation using Jetstream instead of the search API. The two systems can run in parallel safely because they post to different Bluesky accounts during testing.
+| Feature | Description |
+|---------|-------------|
+| **Trending Topics** | TF-IDF + Gemini Flash topic extraction every 15 min, bump chart posted every 6h |
+| **Daily Top Post** | Quote-reply to the day's highest engagement post in the yearly thread |
+| **Sentiment Trendline** | Root vs reply sentiment tracking with trendline chart |
+| **Volume Charts** | Daily and yearly post volume visualisations |
+| **S3 Backups** | Daily SQLite backup to S3 with configurable retention |
+| **Stall Detection** | Auto-restart if Jetstream goes silent for 5+ minutes |
 
-### Phase 0: Infrastructure (this phase)
+## Migration Strategy: Greenfield Reimplementation with Parallel Run
+
+The migration is NOT a lift-and-shift. The Fly.io version is a **greenfield reimplementation** using Jetstream instead of the search API, with SQLite replacing DynamoDB. The two systems post to different Bluesky accounts during testing.
+
+---
+
+### Phase 0: Infrastructure ✅ COMPLETE
 
 - [x] Create Fly.io apps `hourstats-prod` and `hourstats-staging` in `sjc` region
-- [x] Create 1GB persistent volumes for each app
-- [x] Set secrets per app (BLUESKY_HANDLE, BLUESKY_PASSWORD)
+- [x] Create persistent volumes for each app
+- [x] Set secrets per app (`BLUESKY_HANDLE`, `BLUESKY_PASSWORD`, `GOOGLE_AI_API_KEY`, AWS credentials)
 - [x] Write `fly.prod.toml`, `fly.staging.toml`, `Dockerfile`, `.dockerignore`
 - [x] Deploy placeholder binary to both apps, verify VMs running
-- [ ] Seed staging database with exported DynamoDB data
 
-### Phase 1: Jetstream Consumer (get data flowing)
+### Phase 1: Jetstream Consumer + SQLite Store ✅ COMPLETE
 
-Build `internal/jetstream/` package:
-- WebSocket client connecting to `wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post`
-- Event parser filtering for `kind=commit`, `operation=create`, `collection=app.bsky.feed.post`
-- SQLite buffer writer (replaces DynamoDB buffer)
-- Cursor persistence (every 10 seconds, plus on SIGTERM)
-- Exponential backoff reconnection
+Built `internal/jetstream/` and `internal/store/` packages:
 
-Validation: deploy to Fly.io, let run for 1 hour, verify posts accumulate in SQLite buffer. Expected: ~90K-180K posts per hour.
+- [x] WebSocket client connecting to `wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post`
+- [x] Event parser filtering for `kind=commit`, `operation=create`, `collection=app.bsky.feed.post`
+- [x] English language filter (`lang=en` tag required) for sentiment analysis parity
+- [x] SQLite post buffer with 2-hour TTL (replaces DynamoDB buffer)
+- [x] Cursor persistence via SQLite `key_value` table
+- [x] Exponential backoff reconnection (1s → 60s max)
+- [x] Auto-restart on unexpected consumer exit
+- [x] Stall detection (5-minute silence warning)
+- [x] Unit tests for consumer and store
 
-### Phase 2: Window Trigger + Processor (produce output)
+### Phase 2: Analysis Pipeline + Engagement Hydration ✅ COMPLETE
 
-Build processing pipeline as goroutines:
-- 30-minute cron scheduler
-- Buffer reader (query SQLite for posts in window)
-- Engagement hydration via `app.bsky.feed.getPosts` (25 URIs/batch, 10 concurrent)
-- VADER sentiment analysis (reuse existing `internal/analyzer/`)
-- Post formatting (reuse existing `internal/formatter/`)
-- Bluesky posting (reuse existing `internal/client/`)
+Built processing pipeline as goroutines within single binary:
 
-Test against **staging account** (`hourstats-staging.bsky.social`):
-- Verify post format matches production output
-- Verify engagement scores are reasonable (should be higher than search API due to larger sample)
-- Verify handles resolve correctly from DIDs
+- [x] Wall-clock aligned 30-minute cron scheduler (fires at :00 and :30)
+- [x] Buffer reader (query SQLite for posts since cutoff)
+- [x] Engagement hydration via `app.bsky.feed.getPosts` (25 URIs/batch, concurrent)
+- [x] Handle resolution from DID (free via getPosts response)
+- [x] Adult content label filtering
+- [x] VADER sentiment analysis (reused existing `internal/analyzer/`)
+- [x] Post formatting (reused existing `internal/formatter/`)
+- [x] Bluesky posting (reused existing `internal/client/`)
+- [x] Root vs reply sentiment tracking
+- [x] `internal/hydrator/` package with unit tests
 
-### Phase 3: Sparkline + Aggregation (charts and history)
+### Phase 3: Charts + Aggregation ✅ COMPLETE
 
-- Sparkline chart generation (reuse `internal/sparkline/`)
-- Reply threading
-- Daily aggregation
-- Yearly chart generation
-- Profile pinning
+- [x] Sparkline chart generation (7-day sentiment, reused `internal/sparkline/`)
+- [x] Sentiment trendline chart (root vs reply tracking)
+- [x] Reply threading (sparkline + trendline posted as replies)
+- [x] Daily aggregation (midnight UTC, wall-clock aligned)
+- [x] Yearly chart generation with monthly posting
+- [x] Daily and yearly volume charts
+- [x] Daily top-post quote reply in yearly thread
+- [x] Profile pinning for yearly chart
 
-Test: accumulate 24+ hours of staging data, verify sparkline posts correctly as reply.
+### Phase 4: Trending Topics ✅ COMPLETE
 
-### Phase 4: DynamoDB Data Migration
+- [x] Token extraction from root posts (on ingest)
+- [x] TF-IDF analysis every 15 minutes
+- [x] Gemini Flash semantic grouping (LLM synonym maps)
+- [x] Volume-based ranking (top 5 topics)
+- [x] Identity tracking (Jaccard similarity for persistent topic UUIDs)
+- [x] Bump chart generation (1200x800 PNG, Okabe-Ito palette)
+- [x] Exemplar post hydration at posting time
+- [x] Movement indicators (+/- rank changes)
+- [x] Standalone posting with mutable hashtag facets
+- [x] LLM-generated alt text via Gemini
 
-Export production DynamoDB tables to seed the Fly.io SQLite databases:
+### Phase 5: Data Migration + Backups ✅ COMPLETE
 
-```bash
-# Export from AWS
-go run cmd/dynamodb-backup/main.go \
-  --tables hourstats-sentiment-history,hourstats-daily-sentiment \
-  --output ./backups --compress --verbose
+- [x] `cmd/import-dynamodb/` tool for seeding SQLite from DynamoDB exports
+- [x] S3 backup integration (`internal/store/backup.go`)
+- [x] Daily backup cycle (wall-clock aligned)
+- [x] Configurable retention (`BACKUP_RETAIN_DAYS`)
+- [x] Backs up essential tables only (skips transient post/token data)
+- [x] Streaming via temp file to avoid OOM on large databases
 
-# Transfer to Fly.io
-fly sftp shell -a hourstats-bsky
-> put backups/... /data/staging/seed/
+### Phase 6: Parallel Run 🔄 IN PROGRESS
 
-# Import into SQLite (new tool needed: cmd/import-dynamodb/)
-fly ssh console -a hourstats-bsky -C "/usr/local/bin/hourstats import --input /data/staging/seed/"
-```
-
-This gives the staging instance real historical data for sparkline and yearly chart testing without waiting days for data to accumulate.
-
-### Phase 5: Parallel Run (confidence building)
-
-Run both systems simultaneously for at least 1 week:
+Running both systems simultaneously:
 
 | System | Account | Status |
 |--------|---------|--------|
 | AWS Lambda (production) | `hourstats.bsky.social` | Continues posting normally |
-| Fly.io (staging) | `hourstats-staging.bsky.social` | Posts to staging account |
+| Fly.io (staging) | `hourstats-staging.bsky.social` | Active, posting to staging account |
 
-Compare:
-- Post count per window (Fly.io should be 5-10x higher due to Jetstream vs search API)
-- Sentiment distribution (should be similar despite different sample sizes)
-- Top-5 engagement scores (Fly.io should find equal or higher engagement posts)
-- Chart rendering (should be visually identical)
-- Uptime (Fly.io consumer should stay connected with minimal reconnects)
+**Remaining validation:**
 
-### Phase 6: Production Cutover
+- [ ] Verify daily aggregation runs at midnight UTC (bead tq0.9)
+- [ ] Verify yearly chart posting on staging (bead tq0.10)
+- [ ] Verify cursor persistence survives restarts (bead tq0.11)
+- [ ] Verify consumer auto-reconnect on failure (bead tq0.12)
+- [ ] Run for at least 1 week of stable staging operation
+- [ ] Compare sentiment distribution between Lambda and Fly.io
+- [ ] Compare top-5 engagement scores (Fly.io should find equal or higher)
+
+### Phase 7: Production Cutover ⬜ NOT STARTED
 
 Once confidence is established:
 
-1. **Remove `DRY_RUN=true`** from `fly.prod.toml` env and redeploy prod app
-2. **Disable AWS EventBridge rules** to stop Lambda pipeline
-3. **Monitor first 6 runs** (3 hours):
-   - Post count, sentiment, top-5, sparkline threading
+1. **Configure `fly.prod.toml`** with production secrets:
+   - `BLUESKY_HANDLE=hourstats.bsky.social`
+   - `BLUESKY_PASSWORD` (via `fly secrets set`)
+   - `GOOGLE_AI_API_KEY` (via `fly secrets set`)
+   - `DRY_RUN=false`
+   - `TRENDING_ENABLED=true`
+2. **Seed production SQLite** with exported DynamoDB historical data:
+   ```bash
+   # Export from AWS and import to Fly.io
+   go run cmd/import-dynamodb/main.go --help
+   fly sftp shell -a hourstats-prod
+   ```
+3. **Deploy to production**: `make deploy-prod`
+4. **Disable AWS EventBridge rules** to stop Lambda pipeline
+5. **Monitor first 6 runs** (3 hours):
+   - Post count, sentiment, top-5, sparkline threading, trending topics
    - No duplicate posts (only one system posting)
-4. **Keep AWS infrastructure intact** for 1 week as rollback
+6. **Keep AWS infrastructure intact** for 1 week as rollback
 
 Rollback: re-enable EventBridge rules → Lambda pipeline resumes within 30 minutes.
 
-### Phase 7: AWS Decommission
+### Phase 8: AWS Decommission ⬜ NOT STARTED
 
 After 1 week of stable Fly.io production:
 
@@ -149,38 +185,44 @@ After 1 week of stable Fly.io production:
 3. Keep DynamoDB tables in a reduced state (on-demand, delete items via TTL) for 30 days
 4. Final `terraform destroy` for all remaining resources
 5. Cancel/reduce AWS account usage
+6. Update GitHub Actions CI/CD to remove Lambda deploy workflow
+7. Clean up Lambda-specific code (`cmd/lambda-*`, `internal/state/`, `internal/lambda/`)
 
-### Risk Mitigations
+---
+
+## Risk Mitigations
 
 | Risk | Mitigation |
 |------|------------|
 | Fly.io VM restart loses in-flight data | Jetstream cursor persisted to SQLite on volume; consumer replays missed events on restart |
-| SQLite corruption | Daily Fly.io volume snapshots (5-day retention); can fork volume to recover |
+| SQLite corruption | Daily S3 backups with configurable retention; Fly.io volume snapshots available |
 | Fly.io platform outage | Re-enable AWS EventBridge rules for instant rollback (keep infra for 1 week post-cutover) |
-| Higher memory than expected | Monitor via `fly ssh console -C "ps aux"`. Upgrade to 512MB ($3.32/mo) if needed |
-| Rate limiting on Bluesky API | Existing rate limiter in hydration code (10 concurrent, 500 req/min cap) |
+| Higher memory than expected | Staging runs at 512MB; prod can start at 256MB and upgrade if needed |
+| Rate limiting on Bluesky API | Rate limiter in hydration code (concurrent batch requests with backoff) |
+| Jetstream stall/disconnect | Auto-restart goroutine with exponential backoff; stall detection logs warnings after 5 min silence |
 
 ## Timeline
 
-| Phase | Duration | Dependency |
-|-------|----------|------------|
-| Phase 0: Infrastructure | 1 day | None |
-| Phase 1: Jetstream Consumer | 2-3 days | Phase 0 |
-| Phase 2: Window + Processor | 3-4 days | Phase 1 |
-| Phase 3: Sparkline + Aggregation | 2-3 days | Phase 2 |
-| Phase 4: Data Migration | 1 day | Phase 0 + backup tools |
-| Phase 5: Parallel Run | 7 days | Phase 3 + Phase 4 |
-| Phase 6: Production Cutover | 1 day | Phase 5 |
-| Phase 7: AWS Decommission | 1 day + 30 day wait | Phase 6 |
-
-**Total: ~3-4 weeks** from start to AWS decommission.
+| Phase | Status | Duration |
+|-------|--------|----------|
+| Phase 0: Infrastructure | ✅ Complete | 1 day |
+| Phase 1: Jetstream Consumer | ✅ Complete | 2 days |
+| Phase 2: Analysis Pipeline | ✅ Complete | 3 days |
+| Phase 3: Charts + Aggregation | ✅ Complete | 3 days |
+| Phase 4: Trending Topics | ✅ Complete | 4 days |
+| Phase 5: Data Migration + Backups | ✅ Complete | 2 days |
+| Phase 6: Parallel Run | 🔄 In Progress | 7+ days |
+| Phase 7: Production Cutover | ⬜ Not Started | 1 day |
+| Phase 8: AWS Decommission | ⬜ Not Started | 1 day + 30 day wait |
 
 ## Cost Comparison
 
 | | Current (AWS Lambda) | Target (Fly.io) |
 |--|---------------------|-----------------|
-| Monthly | ~$5-10 | ~$2.20 |
-| Annual | ~$60-120 | ~$26 |
-| Post coverage | ~10% | 100% |
+| Monthly | ~$5-10 | ~$5 (Hobby plan) |
+| Annual | ~$60-120 | ~$60 |
+| Post coverage | ~10% | 100% (English posts) |
+| Trending topics | N/A | Every 6 hours |
+| Backups | DynamoDB PITR + S3 | SQLite → S3 daily |
 
-The Fly.io approach is both cheaper and provides 10x better data coverage.
+The Fly.io approach provides 10x better data coverage at the same cost, with the addition of trending topics and improved operational simplicity (single binary, no IAM, no Terraform, no managed DB).

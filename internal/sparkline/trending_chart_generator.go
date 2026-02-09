@@ -37,7 +37,7 @@ func GenerateTrendingChart(snapshots []store.TopicSnapshotRow) ([]byte, error) {
 		leftPad       = 130
 		rightPad      = 180
 		topPad        = 80
-		bottomPad     = 80
+		bottomPad     = 100
 		maxVisRank    = 5
 		entryExitRank = 6.0
 	)
@@ -64,7 +64,7 @@ func GenerateTrendingChart(snapshots []store.TopicSnapshotRow) ([]byte, error) {
 
 	loadFont(dc, 12)
 	dc.SetColor(color.RGBA{100, 100, 100, 150})
-	dc.DrawStringAnchored("@hourstats.bsky.social", drawX+10, drawY+drawH-10, 0, 1)
+	dc.DrawStringAnchored("@hourstats.bsky.social", drawX+10, drawY+10, 0, 0)
 
 	loadFont(dc, 14)
 
@@ -225,6 +225,11 @@ func distinctTimes(snapshots []store.TopicSnapshotRow) []time.Time {
 
 func drawTimeAxis(dc *gg.Context, start, end time.Time, x, y, w, h float64) {
 	timeRange := end.Sub(start).Seconds()
+	if timeRange <= 0 {
+		return
+	}
+
+	// Draw 6-hour gridlines and time labels
 	loadFont(dc, 10)
 
 	first6h := start.Truncate(6 * time.Hour)
@@ -233,8 +238,9 @@ func drawTimeAxis(dc *gg.Context, start, end time.Time, x, y, w, h float64) {
 	}
 
 	for current := first6h; !current.After(end); current = current.Add(6 * time.Hour) {
-		xPos := x + (current.Sub(start).Seconds()/timeRange)*w
-		if xPos < x+10 || xPos > x+w-10 {
+		frac := current.Sub(start).Seconds() / timeRange
+		xPos := x + frac*w
+		if frac < 0.02 || frac > 0.98 {
 			continue
 		}
 
@@ -244,6 +250,34 @@ func drawTimeAxis(dc *gg.Context, start, end time.Time, x, y, w, h float64) {
 		dc.Stroke()
 
 		dc.SetColor(color.RGBA{140, 140, 140, 255})
-		dc.DrawStringAnchored(current.Format("15:04"), xPos, y+h+15, 0.5, 0)
+		dc.DrawStringAnchored(current.UTC().Format("15:04"), xPos, y+h+15, 0.5, 0)
 	}
+
+	// Draw date labels at midnight boundaries
+	loadFont(dc, 11)
+	firstMidnight := time.Date(start.Year(), start.Month(), start.Day()+1, 0, 0, 0, 0, time.UTC)
+	for current := firstMidnight; !current.After(end); current = current.AddDate(0, 0, 1) {
+		frac := current.Sub(start).Seconds() / timeRange
+		xPos := x + frac*w
+		if frac < 0.05 || frac > 0.95 {
+			continue
+		}
+
+		// Dashed vertical line at midnight
+		dc.SetColor(color.RGBA{180, 180, 180, 255})
+		dc.SetLineWidth(0.6)
+		dc.SetDash(4, 4)
+		dc.DrawLine(xPos, y, xPos, y+h)
+		dc.Stroke()
+		dc.SetDash()
+
+		dc.SetColor(color.RGBA{80, 80, 80, 255})
+		dc.DrawStringAnchored(current.UTC().Format("Jan 2"), xPos, y+h+30, 0.5, 0)
+	}
+
+	// Draw start and end date labels at the edges
+	loadFont(dc, 10)
+	dc.SetColor(color.RGBA{140, 140, 140, 255})
+	dc.DrawStringAnchored(start.UTC().Format("Jan 2 15:04"), x, y+h+30, 0, 0)
+	dc.DrawStringAnchored(end.UTC().Format("Jan 2 15:04"), x+w, y+h+30, 1, 0)
 }

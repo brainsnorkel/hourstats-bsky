@@ -2,19 +2,22 @@
 
 **Live Bot:** [@hourstats.bsky.social](https://bsky.app/profile/hourstats.bsky.social)
 
-> **Note:** This project is an experiment in using [Claude](https://claude.ai) and [Cursor](https://cursor.sh) for AI-assisted software development. The bot analyzes Bluesky posts every 30 minutes and posts sentiment summaries with the top 5 most engaged posts.
+> **Note:** This project is an experiment in using [Claude](https://claude.ai) and [Cursor](https://cursor.sh) for AI-assisted software development. The bot monitors the Bluesky firehose in real time via Jetstream and posts sentiment summaries every 30 minutes.
 
 A Go-based AT Protocol/Bluesky client that analyzes trending posts and sentiment to provide hourly statistics about the Bluesky community.
 
 ## What It Does
 
 Bluesky HourStats is an automated bot that:
-- Analyzes posts from the last 30 minutes
+- Monitors the Bluesky firehose in real time via Jetstream
 - Ranks posts by engagement (replies + likes + reposts)
+- Hydrates engagement metrics (likes, reposts, replies) via Bluesky API
 - Performs sentiment analysis using VADER and keyword matching
 - Posts summaries with the top 5 posts and overall community sentiment
-- Generates 48-hour sentiment sparklines
+- Generates 7-day sentiment sparklines
 - Creates yearly sentiment charts (monthly posts)
+- Tracks trending topics with bump charts (TF-IDF + Gemini Flash)
+- Posts daily top-post quote replies to the yearly thread
 
 ## Post Format
 
@@ -31,29 +34,37 @@ Bluesky is #satisfied
 - **Mood Hashtag**: Descriptive sentiment word from 100-word vocabulary
 - **Top 5 posts**: Ranked by engagement with clickable links
 - **Sentiment indicators**: + (positive), - (negative), x (neutral)
-- **48-hour sparklines**: Visual sentiment trends posted periodically
+- **7-day sparklines**: Visual sentiment trends posted with each summary
+- **Trending topics**: Bump chart showing top 5 topic trajectories over 24 hours
+- **Sentiment trendlines**: Original posts vs reply sentiment comparison
 - **Yearly charts**: Monthly posts showing 365 days of sentiment data
 
 ## Architecture
 
-The bot runs on AWS Lambda with the following components:
+The bot runs as a single Go binary on [Fly.io](https://fly.io) with the following goroutines:
 
-- **Fetcher**: Triggered every 30 minutes via EventBridge; creates a run then collects posts from Bluesky API using `since` time filter (stops at 14 minutes if >1000 posts collected)
-- **Processor**: Analyzes sentiment, ranks posts, and publishes summaries to Bluesky
-- **Sparkline Poster**: Generates and posts 48-hour sentiment charts
-- **Daily Aggregator**: Calculates daily sentiment averages (runs at midnight UTC)
-- **Yearly Poster**: Generates yearly charts (posts monthly on 1st at 1:00 AM UTC)
+- **Jetstream Consumer**: Connects to the Bluesky Jetstream WebSocket firehose, filters English posts, and writes them to a local SQLite database. Auto-restarts with exponential backoff (1s → 60s) on disconnect.
+- **Analysis Cycle**: Every 30 minutes (wall-clock aligned), reads posts from the window, hydrates engagement via the Bluesky API, runs VADER sentiment analysis, and posts a summary with the top 5 most engaged posts.
+- **Sparkline Poster**: Generates and posts a 7-day sentiment sparkline chart as a reply to each summary.
+- **Sentiment Trendline**: Posts an original-vs-reply sentiment comparison chart.
+- **Trending Topics**: Every 6 hours, identifies top 5 topics using TF-IDF analysis grouped by Gemini Flash, posts a bump chart with exemplar posts.
+- **Daily Cycle**: Aggregates daily sentiment averages, creates local + S3 backups, posts a daily top-post quote reply to the yearly thread.
+- **Yearly Poster**: On the 1st of each month at 01:00 UTC, generates and posts a yearly sentiment chart.
 
-State is managed in DynamoDB, and sparkline images are stored in S3.
+State is stored in a local SQLite database (WAL mode) on a persistent Fly.io volume. Backups are uploaded daily to S3.
 
 ## Tech Stack
 
 - **Language**: Go 1.24+
 - **AT Protocol**: [Bluesky indigo library](https://github.com/bluesky-social/indigo)
+- **Firehose**: Bluesky Jetstream (WebSocket)
 - **Sentiment Analysis**: [GoVader](https://github.com/jonreiter/govader)
+- **Topic Grouping**: Google Gemini Flash API
 - **Image Generation**: Go graphics library (fogleman/gg)
-- **Cloud**: AWS (Lambda, DynamoDB, EventBridge, S3)
-- **Infrastructure**: Terraform
+- **Database**: SQLite (WAL mode) via [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) (pure Go, no CGO)
+- **Deployment**: [Fly.io](https://fly.io) (single VM + persistent volume)
+- **Backups**: AWS S3
+- **Legacy**: AWS Lambda, DynamoDB, EventBridge, Terraform (original architecture, still in repo)
 
 ## Getting Started
 
@@ -62,6 +73,8 @@ State is managed in DynamoDB, and sparkline images are stored in S3.
 - Go 1.24 or later
 - A Bluesky account
 - Bluesky app password (not your regular password)
+- Fly.io account (for deployment)
+- Google AI API key (for trending topics, optional)
 
 ### Installation
 
@@ -76,53 +89,54 @@ cd hourstats-bsky
 make deps
 ```
 
-3. Set up configuration:
-```bash
-make setup
-```
-
-4. Edit `config.yaml` with your Bluesky credentials:
-```yaml
-bluesky:
-  handle: "your-handle.bsky.social"
-  password: "your-app-password"
-```
-
-5. Run locally:
-```bash
-make run
-```
-
-### Alternative: Environment Variables
-
+3. Set environment variables:
 ```bash
 export BLUESKY_HANDLE="your-handle.bsky.social"
 export BLUESKY_PASSWORD="your-app-password"
-make run
+export DATA_DIR="./data"
+export DRY_RUN=true
+```
+
+4. Run locally:
+```bash
+mkdir -p data
+go run ./cmd/hourstats
+```
+
+For trending topics, also set:
+```bash
+export TRENDING_ENABLED=true
+export GOOGLE_AI_API_KEY="your-gemini-api-key"
 ```
 
 ## How It Works
 
-1. **Post Fetching**: Searches all public Bluesky posts from the last 30 minutes
-2. **Time Filtering**: Only analyzes posts within the analysis window
-3. **Engagement Ranking**: Ranks posts by total engagement (replies + likes + reposts)
-4. **Sentiment Analysis**: Uses VADER sentiment analysis with keyword fallback
+1. **Firehose Ingestion**: Connects to Bluesky Jetstream WebSocket, receives all public posts in real time, filters to English, stores in SQLite
+2. **Engagement Hydration**: Fetches likes, reposts, and reply counts for each post via the Bluesky API
+3. **Sentiment Analysis**: Uses VADER sentiment analysis on post text
+4. **Engagement Ranking**: Ranks posts by total engagement (replies + likes + reposts)
 5. **Posting**: Publishes top 5 posts with sentiment indicators and mood hashtag
-6. **Visualizations**: Generates sparklines and yearly charts from historical data
+6. **Visualizations**: Generates sparklines, sentiment trendlines, and yearly charts
+7. **Trending Topics**: TF-IDF extraction + Gemini Flash grouping → bump chart with exemplar posts
 
 ## Features
 
-- ✅ Public post search (all posts, not just followed accounts)
+- ✅ Real-time Jetstream firehose ingestion (English posts)
 - ✅ Adult content filtering using Bluesky moderation labels
 - ✅ Sentiment analysis with 100-word emotion vocabulary
-- ✅ Engagement-based ranking (no sentiment boost)
+- ✅ Engagement-based ranking with API hydration
 - ✅ Post deduplication
-- ✅ 48-hour sentiment sparklines
+- ✅ 7-day sentiment sparklines
+- ✅ Original vs reply sentiment trendlines
 - ✅ Yearly sentiment charts with month markers
 - ✅ Daily sentiment aggregation
 - ✅ Trending topics with bump chart (TF-IDF + Gemini Flash, posted every 6h)
-- ✅ AWS serverless deployment
-- ✅ CI/CD pipeline via GitHub Actions
+- ✅ Daily top-post quote reply to yearly thread
+- ✅ SQLite with WAL mode on persistent Fly.io volume
+- ✅ Daily SQLite → S3 backups (essential tables only)
+- ✅ Wall-clock aligned scheduling (deploys don't shift schedule)
+- ✅ Jetstream auto-reconnect with exponential backoff
+- ✅ Stall detection (warns if no posts received for 5 minutes)
 
 ### Trending Topics
 
@@ -160,40 +174,73 @@ make lint
 
 ## Deployment
 
-The bot is deployed to AWS using Terraform and GitHub Actions. See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for detailed deployment instructions.
+The bot is deployed to [Fly.io](https://fly.io) as a single Docker container with a persistent volume for SQLite storage.
 
-### AWS Resources
+### Deploy
 
-- Lambda functions (fetcher, processor, sparkline-poster, daily-aggregator, yearly-poster)
-- DynamoDB tables (state, sentiment history, daily sentiment)
-- EventBridge rules (30-minute, daily, monthly schedules)
-- S3 bucket (sparkline images)
-- IAM roles and policies
+```bash
+# Production
+make deploy-prod
+
+# Staging
+make deploy-staging
+
+# Both
+make deploy-all
+```
+
+### Fly.io Resources
+
+- **Production**: `hourstats-prod` — shared-cpu-1x, 256MB RAM, persistent volume at `/data` (SJC region)
+- **Staging**: `hourstats-staging` — shared-cpu-1x, 512MB RAM, persistent volume at `/data` (SJC region)
+
+### Operational Commands
+
+```bash
+make fly-status          # Check both app statuses
+make fly-logs-prod       # Tail production logs
+make fly-logs-staging    # Tail staging logs
+fly ssh console -a hourstats-prod   # SSH into production
+fly sftp shell -a hourstats-prod    # Transfer files (e.g. database)
+```
+
+> **Legacy**: The original AWS Lambda/DynamoDB deployment is documented in [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) (marked as legacy).
 
 ## Project Structure
 
 ```
 hourstats-bsky/
-├── cmd/                          # Lambda functions and entry points
-│   ├── lambda-fetcher/           # Fetcher Lambda (EventBridge trigger + post collection)
-│   ├── lambda-processor/         # Processor Lambda (sentiment analysis + posting)
-│   ├── lambda-sparkline-poster/  # Sparkline chart Lambda
-│   ├── lambda-daily-aggregator/  # Daily aggregation Lambda
-│   ├── lambda-yearly-poster/     # Yearly chart Lambda
-│   ├── dynamodb-backup/          # DynamoDB backup utility
-│   ├── dynamodb-restore/         # DynamoDB restore utility
-│   ├── diagnostics/              # Production diagnostics tool
-│   └── local-test/               # Local testing harness
-├── internal/                     # Shared packages
-│   ├── awsutil/                  # Shared AWS utilities (SSM credentials)
-│   ├── backup/                   # DynamoDB backup/restore logic
+├── cmd/
+│   ├── hourstats/                # Main binary (Jetstream + scheduler + all cycles)
+│   ├── import-dynamodb/          # DynamoDB → SQLite migration tool
+│   ├── force-trending/           # Manual trending topics trigger
+│   ├── graph-lab/                # Chart experimentation tool
+│   ├── lambda-fetcher/           # [Legacy] AWS Lambda fetcher
+│   ├── lambda-processor/         # [Legacy] AWS Lambda processor
+│   ├── lambda-sparkline-poster/  # [Legacy] AWS Lambda sparkline
+│   ├── lambda-daily-aggregator/  # [Legacy] AWS Lambda daily aggregator
+│   ├── lambda-yearly-poster/     # [Legacy] AWS Lambda yearly poster
+│   ├── dynamodb-backup/          # [Legacy] DynamoDB backup utility
+│   ├── dynamodb-restore/         # [Legacy] DynamoDB restore utility
+│   ├── diagnostics/              # [Legacy] Production diagnostics tool
+│   └── local-test/               # [Legacy] Local testing harness
+├── internal/
+│   ├── store/                    # SQLite database layer (schema, queries, backup)
+│   ├── jetstream/                # Jetstream WebSocket consumer
+│   ├── hydrator/                 # Engagement hydration via Bluesky API
+│   ├── topics/                   # Trending topics (TF-IDF, Gemini grouping, bump chart)
 │   ├── client/                   # Bluesky API client
-│   ├── analyzer/                 # Sentiment analysis
+│   ├── analyzer/                 # Sentiment analysis (VADER)
 │   ├── formatter/                # Post formatting
-│   ├── sparkline/                # Chart generation
-│   └── state/                    # DynamoDB state management
-├── terraform/                    # Infrastructure as Code
-└── openspec/                     # Architecture specifications
+│   ├── sparkline/                # Chart generation (sparkline, trendline, yearly, bump)
+│   ├── state/                    # [Legacy] DynamoDB state management
+│   ├── awsutil/                  # [Legacy] AWS utilities
+│   └── backup/                   # [Legacy] DynamoDB backup logic
+├── openspec/                     # Architecture specifications
+├── Dockerfile                    # Multi-stage build (Go 1.24 → Alpine 3.21)
+├── fly.prod.toml                 # Fly.io production config
+├── fly.staging.toml              # Fly.io staging config
+└── Makefile                      # Build, test, deploy commands
 ```
 
 ## Contributing
@@ -215,6 +262,10 @@ This project uses the following open-source libraries:
 - **[Bluesky indigo](https://github.com/bluesky-social/indigo)** - Official Go library for the AT Protocol/Bluesky by the Bluesky team. Used for Bluesky API integration.
 
 - **[gg](https://github.com/fogleman/gg)** - 2D graphics library for Go by Michael Fogleman. Used for generating sentiment sparkline charts.
+
+- **[modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite)** - Pure Go SQLite implementation. Used for the local database without requiring CGO.
+
+- **[Google Gemini](https://ai.google.dev/)** - AI model used for semantic topic grouping in trending topics analysis.
 
 ## License
 

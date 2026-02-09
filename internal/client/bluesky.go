@@ -674,20 +674,23 @@ func createUserHandleFacets(text string, posts []Post) []*bsky.RichtextFacet {
 		}
 	}
 
-	// Create facets for each user handle linking to their post
+	// Create facets for each user handle linking to their post.
+	// Use an advancing search offset so that duplicate handles each get
+	// the correct byte position (strings.Index always returns the first match).
+	searchFrom := 0
 	for _, post := range posts {
 		if post.URI == "" {
 			continue
 		}
 
-		// Find the handle in the text and create a facet
 		handle := "@" + post.Author
-		startIndex := strings.Index(text, handle)
-		if startIndex == -1 {
+		idx := strings.Index(text[searchFrom:], handle)
+		if idx == -1 {
 			continue
 		}
-
+		startIndex := searchFrom + idx
 		endIndex := startIndex + len(handle)
+		searchFrom = endIndex
 
 		// Convert AT Protocol URI to web URL for clickable links
 		webURL := convertATURItoWebURL(post.URI)

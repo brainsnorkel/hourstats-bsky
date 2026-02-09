@@ -1,44 +1,45 @@
 package topics
 
 import (
-	"reflect"
 	"testing"
 )
 
 func TestTokenize_PlainText(t *testing.T) {
-	got := Tokenize("Breaking news about the economy today")
-	want := []string{"breaking", "news", "economy", "today"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %v, want %v", got, want)
+	got := Tokenize("Breaking earthquake hits coastal regions")
+	if !contains(got, "breaking") || !contains(got, "earthquake") || !contains(got, "coastal") || !contains(got, "regions") {
+		t.Errorf("content words should be present, got %v", got)
+	}
+	if !contains(got, "breaking_earthquake") {
+		t.Errorf("bigram breaking_earthquake should be present, got %v", got)
 	}
 }
 
 func TestTokenize_URLs(t *testing.T) {
-	got := Tokenize("Check this out https://example.com/foo and http://bar.org important stuff")
+	got := Tokenize("Check this https://example.com/foo and http://bar.org important earthquake")
 	if contains(got, "https") || contains(got, "example") || contains(got, "http") {
 		t.Errorf("URLs should be stripped, got %v", got)
 	}
-	if !contains(got, "check") || !contains(got, "important") || !contains(got, "stuff") {
+	if !contains(got, "check") || !contains(got, "important") || !contains(got, "earthquake") {
 		t.Errorf("non-URL words should remain, got %v", got)
 	}
 }
 
 func TestTokenize_Mentions(t *testing.T) {
-	got := Tokenize("Hey @user.bsky.social great post about climate change")
+	got := Tokenize("Hey @user.bsky.social posted about climate policy")
 	if contains(got, "user") || contains(got, "bsky") {
 		t.Errorf("mentions should be stripped, got %v", got)
 	}
-	if !contains(got, "climate") || !contains(got, "change") {
+	if !contains(got, "climate") || !contains(got, "policy") {
 		t.Errorf("non-mention words should remain, got %v", got)
 	}
 }
 
 func TestTokenize_Emoji(t *testing.T) {
-	got := Tokenize("Love this 🔥🔥🔥 amazing content 🎉")
+	got := Tokenize("🔥🔥🔥 incredible content 🎉 stellar")
 	if contains(got, "🔥") || contains(got, "🎉") {
 		t.Errorf("emoji should be stripped, got %v", got)
 	}
-	if !contains(got, "love") || !contains(got, "amazing") || !contains(got, "content") {
+	if !contains(got, "incredible") || !contains(got, "content") || !contains(got, "stellar") {
 		t.Errorf("words should remain, got %v", got)
 	}
 }
@@ -85,19 +86,81 @@ func TestTokenize_MixedContent(t *testing.T) {
 }
 
 func TestTokenize_Punctuation(t *testing.T) {
-	got := Tokenize("wow!!! amazing... really??? incredible---stuff")
-	if !contains(got, "wow") || !contains(got, "amazing") || !contains(got, "incredible") {
+	got := Tokenize("wow!!! incredible... stellar??? remarkable---stuff")
+	if !contains(got, "wow") || !contains(got, "incredible") || !contains(got, "stellar") {
 		t.Errorf("punctuation should be trimmed, got %v", got)
 	}
 }
 
 func TestTokenize_SocialMediaStopwords(t *testing.T) {
 	got := Tokenize("lol omg wtf bruh literally the best thing ever")
-	if contains(got, "lol") || contains(got, "omg") || contains(got, "bruh") || contains(got, "literally") {
+	if contains(got, "lol") || contains(got, "omg") || contains(got, "bruh") || contains(got, "literally") || contains(got, "best") {
 		t.Errorf("social media stopwords should be removed, got %v", got)
 	}
-	if !contains(got, "best") {
-		t.Errorf("non-stopword should remain, got %v", got)
+}
+
+func TestTokenize_ContractionFragments(t *testing.T) {
+	got := Tokenize("I don't think he didn't know")
+	if contains(got, "don") || contains(got, "didn") {
+		t.Errorf("contraction fragments should be stopwords, got %v", got)
+	}
+}
+
+func TestTokenize_GenericSentiment(t *testing.T) {
+	got := Tokenize("I love this amazing happy beautiful day")
+	if contains(got, "love") || contains(got, "amazing") || contains(got, "happy") || contains(got, "beautiful") || contains(got, "day") {
+		t.Errorf("generic sentiment words should be stopwords, got %v", got)
+	}
+}
+
+func TestTokenize_Profanity(t *testing.T) {
+	got := Tokenize("this fucking shit sucks damn")
+	if contains(got, "fucking") || contains(got, "shit") || contains(got, "sucks") || contains(got, "damn") {
+		t.Errorf("profanity should be stopwords, got %v", got)
+	}
+}
+
+func TestTokenize_PureNumbers(t *testing.T) {
+	got := Tokenize("in 2026 there were 500 incidents")
+	if contains(got, "2026") || contains(got, "500") {
+		t.Errorf("pure numbers should be stripped, got %v", got)
+	}
+}
+
+func TestTokenize_BareDomains(t *testing.T) {
+	got := Tokenize("check example.com and foo.org earthquake")
+	if contains(got, "example") || contains(got, "foo") {
+		t.Errorf("bare domains should be stripped, got %v", got)
+	}
+	if !contains(got, "check") || !contains(got, "earthquake") {
+		t.Errorf("non-domain words should remain, got %v", got)
+	}
+}
+
+func TestTokenize_PlatformNames(t *testing.T) {
+	got := Tokenize("posted on youtube and twitter and reddit")
+	if contains(got, "youtube") || contains(got, "twitter") || contains(got, "reddit") {
+		t.Errorf("platform names should be stopwords, got %v", got)
+	}
+}
+
+func TestTokenize_Bigrams(t *testing.T) {
+	got := Tokenize("super bowl halftime performance")
+	if !contains(got, "super_bowl") || !contains(got, "bowl_halftime") || !contains(got, "halftime_performance") {
+		t.Errorf("bigrams should be generated, got %v", got)
+	}
+}
+
+func TestTokenize_BigramBridgesStopword(t *testing.T) {
+	got := Tokenize("halftime show tonight")
+	if !contains(got, "halftime_show") {
+		t.Errorf("bigram should bridge across stopword, got %v", got)
+	}
+	if contains(got, "show") {
+		t.Errorf("stopword 'show' should not appear as unigram, got %v", got)
+	}
+	if contains(got, "show_tonight") {
+		t.Errorf("bigram of two stopwords should be excluded, got %v", got)
 	}
 }
 

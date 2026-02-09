@@ -1,3 +1,7 @@
+> **⚠️ LEGACY DOCUMENT** — This document describes the original AWS Lambda architecture. The project is migrating to Fly.io with a single Go binary and SQLite. See [ARCHITECTURE.md](/ARCHITECTURE.md) for the current architecture and the [Migration Plan](openspec/changes/jetstream-migration/MIGRATION_PLAN.md) for migration status.
+
+---
+
 # Production Deployment Guide - Bluesky HourStats Lambda
 
 This guide walks you through deploying the Bluesky HourStats bot to AWS Lambda in production.
