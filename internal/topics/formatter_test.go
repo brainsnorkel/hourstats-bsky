@@ -13,14 +13,14 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 
 	text, facets := FormatTrendingPost(ranked, nil)
 
-	if !strings.Contains(text, "#1 Politics (NEW)") {
-		t.Errorf("expected '#1 Politics (NEW)', text: %q", text)
+	if !strings.Contains(text, "1. Politics (NEW)") {
+		t.Errorf("expected '1. Politics (NEW)', text: %q", text)
 	}
 	if !strings.Contains(text, "@alice.bsky.social") {
 		t.Errorf("expected exemplar mention, text: %q", text)
 	}
-	if !strings.Contains(text, "#2 Weather (NEW)") {
-		t.Errorf("expected '#2 Weather (NEW)', text: %q", text)
+	if !strings.Contains(text, "2. Weather (NEW)") {
+		t.Errorf("expected '2. Weather (NEW)', text: %q", text)
 	}
 	if !strings.Contains(text, "#hstrend") {
 		t.Errorf("expected hashtag, text: %q", text)
@@ -57,13 +57,13 @@ func TestFormatTrendingPost_MovementIndicators(t *testing.T) {
 
 	text, _ := FormatTrendingPost(ranked, previous)
 
-	if !strings.Contains(text, "#1 A (+2)") {
+	if !strings.Contains(text, "1. A (+2)") {
 		t.Errorf("expected rose indicator, text: %q", text)
 	}
-	if !strings.Contains(text, "#2 B (->)") {
+	if !strings.Contains(text, "2. B (->)") {
 		t.Errorf("expected unchanged indicator, text: %q", text)
 	}
-	if !strings.Contains(text, "#3 C (NEW)") {
+	if !strings.Contains(text, "3. C (NEW)") {
 		t.Errorf("expected NEW indicator, text: %q", text)
 	}
 }
@@ -139,10 +139,10 @@ func TestFormatAltText(t *testing.T) {
 	}
 
 	alt := FormatAltText(ranked)
-	if !strings.Contains(alt, "#1 Politics (top post by @alice.bsky.social)") {
+	if !strings.Contains(alt, "1. Politics (top post by @alice.bsky.social)") {
 		t.Errorf("expected exemplar in alt text, got: %q", alt)
 	}
-	if !strings.Contains(alt, "#2 Weather") {
+	if !strings.Contains(alt, "2. Weather") {
 		t.Errorf("expected topic without exemplar, got: %q", alt)
 	}
 }
