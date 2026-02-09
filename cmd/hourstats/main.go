@@ -223,8 +223,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
 				slog.Error("insert post failed", "uri", post.URI, "error", err)
 			}
 
-			// Tokenize root posts for trending topic analysis.
-			if trendingEnabled && rec.Reply == nil {
+			if trendingEnabled && rec.Reply == nil && !rec.HasAdultContent() {
 				toks := topics.Tokenize(rec.Text)
 				if len(toks) > 0 {
 					tokJSON, _ := json.Marshal(toks)

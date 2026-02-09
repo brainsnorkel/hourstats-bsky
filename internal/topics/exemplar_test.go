@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
 )
 
@@ -173,6 +174,34 @@ func TestHydrateExemplars_EmptyTopics(t *testing.T) {
 	}
 	if result != nil {
 		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestHydrateExemplars_SkipsAdultContent(t *testing.T) {
+	adultPost := makePostView("at://a/1", "nsfw.bsky.social", 500, 100, 50)
+	adultPost.Labels = []*atproto.LabelDefs_Label{{Val: "porn"}}
+	cleanPost := makePostView("at://a/2", "clean.bsky.social", 10, 2, 1)
+
+	fetcher := &mockExemplarFetcher{
+		posts: []*bsky.FeedDefs_PostView{adultPost, cleanPost},
+	}
+	store := &mockExemplarStore{
+		urisByKeyword: map[string][]string{
+			"topic": {"at://a/1", "at://a/2"},
+		},
+	}
+
+	hydrator := NewExemplarHydrator(fetcher, store)
+	topics := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Topic", Keywords: []string{"topic"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
+	}
+
+	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result[0].ExemplarHandle != "clean.bsky.social" {
+		t.Errorf("expected clean post, got %q (adult content should be skipped)", result[0].ExemplarHandle)
 	}
 }
 

@@ -23,11 +23,36 @@ type Commit struct {
 
 // PostRecord is the parsed content of an app.bsky.feed.post record.
 type PostRecord struct {
-	Type      string    `json:"$type"`
-	Text      string    `json:"text"`
-	CreatedAt string    `json:"createdAt"`
-	Langs     []string  `json:"langs,omitempty"`
-	Reply     *ReplyRef `json:"reply,omitempty"`
+	Type      string      `json:"$type"`
+	Text      string      `json:"text"`
+	CreatedAt string      `json:"createdAt"`
+	Langs     []string    `json:"langs,omitempty"`
+	Reply     *ReplyRef   `json:"reply,omitempty"`
+	Labels    *SelfLabels `json:"labels,omitempty"`
+}
+
+type SelfLabels struct {
+	Values []SelfLabelValue `json:"values,omitempty"`
+}
+
+type SelfLabelValue struct {
+	Val string `json:"val"`
+}
+
+var adultLabelValues = map[string]bool{
+	"porn": true, "sexual": true, "nudity": true, "graphic-media": true,
+}
+
+func (r *PostRecord) HasAdultContent() bool {
+	if r.Labels == nil {
+		return false
+	}
+	for _, v := range r.Labels.Values {
+		if adultLabelValues[v.Val] {
+			return true
+		}
+	}
+	return false
 }
 
 // ReplyRef identifies the parent/root of a reply chain.
