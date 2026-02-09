@@ -163,6 +163,8 @@ var genericLabelWords = map[string]bool{
 	"miscellaneous": true, "general": true, "various": true, "other": true,
 	"everyday": true, "mixed": true, "assorted": true, "unrelated": true,
 	"activities": true, "actions": true, "terms": true, "words": true,
+	"posts": true, "mentions": true, "discussions": true, "content": true,
+	"topics": true, "updates": true, "community": true, "online": true,
 }
 
 func filterGenericClusters(clusters []TopicCluster) []TopicCluster {
@@ -192,7 +194,7 @@ func buildPrompt(terms []TermScore) string {
 		fmt.Fprintf(&b, "- %s (%.2f)\n", t.Term, t.Score)
 	}
 	b.WriteString("\nReturn a JSON array of groups. Each group has:\n")
-	b.WriteString("- \"label\": short human-readable topic name (2-4 words)\n")
+	b.WriteString("- \"label\": short topic name (1-3 words, subject only — NO filler words like Posts, Mentions, Discussions, Event, Content, Media, Topics, News, Updates, Debate, Discourse, Controversy, Culture, Community, Platform, Social, Online)\n")
 	b.WriteString("- \"description\": one sentence describing the topic\n")
 	b.WriteString("- \"keywords\": array of the original terms that belong to this group\n")
 	b.WriteString("- \"synonyms\": array of additional related terms not in the original list\n")

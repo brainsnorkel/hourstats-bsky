@@ -22,8 +22,8 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 	if !strings.Contains(text, "#2 Weather (NEW)") {
 		t.Errorf("expected '#2 Weather (NEW)', text: %q", text)
 	}
-	if !strings.Contains(text, "#trending #hourstatstrend") {
-		t.Errorf("expected hashtags, text: %q", text)
+	if !strings.Contains(text, "#hstrend") {
+		t.Errorf("expected hashtag, text: %q", text)
 	}
 
 	tagCount := 0
@@ -36,8 +36,8 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 			linkCount++
 		}
 	}
-	if tagCount != 2 {
-		t.Errorf("expected 2 tag facets, got %d", tagCount)
+	if tagCount != 1 {
+		t.Errorf("expected 1 tag facet, got %d", tagCount)
 	}
 	if linkCount != 1 {
 		t.Errorf("expected 1 link facet (exemplar), got %d", linkCount)
