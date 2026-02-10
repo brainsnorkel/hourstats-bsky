@@ -217,11 +217,14 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
 			}
 
 			if trendingEnabled && rec.Reply == nil && !rec.HasAdultContent() {
-				toks := topics.Tokenize(rec.Text)
-				if len(toks) > 0 {
-					tokJSON, _ := json.Marshal(toks)
-					if err := db.InsertTopicTokens(ctx, post.URI, string(tokJSON), createdAt); err != nil {
-						slog.Warn("insert topic tokens failed", "uri", post.URI, "error", err)
+				hashtagCount := strings.Count(rec.Text, "#")
+				if hashtagCount <= 1 {
+					toks := topics.Tokenize(rec.Text)
+					if len(toks) > 0 {
+						tokJSON, _ := json.Marshal(toks)
+						if err := db.InsertTopicTokens(ctx, post.URI, string(tokJSON), createdAt); err != nil {
+							slog.Warn("insert topic tokens failed", "uri", post.URI, "error", err)
+						}
 					}
 				}
 			}
