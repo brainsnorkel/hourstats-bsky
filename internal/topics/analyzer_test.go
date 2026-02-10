@@ -327,6 +327,48 @@ func TestBackfillFromPrevious_NoPrevious(t *testing.T) {
 	}
 }
 
+func TestBackfillFromPrevious_SkipsSemanticOverlap(t *testing.T) {
+	current := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Ice Hockey", Keywords: []string{"ice", "canada", "hockey", "olympics"}}}, TopicID: "t1", Rank: 1},
+	}
+	previous := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Sports & Olympics", Keywords: []string{"hockey", "ice", "canada", "olympics", "games", "goal"}}}, TopicID: "t2", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Epstein Files", Keywords: []string{"epstein", "files", "release"}}}, TopicID: "t3", Rank: 2},
+	}
+
+	result := backfillFromPrevious(current, previous)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 topics (original + non-overlapping), got %d", len(result))
+	}
+	if result[1].TopicID != "t3" {
+		t.Errorf("expected Epstein Files (t3) backfilled, got %q (%s)", result[1].TopicID, result[1].Cluster.Label)
+	}
+}
+
+func TestOverlapsCurrent_HighJaccard(t *testing.T) {
+	candidate := IdentifiedTopic{
+		RankedTopic: RankedTopic{Cluster: TopicCluster{Keywords: []string{"hockey", "ice", "canada", "olympics", "games"}}},
+	}
+	current := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Keywords: []string{"ice", "canada", "hockey", "olympics"}}}},
+	}
+	if !overlapsCurrent(candidate, current) {
+		t.Error("expected overlap for highly similar keyword sets")
+	}
+}
+
+func TestOverlapsCurrent_NoOverlap(t *testing.T) {
+	candidate := IdentifiedTopic{
+		RankedTopic: RankedTopic{Cluster: TopicCluster{Keywords: []string{"epstein", "files", "release"}}},
+	}
+	current := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Keywords: []string{"ice", "canada", "hockey", "olympics"}}}},
+	}
+	if overlapsCurrent(candidate, current) {
+		t.Error("expected no overlap for unrelated keyword sets")
+	}
+}
+
 func TestBuildTrajectories(t *testing.T) {
 	snapshots := []store.TopicSnapshotRow{
 		{SnapshotTime: "2026-01-01T00:00:00Z", TopicID: "t1", Rank: 3},
