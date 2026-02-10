@@ -204,6 +204,7 @@ var genericLabelWords = map[string]bool{
 	"controversy": true, "discourse": true, "random": true, "randomly": true,
 	"entertainment": true, "politics": true, "culture": true, "platforms": true, "social": true,
 	"movie": true, "movies": true, "events": true, "current": true, "news": true,
+	"media": true, "quality": true, "language": true,
 }
 
 func extractResponseText(parts []geminiPart) string {
@@ -253,6 +254,7 @@ func buildPrompt(terms []TermScore) string {
 	b.WriteString("- Aggressively merge related terms into the most recognizable event, person, or subject.\n")
 	b.WriteString("- If a major event is happening (e.g. Super Bowl, Oscars), ALL related terms (teams, players, performers, venues) MUST merge into that single event.\n")
 	b.WriteString("- Terms with underscores are multi-word phrases (bad_bunny = \"Bad Bunny\", super_bowl = \"Super Bowl\"). Use multi-word form in labels.\n")
+	b.WriteString("- When compound terms share a word (e.g. post_banger + banger_that), they are fragments of the same viral phrase being repeated across many posts. Merge ALL overlapping fragments into ONE topic and reconstruct the original phrase as the label.\n")
 	b.WriteString("- Aim for 5-7 distinct topics. Fewer strong topics is better than more weak ones.\n")
 	b.WriteString("- Maximum 10 groups. Every input term must appear in exactly one group's keywords.\n\n")
 	b.WriteString("DISCARD:\n")
