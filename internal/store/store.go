@@ -259,6 +259,14 @@ func (s *Store) migrate() error {
 			last_seen TEXT NOT NULL,
 			peak_rank INTEGER NOT NULL
 		)`,
+
+		`CREATE TABLE IF NOT EXISTS token_postings (
+			token TEXT NOT NULL,
+			post_uri TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (token, post_uri)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_token_postings_token_created ON token_postings(token, created_at)`,
 	}
 
 	for _, stmt := range stmts {
