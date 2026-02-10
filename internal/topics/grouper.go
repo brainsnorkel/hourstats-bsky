@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	defaultGeminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+	defaultGeminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 	maxDailyCalls         = 100
 )
 
@@ -62,12 +62,34 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text string `json:"text"`
+	Text    string `json:"text"`
+	Thought bool   `json:"thought,omitempty"`
 }
 
 type geminiGenConfig struct {
-	ResponseMimeType string   `json:"responseMimeType"`
-	Temperature      *float64 `json:"temperature,omitempty"`
+	ResponseMimeType string                 `json:"responseMimeType"`
+	ThinkingConfig   *geminiThinkingConfig  `json:"thinkingConfig,omitempty"`
+	ResponseSchema   map[string]interface{} `json:"responseSchema,omitempty"`
+}
+
+type geminiThinkingConfig struct {
+	ThinkingBudget int `json:"thinkingBudget"`
+}
+
+// topicClusterSchema defines the JSON schema for structured output from Gemini.
+var topicClusterSchema = map[string]interface{}{
+	"type": "ARRAY",
+	"items": map[string]interface{}{
+		"type": "OBJECT",
+		"properties": map[string]interface{}{
+			"label":         map[string]interface{}{"type": "STRING"},
+			"description":   map[string]interface{}{"type": "STRING"},
+			"keywords":      map[string]interface{}{"type": "ARRAY", "items": map[string]interface{}{"type": "STRING"}},
+			"synonyms":      map[string]interface{}{"type": "ARRAY", "items": map[string]interface{}{"type": "STRING"}},
+			"justification": map[string]interface{}{"type": "STRING"},
+		},
+		"required": []string{"label", "description", "keywords", "synonyms", "justification"},
+	},
 }
 
 // geminiResponse is the response body from Gemini Flash.
@@ -93,14 +115,14 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 
 	prompt := buildPrompt(terms)
 
-	temp := 0.2
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
 			{Parts: []geminiPart{{Text: prompt}}},
 		},
 		GenerationConfig: geminiGenConfig{
 			ResponseMimeType: "application/json",
-			Temperature:      &temp,
+			ThinkingConfig:   &geminiThinkingConfig{ThinkingBudget: 1024},
+			ResponseSchema:   topicClusterSchema,
 		},
 	}
 
@@ -146,12 +168,20 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 		return fallbackClusters(terms), nil
 	}
 
-	jsonText := gemResp.Candidates[0].Content.Parts[0].Text
+	jsonText := extractResponseText(gemResp.Candidates[0].Content.Parts)
+	if jsonText == "" {
+		log.Printf("grouper: no response text in Gemini output, using fallback")
+		return fallbackClusters(terms), nil
+	}
 
 	var clusters []TopicCluster
 	if err := json.Unmarshal([]byte(jsonText), &clusters); err != nil {
 		log.Printf("grouper: parse clusters JSON: %v, using fallback", err)
 		return fallbackClusters(terms), nil
+	}
+
+	for _, c := range clusters {
+		log.Printf("grouper: topic %q — %s", c.Label, c.Justification)
 	}
 
 	if len(clusters) > MaxLLMGroups {
@@ -172,6 +202,17 @@ var genericLabelWords = map[string]bool{
 	"opinions": true, "reactions": true, "criticism": true, "takes": true,
 	"views": true, "thoughts": true, "responses": true, "debate": true,
 	"controversy": true, "discourse": true, "random": true, "randomly": true,
+	"entertainment": true, "politics": true, "culture": true, "platforms": true, "social": true,
+	"movie": true, "movies": true, "events": true, "current": true, "news": true,
+}
+
+func extractResponseText(parts []geminiPart) string {
+	for _, p := range parts {
+		if !p.Thought && p.Text != "" {
+			return p.Text
+		}
+	}
+	return ""
 }
 
 func filterGenericClusters(clusters []TopicCluster) []TopicCluster {
@@ -198,29 +239,29 @@ func filterGenericClusters(clusters []TopicCluster) []TopicCluster {
 
 func buildPrompt(terms []TermScore) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Here are the top %d terms by TF-IDF score from recent social media posts.\n", len(terms))
-	b.WriteString("Group synonyms and related terms together, then label each group.\n\n")
+	fmt.Fprintf(&b, "Group these %d TF-IDF terms from recent Bluesky posts into trending topics.\n\n", len(terms))
 	b.WriteString("Terms (score):\n")
 	for _, t := range terms {
 		fmt.Fprintf(&b, "- %s (%.2f)\n", t.Term, t.Score)
 	}
-	b.WriteString("\nReturn a JSON array of groups. Each group has:\n")
-	b.WriteString("- \"label\": short topic name (1-3 words, subject only — NO filler words like Posts, Mentions, Discussions, Event, Content, Media, Topics, News, Updates, Debate, Discourse, Controversy, Culture, Community, Platform, Social, Online, Opinions, Reactions, Criticism, Takes, Views, Thoughts, Responses, Random)\n")
-	b.WriteString("- \"description\": one sentence describing the topic\n")
-	b.WriteString("- \"keywords\": array of the original terms that belong to this group\n")
-	b.WriteString("- \"synonyms\": array of additional related terms not in the original list\n")
-	b.WriteString("\nRules:\n")
-	b.WriteString("- Maximum 10 groups\n")
-	b.WriteString("- Every input term must appear in exactly one group's keywords\n")
-	b.WriteString("- Groups should be meaningful, specific topics — not vague categories\n")
-	b.WriteString("- NEVER create catch-all groups with labels like \"Miscellaneous\", \"General\", \"Various\", \"Other\", \"Everyday\", \"Actions\", \"Activities\", \"Mixed\", \"Uncategorized\", or \"Uncategorised\"\n")
-	b.WriteString("- If a term doesn't fit a specific topic, leave it as a single-term group rather than lumping unrelated terms together\n")
-	b.WriteString("- AGGRESSIVELY merge related terms into the single most well-known event, person, or subject. Use the most recognizable name as the label. If a major event (e.g. Super Bowl, World Cup, Oscars) is happening, ALL related terms (teams, players, jerseys, halftime, scores, venues, performances) MUST be merged into that event — never split into sub-topics.\n")
-	b.WriteString("- Aim for 5-7 truly DISTINCT topics. When in doubt, MERGE into fewer, bigger groups rather than splitting.\n")
-	b.WriteString("- If terms are too vague, generic, or describe meta-commentary rather than a specific subject (e.g. 'random', 'stuff', 'banger', 'wild', 'mood'), group them under the label \"__discard__\". Do NOT force vague terms into real topics. Only named events, people, places, organisations, or specific subjects should form topics.\n")
-	b.WriteString("- Terms containing underscores are multi-word phrases (e.g. bad_bunny means \"Bad Bunny\", super_bowl means \"Super Bowl\")\n")
-	b.WriteString("- Prefer grouping underscore phrases with their component single-word terms\n")
-	b.WriteString("- Use the multi-word form in labels when appropriate (e.g. label \"Bad Bunny\" not \"Bunny\")\n")
+	b.WriteString("\nTOPIC QUALITY:\n")
+	b.WriteString("- Labels must name a SPECIFIC subject: a person, event, place, organisation, law, product, or concrete phenomenon.\n")
+	b.WriteString("- Good labels: \"Donald Trump\", \"Super Bowl\", \"Age Verification\", \"Hurricane Milton\", \"Taylor Swift\", \"Epstein Files\"\n")
+	b.WriteString("- Bad labels: \"Entertainment\", \"Social Media\", \"Politics\", \"Current Events\", \"Movie\", \"Random\", \"Online Discourse\"\n")
+	b.WriteString("- Test: if a label could be a newspaper SECTION header, it is too broad. Labels should be specific enough to be a newspaper HEADLINE.\n\n")
+	b.WriteString("GROUPING:\n")
+	b.WriteString("- Aggressively merge related terms into the most recognizable event, person, or subject.\n")
+	b.WriteString("- If a major event is happening (e.g. Super Bowl, Oscars), ALL related terms (teams, players, performers, venues) MUST merge into that single event.\n")
+	b.WriteString("- Terms with underscores are multi-word phrases (bad_bunny = \"Bad Bunny\", super_bowl = \"Super Bowl\"). Use multi-word form in labels.\n")
+	b.WriteString("- Aim for 5-7 distinct topics. Fewer strong topics is better than more weak ones.\n")
+	b.WriteString("- Maximum 10 groups. Every input term must appear in exactly one group's keywords.\n\n")
+	b.WriteString("DISCARD:\n")
+	b.WriteString("- Group vague, generic, or meta-commentary terms under the label \"__discard__\".\n")
+	b.WriteString("- This includes: reaction words, mood words, generic adjectives, medium/format descriptions, and anything that describes HOW people are talking rather than WHAT they are talking about.\n")
+	b.WriteString("- It is better to discard borderline terms than to create a weak topic.\n\n")
+	b.WriteString("JUSTIFICATION:\n")
+	b.WriteString("- For each topic, provide a brief justification explaining why these terms form a coherent topic and why the label is specific enough.\n")
+	b.WriteString("- For __discard__, explain why the terms are too vague or generic to form a real topic.\n")
 	return b.String()
 }
 
@@ -300,7 +341,7 @@ func (g *Grouper) GenerateAltText(ctx context.Context, ranked []IdentifiedTopic,
 		return fallback
 	}
 
-	alt := strings.TrimSpace(gemResp.Candidates[0].Content.Parts[0].Text)
+	alt := strings.TrimSpace(extractResponseText(gemResp.Candidates[0].Content.Parts))
 	if alt == "" {
 		return fallback
 	}
