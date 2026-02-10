@@ -191,9 +191,9 @@ func TestTopicSnapshots_InsertAndGetSince(t *testing.T) {
 	t1 := now.Add(-2 * time.Hour).Format(time.RFC3339)
 	t2 := now.Add(-1 * time.Hour).Format(time.RFC3339)
 
-	s.InsertTopicSnapshot(ctx, t1, 1, "topic-a", "AI", "Artificial intelligence", 500, `["ai","llm"]`, "", "")
-	s.InsertTopicSnapshot(ctx, t1, 2, "topic-b", "Sports", "Sports talk", 300, `["sports"]`, "", "")
-	s.InsertTopicSnapshot(ctx, t2, 1, "topic-a", "AI", "Artificial intelligence", 550, `["ai","llm"]`, "at://ex/1", "researcher.bsky.social")
+	s.InsertTopicSnapshot(ctx, t1, 1, "topic-a", "AI", "Artificial intelligence", 500, `["ai","llm"]`, "", "", false)
+	s.InsertTopicSnapshot(ctx, t1, 2, "topic-b", "Sports", "Sports talk", 300, `["sports"]`, "", "", false)
+	s.InsertTopicSnapshot(ctx, t2, 1, "topic-a", "AI", "Artificial intelligence", 550, `["ai","llm"]`, "at://ex/1", "researcher.bsky.social", false)
 
 	cutoff := now.Add(-3 * time.Hour).Format(time.RFC3339)
 	rows, err := s.GetTopicSnapshotsSince(ctx, cutoff)
@@ -219,8 +219,8 @@ func TestTopicSnapshots_Purge(t *testing.T) {
 	old := now.Add(-50 * time.Hour).Format(time.RFC3339)
 	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
 
-	s.InsertTopicSnapshot(ctx, old, 1, "t1", "Old", "old", 100, `[]`, "", "")
-	s.InsertTopicSnapshot(ctx, recent, 1, "t2", "New", "new", 200, `[]`, "", "")
+	s.InsertTopicSnapshot(ctx, old, 1, "t1", "Old", "old", 100, `[]`, "", "", false)
+	s.InsertTopicSnapshot(ctx, recent, 1, "t2", "New", "new", 200, `[]`, "", "", false)
 
 	cutoff := now.Add(-48 * time.Hour).Format(time.RFC3339)
 	deleted, err := s.PurgeTopicSnapshots(ctx, cutoff)
@@ -237,7 +237,7 @@ func TestTopicSnapshots_UpdateExemplar(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.InsertTopicSnapshot(ctx, now, 1, "topic-x", "Test", "desc", 100, `[]`, "", "")
+	s.InsertTopicSnapshot(ctx, now, 1, "topic-x", "Test", "desc", 100, `[]`, "", "", false)
 
 	rows, _ := s.GetTopicSnapshotsSince(ctx, "2000-01-01T00:00:00Z")
 	if len(rows) != 1 {
@@ -254,6 +254,45 @@ func TestTopicSnapshots_UpdateExemplar(t *testing.T) {
 	}
 	if rows[0].ExemplarHandle != "topuser.bsky.social" {
 		t.Errorf("exemplar handle = %q", rows[0].ExemplarHandle)
+	}
+}
+
+func TestTopicSnapshots_IsMeme(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	s.InsertTopicSnapshot(ctx, now, 1, "topic-meme", "Post a Banger", "viral phrase", 500, `["post","banger"]`, "", "", true)
+	s.InsertTopicSnapshot(ctx, now, 2, "topic-normal", "Politics", "political discussion", 300, `["politics"]`, "", "", false)
+
+	rows, err := s.GetTopicSnapshotsSince(ctx, "2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("GetTopicSnapshotsSince: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if !rows[0].IsMeme {
+		t.Error("expected first row IsMeme=true")
+	}
+	if rows[1].IsMeme {
+		t.Error("expected second row IsMeme=false")
+	}
+}
+
+func TestTopicSnapshots_IsMemeDefaultsFalse(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	s.InsertTopicSnapshot(ctx, now, 1, "topic-a", "Test", "desc", 100, `[]`, "", "", false)
+
+	rows, err := s.GetTopicSnapshotsSince(ctx, "2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("GetTopicSnapshotsSince: %v", err)
+	}
+	if rows[0].IsMeme {
+		t.Error("expected IsMeme=false by default")
 	}
 }
 

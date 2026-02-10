@@ -20,6 +20,7 @@ type TopicCluster struct {
 	Keywords      []string `json:"keywords"`
 	Synonyms      []string `json:"synonyms"`
 	Justification string   `json:"justification,omitempty"`
+	IsMeme        bool     `json:"is_meme"`
 }
 
 type RankedTopic struct {

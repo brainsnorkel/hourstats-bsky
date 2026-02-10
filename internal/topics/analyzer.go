@@ -18,7 +18,7 @@ type AnalyzerStore interface {
 	GetTopicTokensSinceLimit(ctx context.Context, cutoff string, limit int) ([]store.TopicTokenRow, error)
 	CountTopicTokensSince(ctx context.Context, cutoff string) (int64, error)
 	PurgeTopicTokens(ctx context.Context, cutoff string) (int64, error)
-	InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string) error
+	InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string, isMeme bool) error
 	GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]store.TopicSnapshotRow, error)
 	PurgeTopicSnapshots(ctx context.Context, cutoff string) (int64, error)
 	UpdateSnapshotExemplar(ctx context.Context, snapshotID int64, exemplarURI, exemplarHandle string) error
@@ -115,7 +115,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		kwJSON, _ := json.Marshal(topic.Cluster.Keywords)
 		if err := a.store.InsertTopicSnapshot(ctx, now, topic.Rank, topic.TopicID,
 			topic.Cluster.Label, topic.Cluster.Description, topic.PostCount,
-			string(kwJSON), "", ""); err != nil {
+			string(kwJSON), "", "", topic.Cluster.IsMeme); err != nil {
 			return fmt.Errorf("insert snapshot: %w", err)
 		}
 	}
@@ -146,7 +146,7 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 			_ = json.Unmarshal([]byte(s.Keywords), &kws)
 			latestTopics = append(latestTopics, IdentifiedTopic{
 				RankedTopic: RankedTopic{
-					Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws},
+					Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, IsMeme: s.IsMeme},
 					PostCount: s.PostCount,
 				},
 				TopicID: s.TopicID,

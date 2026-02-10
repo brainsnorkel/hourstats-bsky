@@ -2,6 +2,7 @@ package topics
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -49,6 +50,7 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, an
 		if !showExemplar[i] {
 			filtered[i].ExemplarHandle = ""
 			filtered[i].ExemplarURI = ""
+			filtered[i].Cluster.IsMeme = false
 		}
 	}
 
@@ -62,8 +64,12 @@ func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHo
 
 	for i, topic := range ranked {
 		line := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)
-		if showExemplar[i] && topic.ExemplarHandle != "" {
-			line += fmt.Sprintf(" @%s", topic.ExemplarHandle)
+		if showExemplar[i] {
+			if topic.Cluster.IsMeme {
+				line += " 🔍"
+			} else if topic.ExemplarHandle != "" {
+				line += fmt.Sprintf(" @%s", topic.ExemplarHandle)
+			}
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
@@ -78,6 +84,26 @@ func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
 
 	searchFrom := 0
 	for _, topic := range ranked {
+		if topic.Cluster.IsMeme {
+			// Meme topics: link the 🔍 to a Bluesky search URL
+			const searchIcon = "🔍"
+			idx := strings.Index(text[searchFrom:], searchIcon)
+			if idx < 0 {
+				continue
+			}
+			byteStart := searchFrom + idx
+			byteEnd := byteStart + len([]byte(searchIcon))
+			searchFrom = byteEnd
+
+			searchURL := "https://bsky.app/search?q=" + url.QueryEscape(topic.Cluster.Label)
+			facets = append(facets, Facet{
+				ByteStart: byteStart,
+				ByteEnd:   byteEnd,
+				Type:      FacetLink,
+				Value:     searchURL,
+			})
+			continue
+		}
 		if topic.ExemplarHandle == "" || topic.ExemplarURI == "" {
 			continue
 		}
@@ -131,7 +157,9 @@ func FormatAltText(ranked []IdentifiedTopic) string {
 	var parts []string
 	for _, topic := range ranked {
 		part := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)
-		if topic.ExemplarHandle != "" {
+		if topic.Cluster.IsMeme {
+			part += " (search)"
+		} else if topic.ExemplarHandle != "" {
 			part += fmt.Sprintf(" (top post by @%s)", topic.ExemplarHandle)
 		}
 		parts = append(parts, part)

@@ -38,11 +38,12 @@ func (m *mockAnalyzerStore) PurgeTopicTokens(_ context.Context, _ string) (int64
 	m.purgedTokens = true
 	return 0, nil
 }
-func (m *mockAnalyzerStore) InsertTopicSnapshot(_ context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string) error {
+func (m *mockAnalyzerStore) InsertTopicSnapshot(_ context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string, isMeme bool) error {
 	m.insertedSnapshots = append(m.insertedSnapshots, store.TopicSnapshotRow{
 		SnapshotTime: snapshotTime, Rank: rank, TopicID: topicID,
 		Label: label, Description: description, PostCount: postCount,
 		Keywords: keywordsJSON, ExemplarURI: exemplarURI, ExemplarHandle: exemplarHandle,
+		IsMeme: isMeme,
 	})
 	return nil
 }

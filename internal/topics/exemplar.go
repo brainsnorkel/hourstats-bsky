@@ -32,6 +32,10 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 	usedHandles := make(map[string]bool)
 
 	for i, topic := range result {
+		if topic.Cluster.IsMeme {
+			slog.Info("exemplar: skipping meme topic", "topic", topic.Cluster.Label)
+			continue
+		}
 		allKeywords := append(topic.Cluster.Keywords, topic.Cluster.Synonyms...)
 		if len(allKeywords) == 0 {
 			slog.Info("exemplar: no keywords", "topic", topic.Cluster.Label)

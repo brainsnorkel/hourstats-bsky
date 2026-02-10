@@ -31,18 +31,19 @@ Every 15 minutes:                      Every 6 hours:
         |                                     v
         v                              Exemplar selection
   TF-IDF (top 50 terms)                (post_buffer JOIN,
-        |                               ranked by engagement)
-        v                                     |
-  Gemini Flash (group + label,                v
-    temperature 0.2,                   Format post text
-    aggressive merge)                   (numbered topics +
-        |                               exemplar mentions +
-        v                               #hstrend facet)
-  Filter generic clusters                     |
-        |                                     v
-        v                              Post to Bluesky
-  Rank by post volume (top 5)          (standalone, not threaded)
-        |
+        |                               ranked by engagement;
+        v                               meme topics skipped)
+  Gemini Flash (group + label,                |
+    temperature 0.2,                          v
+    aggressive merge,                  Format post text
+    meme detection)                     (numbered topics +
+        |                               exemplar mentions OR
+        v                               🔍 search links for memes +
+  Filter generic clusters               #hstrend facet)
+        |                                     |
+        v                                     v
+  Rank by post volume (top 5)          Post to Bluesky
+        |                              (standalone, not threaded)
         v
   Match identities (Jaccard)
         |
@@ -95,6 +96,7 @@ A single Google Gemini Flash API call receives the top 50 TF-IDF terms and retur
 - **Labels**: A 1-3 word subject-only name for each group (e.g., "Donald Trump"). Filler words (Posts, Mentions, Discussions, Event, Content, Media, etc.) are banned by the prompt
 - **Descriptions**: A one-sentence summary
 - **Synonym maps**: Additional related terms NOT in the top 50 that would also indicate the topic (e.g., "white house", "oval office")
+- **Meme detection**: A boolean `is_meme` flag indicating whether the topic is a viral phrase being repeated verbatim by many users (e.g., "Post a Banger", "we're so back") rather than a news event or subject. When Gemini detects that most posts in a cluster contain the same phrase or slight variations, it sets `is_meme: true`
 
 The synonym maps are the key innovation. They're used to recount post volume in the next step, so topics using varied vocabulary get properly aggregated instead of appearing as multiple weak signals.
 
@@ -133,11 +135,12 @@ Identities are retained for 7 days. Peak rank is tracked so the system knows a t
 
 At posting time, the system identifies the highest-engagement post for each topic using a database-only approach (no API calls):
 
-1. **JOIN `post_buffer` with `topic_tokens`**: The `GetExemplarCandidates()` query joins these tables on post URI, then uses `json_each(tt.tokens)` to match against the topic's keyword+synonym set
-2. **Multi-hashtag filter**: Posts with more than one hashtag are excluded from exemplar candidates (`LENGTH(pb.text) - LENGTH(REPLACE(pb.text, '#', '')) <= 1`) to avoid promotional content
-3. **Engagement ranking**: Results are ordered by `(likes + reposts + replies) DESC`, then by keyword match count as tiebreaker
-4. **Handle deduplication**: Each topic gets a unique exemplar author — if the top candidate's handle was already used by a higher-ranked topic, the next candidate is selected
-5. **6-hour window**: Only posts from the last 6 hours are considered, ensuring fresh exemplars
+1. **Meme topics skipped**: Topics flagged as memes (`is_meme: true`) skip exemplar hydration entirely — they link to a Bluesky search instead (see Posting below)
+2. **JOIN `post_buffer` with `topic_tokens`**: The `GetExemplarCandidates()` query joins these tables on post URI, then uses `json_each(tt.tokens)` to match against the topic's keyword+synonym set
+3. **Multi-hashtag filter**: Posts with more than one hashtag are excluded from exemplar candidates (`LENGTH(pb.text) - LENGTH(REPLACE(pb.text, '#', '')) <= 1`) to avoid promotional content
+4. **Engagement ranking**: Results are ordered by `(likes + reposts + replies) DESC`, then by keyword match count as tiebreaker
+5. **Handle deduplication**: Each topic gets a unique exemplar author — if the top candidate's handle was already used by a higher-ranked topic, the next candidate is selected
+6. **6-hour window**: Only posts from the last 6 hours are considered, ensuring fresh exemplars
 
 This approach replaced the original `FeedGetPosts` API-based hydration. Since `post_buffer` already contains engagement data hydrated by the sentiment analysis cycle, we can read it directly — zero API calls, faster execution, and engagement scores that reflect the latest hydration (72-1,017 engagement scores observed vs 0-4 with the old approach).
 
@@ -149,7 +152,7 @@ The trending post is published as a **standalone** post (not threaded to the sen
 Topics
 
 1. Bad Bunny @davidcorn.bsky.social
-2. Donald Trump @ronfilipkowski.bsky.social
+2. Post a Banger 🔍
 3. Jeffrey Epstein @popcrave.com
 4. Discord @legendofnerd.bsky.social
 5. Super Bowl @mprnews.org
@@ -157,7 +160,7 @@ Topics
 #hstrend
 ```
 
-Each topic line shows the rank, topic label, and the exemplar post's author as a clickable link. The `@handle` mentions are AT Protocol link facets pointing to the exemplar post's URL (not the author's profile), so clicking the handle takes you directly to the trending post.
+Each topic line shows the rank and topic label. For regular topics, the exemplar post's author appears as a clickable `@handle` link (AT Protocol link facet pointing to the exemplar post's URL, not the author's profile). For **meme topics**, a 🔍 emoji appears instead, linked to a Bluesky search URL (`https://bsky.app/search?q=Post+a+Banger`) so users can see the viral phrase in context across many posts.
 
 If the post exceeds the 300-grapheme limit, exemplar mentions are dropped from the bottom up (lower-ranked topics lose their exemplar first) until it fits.
 
@@ -204,3 +207,5 @@ The `#hstrend` hashtag is a proper AT Protocol facet, allowing users to mute the
 **Text-only posts (no bump chart image)**: The bump chart image was removed from the posted content for a cleaner format. Topic names and exemplar links communicate the essential information more directly than a chart.
 
 **Bigram extraction**: Single-word tokens miss multi-word names ("Bad Bunny" → "bad" + "bunny" individually). Bigram extraction joins adjacent tokens with underscores so "bad_bunny" appears as a single TF-IDF candidate, producing cleaner labels.
+
+**Meme detection with search links instead of exemplars**: When a topic is a viral phrase repeated verbatim by thousands of users (e.g., "Post a Banger", "we're so back"), linking to a single exemplar post is misleading — the phenomenon IS the repetition, not any one post. The 🔍 search link lets users see the meme in its full viral context. Gemini detects memes during its grouping pass (same API call, no extra cost) by recognising when most posts in a cluster contain the same phrase. The `is_meme` flag is stored as `INTEGER 0/1` in SQLite (matching the existing `is_reply` convention) and the search URL is computed at render time from the topic label, keeping the database schema simple.
