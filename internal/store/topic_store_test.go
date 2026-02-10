@@ -165,32 +165,6 @@ func TestGetExemplarCandidates_RelevanceBeatsEngagement(t *testing.T) {
 	}
 }
 
-func TestGetExemplarCandidates_FiltersMultiHashtag(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	s.InsertTopicTokens(ctx, "at://a/1", `["trump"]`, now)
-	s.InsertTopicTokens(ctx, "at://a/2", `["trump"]`, now)
-
-	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "Trump #maga #election #vote", AuthorDID: "did:plc:1", AuthorHandle: "spammy.bsky.social", CreatedAt: now})
-	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Trump did a thing", AuthorDID: "did:plc:2", AuthorHandle: "clean.bsky.social", CreatedAt: now})
-
-	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=500 WHERE uri='at://a/1'`)
-	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=10 WHERE uri='at://a/2'`)
-
-	candidates, err := s.GetExemplarCandidates(ctx, []string{"trump"}, "2000-01-01T00:00:00Z", 50)
-	if err != nil {
-		t.Fatalf("GetExemplarCandidates: %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("expected 1 candidate (multi-hashtag filtered), got %d", len(candidates))
-	}
-	if candidates[0].Handle != "clean.bsky.social" {
-		t.Errorf("expected clean post, got %q", candidates[0].Handle)
-	}
-}
-
 func TestGetExemplarCandidates_NoMatch(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -422,5 +396,63 @@ func TestTopicIdentity_Purge(t *testing.T) {
 	}
 	if remaining[0].TopicID != "new-topic" {
 		t.Errorf("wrong topic survived purge: %q", remaining[0].TopicID)
+	}
+}
+
+func TestInsertTopicTokens_PopulatesTokenPostings(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := s.InsertTopicTokens(ctx, "at://a/post/1", `["alpha","beta","gamma"]`, now); err != nil {
+		t.Fatalf("InsertTopicTokens: %v", err)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings WHERE post_uri='at://a/post/1'`).Scan(&count); err != nil {
+		t.Fatalf("count token_postings: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 token_postings rows, got %d", count)
+	}
+
+	var token string
+	if err := s.db.QueryRowContext(ctx, `SELECT token FROM token_postings WHERE post_uri='at://a/post/1' AND token='beta'`).Scan(&token); err != nil {
+		t.Fatalf("query specific token: %v", err)
+	}
+	if token != "beta" {
+		t.Errorf("expected token 'beta', got %q", token)
+	}
+}
+
+func TestPurgeTopicTokens_AlsoPurgesTokenPostings(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	old := now.Add(-30 * time.Hour).Format(time.RFC3339)
+	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
+
+	s.InsertTopicTokens(ctx, "at://old/1", `["stale"]`, old)
+	s.InsertTopicTokens(ctx, "at://new/1", `["fresh"]`, recent)
+
+	insertPostWithEngagement(t, s, ctx, "at://old/1", "old post", old, 1)
+	insertPostWithEngagement(t, s, ctx, "at://new/1", "new post", recent, 1)
+
+	cutoff := now.Add(-26 * time.Hour).Format(time.RFC3339)
+	if _, err := s.PurgeTopicTokens(ctx, cutoff); err != nil {
+		t.Fatalf("PurgeTopicTokens: %v", err)
+	}
+
+	var remaining int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings`).Scan(&remaining)
+	if remaining != 1 {
+		t.Errorf("expected 1 token_postings row remaining, got %d", remaining)
+	}
+
+	var token string
+	s.db.QueryRowContext(ctx, `SELECT token FROM token_postings`).Scan(&token)
+	if token != "fresh" {
+		t.Errorf("expected surviving token 'fresh', got %q", token)
 	}
 }

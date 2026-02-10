@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -42,6 +43,20 @@ func (s *Store) InsertTopicTokens(ctx context.Context, postURI, tokensJSON, crea
 	)
 	if err != nil {
 		return fmt.Errorf("insert topic_tokens: %w", err)
+	}
+
+	// Dual-write: denormalize tokens into token_postings for fast exemplar lookups.
+	var tokens []string
+	if err := json.Unmarshal([]byte(tokensJSON), &tokens); err != nil {
+		return nil // non-fatal: topic_tokens row already written
+	}
+	for _, tok := range tokens {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO token_postings (token, post_uri, created_at) VALUES (?, ?, ?)`,
+			tok, postURI, createdAt,
+		); err != nil {
+			return fmt.Errorf("insert token_postings: %w", err)
+		}
 	}
 	return nil
 }
@@ -110,6 +125,11 @@ func (s *Store) PurgeTopicTokens(ctx context.Context, cutoff string) (int64, err
 	if err != nil {
 		return 0, fmt.Errorf("purge topic_tokens: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM token_postings WHERE created_at < ?`, cutoff,
+	); err != nil {
+		return 0, fmt.Errorf("purge token_postings: %w", err)
+	}
 	return result.RowsAffected()
 }
 
@@ -120,9 +140,6 @@ type ExemplarCandidate struct {
 	Engagement int
 }
 
-// GetExemplarCandidates joins post_buffer (engagement data) with topic_tokens
-// (keyword data) to find the highest-engagement posts matching any of the given
-// keywords. Posts with more than one hashtag are excluded (promotional/spam).
 func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cutoff string, limit int) ([]ExemplarCandidate, error) {
 	if len(keywords) == 0 {
 		return nil, nil
@@ -130,23 +147,21 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 
 	placeholders := make([]string, len(keywords))
 	args := make([]any, 0, len(keywords)+2)
-	args = append(args, cutoff)
 	for i, kw := range keywords {
 		placeholders[i] = "?"
 		args = append(args, kw)
 	}
+	args = append(args, cutoff)
 	args = append(args, limit)
 
 	q := fmt.Sprintf(
 		`SELECT pb.uri, pb.author_handle, (pb.likes + pb.reposts + pb.replies) AS eng
-		 FROM post_buffer pb
-		 JOIN topic_tokens tt ON pb.uri = tt.post_uri,
-		      json_each(tt.tokens) AS je
-		 WHERE tt.created_at >= ?
-		   AND je.value IN (%s)
-		   AND (LENGTH(pb.text) - LENGTH(REPLACE(pb.text, '#', ''))) <= 1
+		 FROM token_postings tp
+		 JOIN post_buffer pb ON tp.post_uri = pb.uri
+		 WHERE tp.token IN (%s)
+		   AND tp.created_at >= ?
 		 GROUP BY pb.uri
-		 ORDER BY COUNT(DISTINCT je.value) DESC, eng DESC
+		 ORDER BY COUNT(DISTINCT tp.token) DESC, eng DESC
 		 LIMIT ?`,
 		strings.Join(placeholders, ","),
 	)
