@@ -103,9 +103,17 @@ func (s *Store) PurgeTopicTokens(ctx context.Context, cutoff string) (int64, err
 	return result.RowsAffected()
 }
 
-const exemplarScanLimit = 10000
+// ExemplarCandidate is a post matched by keyword with engagement from post_buffer.
+type ExemplarCandidate struct {
+	URI        string
+	Handle     string
+	Engagement int
+}
 
-func (s *Store) GetTopicTokenURIsByKeywords(ctx context.Context, keywords []string, cutoff string, limit int) ([]string, error) {
+// GetExemplarCandidates joins post_buffer (engagement data) with topic_tokens
+// (keyword data) to find the highest-engagement posts matching any of the given
+// keywords. Posts with more than one hashtag are excluded (promotional/spam).
+func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cutoff string, limit int) ([]ExemplarCandidate, error) {
 	if len(keywords) == 0 {
 		return nil, nil
 	}
@@ -120,32 +128,34 @@ func (s *Store) GetTopicTokenURIsByKeywords(ctx context.Context, keywords []stri
 	args = append(args, limit)
 
 	q := fmt.Sprintf(
-		`SELECT t.post_uri
-		 FROM (SELECT post_uri, tokens, created_at FROM topic_tokens WHERE created_at >= ? ORDER BY created_at DESC LIMIT %d) t,
-		      json_each(t.tokens) AS je
-		 WHERE je.value IN (%s)
-		 GROUP BY t.post_uri
-		 ORDER BY COUNT(DISTINCT je.value) DESC, t.created_at DESC
+		`SELECT pb.uri, pb.author_handle, (pb.likes + pb.reposts + pb.replies) AS eng
+		 FROM post_buffer pb
+		 JOIN topic_tokens tt ON pb.uri = tt.post_uri,
+		      json_each(tt.tokens) AS je
+		 WHERE tt.created_at >= ?
+		   AND je.value IN (%s)
+		   AND (LENGTH(pb.text) - LENGTH(REPLACE(pb.text, '#', ''))) <= 1
+		 GROUP BY pb.uri
+		 ORDER BY eng DESC, COUNT(DISTINCT je.value) DESC
 		 LIMIT ?`,
-		exemplarScanLimit,
 		strings.Join(placeholders, ","),
 	)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query topic_token URIs: %w", err)
+		return nil, fmt.Errorf("query exemplar candidates: %w", err)
 	}
 	defer rows.Close()
 
-	var uris []string
+	var result []ExemplarCandidate
 	for rows.Next() {
-		var uri string
-		if err := rows.Scan(&uri); err != nil {
-			return nil, fmt.Errorf("scan topic_token URI: %w", err)
+		var c ExemplarCandidate
+		if err := rows.Scan(&c.URI, &c.Handle, &c.Engagement); err != nil {
+			return nil, fmt.Errorf("scan exemplar candidate: %w", err)
 		}
-		uris = append(uris, uri)
+		result = append(result, c)
 	}
-	return uris, rows.Err()
+	return result, rows.Err()
 }
 
 func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string) error {

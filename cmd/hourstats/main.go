@@ -149,13 +149,7 @@ func main() {
 
 		case <-topicAnalysisCh:
 			if topicAnalyzer == nil {
-				bskyClient := client.New(handle, password)
-				if err := bskyClient.Authenticate(); err != nil {
-					slog.Error("trending auth failed", "error", err)
-					continue
-				}
-				fetcher := hydrator.NewBlueskyFetcher(bskyClient.APIClient())
-				topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey, fetcher)
+				topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey)
 			}
 			if err := topicAnalyzer.RunAnalysisCycle(ctx); err != nil {
 				slog.Error("topic analysis cycle failed", "error", err)
@@ -168,8 +162,7 @@ func main() {
 				continue
 			}
 			if topicAnalyzer == nil {
-				fetcher := hydrator.NewBlueskyFetcher(bskyClient.APIClient())
-				topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey, fetcher)
+				topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey)
 			}
 			if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun); err != nil {
 				slog.Error("trending post failed", "error", err)

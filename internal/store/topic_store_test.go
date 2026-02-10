@@ -89,7 +89,7 @@ func TestTopicTokens_Purge(t *testing.T) {
 	}
 }
 
-func TestTopicTokens_URIsByKeywords(t *testing.T) {
+func TestGetExemplarCandidates_RankedByEngagement(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
@@ -98,41 +98,81 @@ func TestTopicTokens_URIsByKeywords(t *testing.T) {
 	s.InsertTopicTokens(ctx, "at://a/2", `["weather","rain","cold"]`, now)
 	s.InsertTopicTokens(ctx, "at://a/3", `["trump","maga","rally"]`, now)
 
-	uris, err := s.GetTopicTokenURIsByKeywords(ctx, []string{"trump", "election"}, "2000-01-01T00:00:00Z", 50)
+	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "Trump won the election", AuthorDID: "did:plc:1", AuthorHandle: "alice.bsky.social", CreatedAt: now})
+	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Rainy day", AuthorDID: "did:plc:2", AuthorHandle: "bob.bsky.social", CreatedAt: now})
+	s.InsertPost(ctx, Post{URI: "at://a/3", CID: "cid3", Text: "Trump rally MAGA", AuthorDID: "did:plc:3", AuthorHandle: "charlie.bsky.social", CreatedAt: now})
+
+	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=100, reposts=50, replies=25 WHERE uri='at://a/1'`)
+	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=5, reposts=2, replies=1 WHERE uri='at://a/3'`)
+
+	candidates, err := s.GetExemplarCandidates(ctx, []string{"trump", "election"}, "2000-01-01T00:00:00Z", 50)
 	if err != nil {
-		t.Fatalf("GetTopicTokenURIsByKeywords: %v", err)
+		t.Fatalf("GetExemplarCandidates: %v", err)
 	}
-	if len(uris) != 2 {
-		t.Fatalf("expected 2 URIs, got %d: %v", len(uris), uris)
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0].Handle != "alice.bsky.social" {
+		t.Errorf("expected highest engagement first, got %q", candidates[0].Handle)
+	}
+	if candidates[0].Engagement != 175 {
+		t.Errorf("expected engagement 175, got %d", candidates[0].Engagement)
 	}
 }
 
-func TestTopicTokens_URIsByKeywords_NoMatch(t *testing.T) {
+func TestGetExemplarCandidates_FiltersMultiHashtag(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	s.InsertTopicTokens(ctx, "at://a/1", `["trump"]`, now)
+	s.InsertTopicTokens(ctx, "at://a/2", `["trump"]`, now)
+
+	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "Trump #maga #election #vote", AuthorDID: "did:plc:1", AuthorHandle: "spammy.bsky.social", CreatedAt: now})
+	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Trump did a thing", AuthorDID: "did:plc:2", AuthorHandle: "clean.bsky.social", CreatedAt: now})
+
+	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=500 WHERE uri='at://a/1'`)
+	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=10 WHERE uri='at://a/2'`)
+
+	candidates, err := s.GetExemplarCandidates(ctx, []string{"trump"}, "2000-01-01T00:00:00Z", 50)
+	if err != nil {
+		t.Fatalf("GetExemplarCandidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate (multi-hashtag filtered), got %d", len(candidates))
+	}
+	if candidates[0].Handle != "clean.bsky.social" {
+		t.Errorf("expected clean post, got %q", candidates[0].Handle)
+	}
+}
+
+func TestGetExemplarCandidates_NoMatch(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	s.InsertTopicTokens(ctx, "at://a/1", `["hello","world"]`, now)
+	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "Hello world", AuthorDID: "did:plc:1", AuthorHandle: "user.bsky.social", CreatedAt: now})
 
-	uris, err := s.GetTopicTokenURIsByKeywords(ctx, []string{"nonexistent"}, "2000-01-01T00:00:00Z", 50)
+	candidates, err := s.GetExemplarCandidates(ctx, []string{"nonexistent"}, "2000-01-01T00:00:00Z", 50)
 	if err != nil {
-		t.Fatalf("GetTopicTokenURIsByKeywords: %v", err)
+		t.Fatalf("GetExemplarCandidates: %v", err)
 	}
-	if len(uris) != 0 {
-		t.Errorf("expected 0 URIs, got %d", len(uris))
+	if len(candidates) != 0 {
+		t.Errorf("expected 0 candidates, got %d", len(candidates))
 	}
 }
 
-func TestTopicTokens_URIsByKeywords_Empty(t *testing.T) {
+func TestGetExemplarCandidates_EmptyKeywords(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	uris, err := s.GetTopicTokenURIsByKeywords(ctx, []string{}, "2000-01-01T00:00:00Z", 50)
+	candidates, err := s.GetExemplarCandidates(ctx, []string{}, "2000-01-01T00:00:00Z", 50)
 	if err != nil {
-		t.Fatalf("GetTopicTokenURIsByKeywords: %v", err)
+		t.Fatalf("GetExemplarCandidates: %v", err)
 	}
-	if uris != nil {
-		t.Errorf("expected nil, got %v", uris)
+	if candidates != nil {
+		t.Errorf("expected nil, got %v", candidates)
 	}
 }
 

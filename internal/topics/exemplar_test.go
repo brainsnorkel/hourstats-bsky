@@ -5,79 +5,43 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/api/bsky"
+	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
-type mockExemplarFetcher struct {
-	posts []*bsky.FeedDefs_PostView
-	err   error
+type mockCandidateStore struct {
+	candidates map[string][]store.ExemplarCandidate
+	err        error
 }
 
-func (m *mockExemplarFetcher) GetPosts(_ context.Context, uris []string) ([]*bsky.FeedDefs_PostView, error) {
-	if m.err != nil {
-		return nil, m.err
-	}
-	uriSet := make(map[string]bool)
-	for _, u := range uris {
-		uriSet[u] = true
-	}
-	var result []*bsky.FeedDefs_PostView
-	for _, p := range m.posts {
-		if uriSet[p.Uri] {
-			result = append(result, p)
-		}
-	}
-	return result, nil
-}
-
-type mockExemplarStore struct {
-	urisByKeyword map[string][]string
-	err           error
-}
-
-func (m *mockExemplarStore) GetTopicTokenURIsByKeywords(_ context.Context, keywords []string, _ string, limit int) ([]string, error) {
+func (m *mockCandidateStore) GetExemplarCandidates(_ context.Context, keywords []string, _ string, limit int) ([]store.ExemplarCandidate, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
 	seen := make(map[string]bool)
-	var result []string
+	var result []store.ExemplarCandidate
 	for _, kw := range keywords {
-		for _, uri := range m.urisByKeyword[kw] {
-			if !seen[uri] && len(result) < limit {
-				seen[uri] = true
-				result = append(result, uri)
+		for _, c := range m.candidates[kw] {
+			if !seen[c.URI] && len(result) < limit {
+				seen[c.URI] = true
+				result = append(result, c)
 			}
 		}
 	}
 	return result, nil
 }
 
-func makePostView(uri, handle string, likes, reposts, replies int64) *bsky.FeedDefs_PostView {
-	return &bsky.FeedDefs_PostView{
-		Uri:         uri,
-		Author:      &bsky.ActorDefs_ProfileViewBasic{Handle: handle},
-		LikeCount:   &likes,
-		RepostCount: &reposts,
-		ReplyCount:  &replies,
-	}
-}
-
 func TestHydrateExemplars_PicksHighestEngagement(t *testing.T) {
-	fetcher := &mockExemplarFetcher{
-		posts: []*bsky.FeedDefs_PostView{
-			makePostView("at://a/1", "low.bsky.social", 1, 0, 0),
-			makePostView("at://a/2", "high.bsky.social", 100, 50, 25),
-			makePostView("at://a/3", "mid.bsky.social", 10, 5, 2),
-		},
-	}
-	store := &mockExemplarStore{
-		urisByKeyword: map[string][]string{
-			"politics": {"at://a/1", "at://a/2", "at://a/3"},
+	s := &mockCandidateStore{
+		candidates: map[string][]store.ExemplarCandidate{
+			"politics": {
+				{URI: "at://a/2", Handle: "high.bsky.social", Engagement: 175},
+				{URI: "at://a/3", Handle: "mid.bsky.social", Engagement: 17},
+				{URI: "at://a/1", Handle: "low.bsky.social", Engagement: 1},
+			},
 		},
 	}
 
-	hydrator := NewExemplarHydrator(fetcher, store)
+	hydrator := NewExemplarHydrator(s)
 	topics := []IdentifiedTopic{
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"politics"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
 	}
@@ -94,11 +58,10 @@ func TestHydrateExemplars_PicksHighestEngagement(t *testing.T) {
 	}
 }
 
-func TestHydrateExemplars_NoURIs(t *testing.T) {
-	fetcher := &mockExemplarFetcher{}
-	store := &mockExemplarStore{urisByKeyword: map[string][]string{}}
+func TestHydrateExemplars_NoCandidates(t *testing.T) {
+	s := &mockCandidateStore{candidates: map[string][]store.ExemplarCandidate{}}
 
-	hydrator := NewExemplarHydrator(fetcher, store)
+	hydrator := NewExemplarHydrator(s)
 	topics := []IdentifiedTopic{
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Empty", Keywords: []string{"nothing"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
 	}
@@ -112,15 +75,10 @@ func TestHydrateExemplars_NoURIs(t *testing.T) {
 	}
 }
 
-func TestHydrateExemplars_FetcherError(t *testing.T) {
-	fetcher := &mockExemplarFetcher{err: fmt.Errorf("api error")}
-	store := &mockExemplarStore{
-		urisByKeyword: map[string][]string{
-			"test": {"at://a/1"},
-		},
-	}
+func TestHydrateExemplars_StoreError(t *testing.T) {
+	s := &mockCandidateStore{err: fmt.Errorf("db error")}
 
-	hydrator := NewExemplarHydrator(fetcher, store)
+	hydrator := NewExemplarHydrator(s)
 	topics := []IdentifiedTopic{
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Test", Keywords: []string{"test"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
 	}
@@ -135,20 +93,14 @@ func TestHydrateExemplars_FetcherError(t *testing.T) {
 }
 
 func TestHydrateExemplars_MultipleTopics(t *testing.T) {
-	fetcher := &mockExemplarFetcher{
-		posts: []*bsky.FeedDefs_PostView{
-			makePostView("at://a/1", "alice.bsky.social", 50, 10, 5),
-			makePostView("at://b/1", "bob.bsky.social", 100, 20, 10),
-		},
-	}
-	store := &mockExemplarStore{
-		urisByKeyword: map[string][]string{
-			"politics": {"at://a/1"},
-			"weather":  {"at://b/1"},
+	s := &mockCandidateStore{
+		candidates: map[string][]store.ExemplarCandidate{
+			"politics": {{URI: "at://a/1", Handle: "alice.bsky.social", Engagement: 65}},
+			"weather":  {{URI: "at://b/1", Handle: "bob.bsky.social", Engagement: 130}},
 		},
 	}
 
-	hydrator := NewExemplarHydrator(fetcher, store)
+	hydrator := NewExemplarHydrator(s)
 	topics := []IdentifiedTopic{
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"politics"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather", Keywords: []string{"weather"}, Synonyms: []string{}}}, TopicID: "t2", Rank: 2},
@@ -166,58 +118,42 @@ func TestHydrateExemplars_MultipleTopics(t *testing.T) {
 	}
 }
 
-func TestHydrateExemplars_EmptyTopics(t *testing.T) {
-	hydrator := NewExemplarHydrator(nil, nil)
-	result, err := hydrator.HydrateExemplars(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != nil {
-		t.Errorf("expected nil, got %v", result)
-	}
-}
-
-func TestHydrateExemplars_SkipsAdultContent(t *testing.T) {
-	adultPost := makePostView("at://a/1", "nsfw.bsky.social", 500, 100, 50)
-	adultPost.Labels = []*atproto.LabelDefs_Label{{Val: "porn"}}
-	cleanPost := makePostView("at://a/2", "clean.bsky.social", 10, 2, 1)
-
-	fetcher := &mockExemplarFetcher{
-		posts: []*bsky.FeedDefs_PostView{adultPost, cleanPost},
-	}
-	store := &mockExemplarStore{
-		urisByKeyword: map[string][]string{
-			"topic": {"at://a/1", "at://a/2"},
+func TestHydrateExemplars_DeduplicatesHandles(t *testing.T) {
+	s := &mockCandidateStore{
+		candidates: map[string][]store.ExemplarCandidate{
+			"politics": {{URI: "at://a/1", Handle: "alice.bsky.social", Engagement: 100}},
+			"weather": {
+				{URI: "at://a/2", Handle: "alice.bsky.social", Engagement: 200},
+				{URI: "at://b/1", Handle: "bob.bsky.social", Engagement: 50},
+			},
 		},
 	}
 
-	hydrator := NewExemplarHydrator(fetcher, store)
+	hydrator := NewExemplarHydrator(s)
 	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Topic", Keywords: []string{"topic"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"politics"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather", Keywords: []string{"weather"}, Synonyms: []string{}}}, TopicID: "t2", Rank: 2},
 	}
 
 	result, err := hydrator.HydrateExemplars(context.Background(), topics)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result[0].ExemplarHandle != "clean.bsky.social" {
-		t.Errorf("expected clean post, got %q (adult content should be skipped)", result[0].ExemplarHandle)
+	if result[0].ExemplarHandle != "alice.bsky.social" {
+		t.Errorf("expected 'alice.bsky.social' for topic 1, got %q", result[0].ExemplarHandle)
+	}
+	if result[1].ExemplarHandle != "bob.bsky.social" {
+		t.Errorf("expected 'bob.bsky.social' for topic 2 (alice already used), got %q", result[1].ExemplarHandle)
 	}
 }
 
-func TestPostEngagement(t *testing.T) {
-	var likes, reposts, replies int64 = 10, 5, 3
-	v := &bsky.FeedDefs_PostView{
-		LikeCount:   &likes,
-		RepostCount: &reposts,
-		ReplyCount:  &replies,
+func TestHydrateExemplars_EmptyTopics(t *testing.T) {
+	hydrator := NewExemplarHydrator(nil)
+	result, err := hydrator.HydrateExemplars(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := postEngagement(v); got != 18 {
-		t.Errorf("expected 18, got %d", got)
-	}
-
-	vNil := &bsky.FeedDefs_PostView{}
-	if got := postEngagement(vNil); got != 0 {
-		t.Errorf("expected 0 for nil counts, got %d", got)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
 	}
 }

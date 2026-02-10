@@ -5,35 +5,20 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/api/bsky"
+	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
-var adultLabels = map[string]bool{
-	"porn":          true,
-	"sexual":        true,
-	"nudity":        true,
-	"graphic-media": true,
-}
-
-type ExemplarPostFetcher interface {
-	GetPosts(ctx context.Context, uris []string) ([]*bsky.FeedDefs_PostView, error)
-}
-
-type ExemplarTokenStore interface {
-	GetTopicTokenURIsByKeywords(ctx context.Context, keywords []string, cutoff string, limit int) ([]string, error)
+type ExemplarCandidateStore interface {
+	GetExemplarCandidates(ctx context.Context, keywords []string, cutoff string, limit int) ([]store.ExemplarCandidate, error)
 }
 
 type ExemplarHydrator struct {
-	fetcher ExemplarPostFetcher
-	store   ExemplarTokenStore
+	store ExemplarCandidateStore
 }
 
-func NewExemplarHydrator(fetcher ExemplarPostFetcher, store ExemplarTokenStore) *ExemplarHydrator {
-	return &ExemplarHydrator{fetcher: fetcher, store: store}
+func NewExemplarHydrator(s ExemplarCandidateStore) *ExemplarHydrator {
+	return &ExemplarHydrator{store: s}
 }
-
-const exemplarBatchSize = 25
 
 func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []IdentifiedTopic) ([]IdentifiedTopic, error) {
 	if len(topics) == 0 {
@@ -53,95 +38,33 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			continue
 		}
 
-		uris, err := h.store.GetTopicTokenURIsByKeywords(ctx, allKeywords, cutoff, 50)
+		candidates, err := h.store.GetExemplarCandidates(ctx, allKeywords, cutoff, 20)
 		if err != nil {
-			slog.Warn("exemplar: query URIs failed", "topic", topic.Cluster.Label, "error", err)
+			slog.Warn("exemplar: query failed", "topic", topic.Cluster.Label, "error", err)
 			continue
 		}
-		if len(uris) == 0 {
-			slog.Warn("exemplar: no matching URIs", "topic", topic.Cluster.Label, "keywords", allKeywords)
+		if len(candidates) == 0 {
+			slog.Warn("exemplar: no candidates", "topic", topic.Cluster.Label, "keywords", allKeywords)
 			continue
 		}
-		slog.Info("exemplar: found candidate URIs", "topic", topic.Cluster.Label, "count", len(uris))
+		slog.Info("exemplar: found candidates", "topic", topic.Cluster.Label, "count", len(candidates), "top_engagement", candidates[0].Engagement)
 
-		var bestURI, bestHandle string
-		bestEngagement := -1
-		var adultSkipped, usedSkipped, nilSkipped, fetchErrors int
-
-		for start := 0; start < len(uris); start += exemplarBatchSize {
-			end := start + exemplarBatchSize
-			if end > len(uris) {
-				end = len(uris)
-			}
-
-			views, err := h.fetcher.GetPosts(ctx, uris[start:end])
-			if err != nil {
-				slog.Warn("exemplar: fetch posts failed", "topic", topic.Cluster.Label, "batch", start/exemplarBatchSize, "error", err)
-				fetchErrors++
+		found := false
+		for _, c := range candidates {
+			if usedHandles[c.Handle] {
 				continue
 			}
-
-			for _, v := range views {
-				if v == nil || v.Author == nil {
-					nilSkipped++
-					continue
-				}
-				if hasAdultLabel(v.Labels) {
-					adultSkipped++
-					continue
-				}
-				if usedHandles[v.Author.Handle] {
-					usedSkipped++
-					continue
-				}
-				eng := postEngagement(v)
-				if eng > bestEngagement {
-					bestEngagement = eng
-					bestURI = v.Uri
-					bestHandle = v.Author.Handle
-				}
-			}
-
-			if bestURI != "" {
-				break
-			}
+			result[i].ExemplarURI = c.URI
+			result[i].ExemplarHandle = c.Handle
+			usedHandles[c.Handle] = true
+			slog.Info("exemplar: selected", "topic", topic.Cluster.Label, "handle", c.Handle, "engagement", c.Engagement)
+			found = true
+			break
 		}
-
-		if bestURI != "" {
-			result[i].ExemplarURI = bestURI
-			result[i].ExemplarHandle = bestHandle
-			usedHandles[bestHandle] = true
-			slog.Info("exemplar: selected", "topic", topic.Cluster.Label, "handle", bestHandle, "engagement", bestEngagement)
-		} else {
-			slog.Warn("exemplar: no valid candidate found", "topic", topic.Cluster.Label,
-				"uris_checked", len(uris), "nil_skipped", nilSkipped,
-				"adult_skipped", adultSkipped, "used_skipped", usedSkipped,
-				"fetch_errors", fetchErrors)
+		if !found {
+			slog.Warn("exemplar: all candidates had used handles", "topic", topic.Cluster.Label, "candidates", len(candidates))
 		}
 	}
 
 	return result, nil
-}
-
-func postEngagement(v *bsky.FeedDefs_PostView) int {
-	var total int
-	if v.LikeCount != nil {
-		total += int(*v.LikeCount)
-	}
-	if v.RepostCount != nil {
-		total += int(*v.RepostCount)
-	}
-	if v.ReplyCount != nil {
-		total += int(*v.ReplyCount)
-	}
-	return total
-}
-
-func hasAdultLabel(labels []*atproto.LabelDefs_Label) bool {
-	for _, l := range labels {
-		if l != nil && adultLabels[l.Val] {
-			return true
-		}
-	}
-	return false
 }
