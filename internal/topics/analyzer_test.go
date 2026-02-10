@@ -67,7 +67,7 @@ func (m *mockAnalyzerStore) PurgeTopicIdentities(_ context.Context, _ string) (i
 	m.purgedIdentities = true
 	return 0, nil
 }
-func (m *mockAnalyzerStore) GetTopicTokenURIsByKeywords(_ context.Context, _ []string, _ string, _ int) ([]string, error) {
+func (m *mockAnalyzerStore) GetExemplarCandidates(_ context.Context, _ []string, _ string, _ int) ([]store.ExemplarCandidate, error) {
 	return nil, nil
 }
 
@@ -121,7 +121,7 @@ func TestRunAnalysisCycle_Success(t *testing.T) {
 		store:    ms,
 		grouper:  NewGrouperWithEndpoint("test-key", srv.URL),
 		tracker:  NewTracker(ms),
-		hydrator: NewExemplarHydrator(&mockExemplarFetcher{}, ms),
+		hydrator: NewExemplarHydrator(ms),
 	}
 
 	err := a.RunAnalysisCycle(context.Background())
@@ -143,7 +143,7 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 		store:    ms,
 		grouper:  NewGrouper("test"),
 		tracker:  NewTracker(ms),
-		hydrator: NewExemplarHydrator(&mockExemplarFetcher{}, ms),
+		hydrator: NewExemplarHydrator(ms),
 	}
 
 	err := a.RunAnalysisCycle(context.Background())
@@ -167,7 +167,7 @@ func TestRunTrendingPost_DryRun(t *testing.T) {
 		store:    ms,
 		grouper:  NewGrouper("test"),
 		tracker:  NewTracker(ms),
-		hydrator: NewExemplarHydrator(&mockExemplarFetcher{}, ms),
+		hydrator: NewExemplarHydrator(ms),
 	}
 
 	err := a.RunTrendingPost(context.Background(), nil, true)
@@ -182,7 +182,7 @@ func TestRunTrendingPost_NoSnapshots(t *testing.T) {
 		store:    ms,
 		grouper:  NewGrouper("test"),
 		tracker:  NewTracker(ms),
-		hydrator: NewExemplarHydrator(&mockExemplarFetcher{}, ms),
+		hydrator: NewExemplarHydrator(ms),
 	}
 
 	err := a.RunTrendingPost(context.Background(), nil, false)
@@ -213,7 +213,7 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 		store:    ms,
 		grouper:  NewGrouper("test"),
 		tracker:  NewTracker(ms),
-		hydrator: NewExemplarHydrator(&mockExemplarFetcher{}, ms),
+		hydrator: NewExemplarHydrator(ms),
 	}
 
 	err := a.RunTrendingPost(context.Background(), poster, false)

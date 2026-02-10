@@ -13,7 +13,7 @@ import (
 
 type AnalyzerStore interface {
 	TopicStore
-	ExemplarTokenStore
+	ExemplarCandidateStore
 	GetTopicTokensSince(ctx context.Context, cutoff string) ([]store.TopicTokenRow, error)
 	GetTopicTokensSinceLimit(ctx context.Context, cutoff string, limit int) ([]store.TopicTokenRow, error)
 	CountTopicTokensSince(ctx context.Context, cutoff string) (int64, error)
@@ -35,10 +35,10 @@ type Analyzer struct {
 	hydrator *ExemplarHydrator
 }
 
-func NewAnalyzer(s AnalyzerStore, geminiAPIKey string, fetcher ExemplarPostFetcher) *Analyzer {
+func NewAnalyzer(s AnalyzerStore, geminiAPIKey string) *Analyzer {
 	grouper := NewGrouper(geminiAPIKey)
 	tracker := NewTracker(s)
-	exemplarHydrator := NewExemplarHydrator(fetcher, s)
+	exemplarHydrator := NewExemplarHydrator(s)
 
 	return &Analyzer{
 		store:    s,

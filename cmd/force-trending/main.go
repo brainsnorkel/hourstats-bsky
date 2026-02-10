@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/client"
-	"github.com/christophergentle/hourstats-bsky/internal/hydrator"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
@@ -62,8 +61,7 @@ func main() {
 	}
 	slog.Info("authenticated with bluesky", "handle", handle)
 
-	fetcher := hydrator.NewBlueskyFetcher(bskyClient.APIClient())
-	analyzer := topics.NewAnalyzer(db, geminiKey, fetcher)
+	analyzer := topics.NewAnalyzer(db, geminiKey)
 
 	if !*postOnly {
 		slog.Info("running topic analysis cycle...")
