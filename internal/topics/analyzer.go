@@ -159,14 +159,10 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		return nil
 	}
 
-	latestTopics, err = a.hydrator.HydrateExemplars(ctx, latestTopics)
-	if err != nil {
-		slog.Warn("topics: exemplar hydration error", "error", err)
-	}
-
 	previousCutoff := time.Now().UTC().Add(-12 * time.Hour).Format(time.RFC3339)
 	prevSnapshots, _ := a.store.GetTopicSnapshotsSince(ctx, previousCutoff)
 	var previous []IdentifiedTopic
+	var previousFull []IdentifiedTopic
 	if len(prevSnapshots) > 0 {
 		prevTime := ""
 		for _, s := range prevSnapshots {
@@ -176,9 +172,27 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		}
 		for _, s := range prevSnapshots {
 			if s.SnapshotTime == prevTime {
+				var kws []string
+				_ = json.Unmarshal([]byte(s.Keywords), &kws)
+				full := IdentifiedTopic{
+					RankedTopic: RankedTopic{
+						Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, IsMeme: s.IsMeme},
+						PostCount: s.PostCount,
+					},
+					TopicID: s.TopicID,
+					Rank:    s.Rank,
+				}
 				previous = append(previous, IdentifiedTopic{TopicID: s.TopicID, Rank: s.Rank})
+				previousFull = append(previousFull, full)
 			}
 		}
+	}
+
+	latestTopics = backfillFromPrevious(latestTopics, previousFull)
+
+	latestTopics, err = a.hydrator.HydrateExemplars(ctx, latestTopics)
+	if err != nil {
+		slog.Warn("topics: exemplar hydration error", "error", err)
 	}
 
 	text, facets := FormatTrendingPost(latestTopics, previous, 6)
@@ -199,6 +213,37 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 
 	slog.Info("topics: trending post published", "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 	return nil
+}
+
+func backfillFromPrevious(current, previous []IdentifiedTopic) []IdentifiedTopic {
+	if len(current) >= TopTopics || len(previous) == 0 {
+		return current
+	}
+
+	currentIDs := make(map[string]bool, len(current))
+	for _, t := range current {
+		currentIDs[t.TopicID] = true
+	}
+
+	nextRank := len(current) + 1
+	for _, prev := range previous {
+		if len(current) >= TopTopics {
+			break
+		}
+		if currentIDs[prev.TopicID] {
+			continue
+		}
+		backfilled := prev
+		backfilled.Rank = nextRank
+		backfilled.ExemplarURI = ""
+		backfilled.ExemplarHandle = ""
+		current = append(current, backfilled)
+		currentIDs[prev.TopicID] = true
+		nextRank++
+		slog.Info("topics: backfilled from previous cycle", "topic", prev.Cluster.Label, "rank", backfilled.Rank)
+	}
+
+	return current
 }
 
 func buildTrajectories(snapshots []store.TopicSnapshotRow, current []IdentifiedTopic) map[string][]int {
