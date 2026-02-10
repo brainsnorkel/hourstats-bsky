@@ -23,6 +23,7 @@ type TopicSnapshotRow struct {
 	Keywords       string
 	ExemplarURI    string
 	ExemplarHandle string
+	IsMeme         bool
 }
 
 type TopicIdentityRow struct {
@@ -167,11 +168,15 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 	return result, rows.Err()
 }
 
-func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string) error {
+func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string, isMeme bool) error {
+	isMemeInt := 0
+	if isMeme {
+		isMemeInt = 1
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO topic_snapshots (snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		snapshotTime, rank, topicID, label, description, postCount, keywordsJSON, exemplarURI, exemplarHandle,
+		`INSERT INTO topic_snapshots (snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle, is_meme)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		snapshotTime, rank, topicID, label, description, postCount, keywordsJSON, exemplarURI, exemplarHandle, isMemeInt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert topic_snapshot: %w", err)
@@ -181,7 +186,7 @@ func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, ra
 
 func (s *Store) GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]TopicSnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle
+		`SELECT id, snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle, is_meme
 		 FROM topic_snapshots WHERE snapshot_time >= ? ORDER BY snapshot_time ASC, rank ASC`,
 		cutoff,
 	)
@@ -193,9 +198,11 @@ func (s *Store) GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]To
 	var result []TopicSnapshotRow
 	for rows.Next() {
 		var r TopicSnapshotRow
-		if err := rows.Scan(&r.ID, &r.SnapshotTime, &r.Rank, &r.TopicID, &r.Label, &r.Description, &r.PostCount, &r.Keywords, &r.ExemplarURI, &r.ExemplarHandle); err != nil {
+		var isMeme int
+		if err := rows.Scan(&r.ID, &r.SnapshotTime, &r.Rank, &r.TopicID, &r.Label, &r.Description, &r.PostCount, &r.Keywords, &r.ExemplarURI, &r.ExemplarHandle, &isMeme); err != nil {
 			return nil, fmt.Errorf("scan topic_snapshot: %w", err)
 		}
+		r.IsMeme = isMeme != 0
 		result = append(result, r)
 	}
 	return result, rows.Err()

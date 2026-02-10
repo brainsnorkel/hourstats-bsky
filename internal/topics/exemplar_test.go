@@ -11,9 +11,11 @@ import (
 type mockCandidateStore struct {
 	candidates map[string][]store.ExemplarCandidate
 	err        error
+	callCount  int
 }
 
 func (m *mockCandidateStore) GetExemplarCandidates(_ context.Context, keywords []string, _ string, limit int) ([]store.ExemplarCandidate, error) {
+	m.callCount++
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -155,5 +157,36 @@ func TestHydrateExemplars_EmptyTopics(t *testing.T) {
 	}
 	if result != nil {
 		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestHydrateExemplars_SkipsMemeTopics(t *testing.T) {
+	s := &mockCandidateStore{
+		candidates: map[string][]store.ExemplarCandidate{
+			"politics": {{URI: "at://a/1", Handle: "alice.bsky.social", Engagement: 100}},
+		},
+	}
+
+	hydrator := NewExemplarHydrator(s)
+	topics := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Post a Banger", Keywords: []string{"post", "banger"}, Synonyms: []string{}, IsMeme: true}}, TopicID: "t1", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"politics"}, Synonyms: []string{}}}, TopicID: "t2", Rank: 2},
+	}
+
+	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result[0].ExemplarURI != "" {
+		t.Errorf("meme topic should have empty ExemplarURI, got %q", result[0].ExemplarURI)
+	}
+	if result[0].ExemplarHandle != "" {
+		t.Errorf("meme topic should have empty ExemplarHandle, got %q", result[0].ExemplarHandle)
+	}
+	if result[1].ExemplarHandle != "alice.bsky.social" {
+		t.Errorf("non-meme topic should get exemplar, got %q", result[1].ExemplarHandle)
+	}
+	if s.callCount != 1 {
+		t.Errorf("expected 1 DB query (meme skipped), got %d", s.callCount)
 	}
 }

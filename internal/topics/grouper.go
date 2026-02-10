@@ -87,8 +87,9 @@ var topicClusterSchema = map[string]interface{}{
 			"keywords":      map[string]interface{}{"type": "ARRAY", "items": map[string]interface{}{"type": "STRING"}},
 			"synonyms":      map[string]interface{}{"type": "ARRAY", "items": map[string]interface{}{"type": "STRING"}},
 			"justification": map[string]interface{}{"type": "STRING"},
+			"is_meme":       map[string]interface{}{"type": "BOOLEAN"},
 		},
-		"required": []string{"label", "description", "keywords", "synonyms", "justification"},
+		"required": []string{"label", "description", "keywords", "synonyms", "justification", "is_meme"},
 	},
 }
 
@@ -348,6 +349,10 @@ func buildPrompt(terms []TermScore) string {
 	b.WriteString("- Group vague, generic, or meta-commentary terms under the label \"__discard__\".\n")
 	b.WriteString("- This includes: reaction words, mood words, generic adjectives, medium/format descriptions, and anything that describes HOW people are talking rather than WHAT they are talking about.\n")
 	b.WriteString("- It is better to discard borderline terms than to create a weak topic.\n\n")
+	b.WriteString("MEME DETECTION:\n")
+	b.WriteString("- Set is_meme to true when the topic is a viral phrase or meme format that many users are repeating, rather than a news event, person, or subject.\n")
+	b.WriteString("- Meme topics are catchphrases, copypastas, joke formats, or viral phrases — the content IS the repeated text itself.\n")
+	b.WriteString("- Non-meme topics are events, people, organisations, products — things people are TALKING ABOUT.\n\n")
 	b.WriteString("JUSTIFICATION:\n")
 	b.WriteString("- For each topic, provide a brief justification explaining why these terms form a coherent topic and why the label is specific enough.\n")
 	b.WriteString("- For __discard__, explain why the terms are too vague or generic to form a real topic.\n")
@@ -368,6 +373,7 @@ func fallbackClusters(terms []TermScore) []TopicCluster {
 			Description: "Trending term",
 			Keywords:    []string{terms[i].Term},
 			Synonyms:    []string{},
+			IsMeme:      false,
 		}
 	}
 	return clusters
@@ -451,7 +457,9 @@ func buildAltTextPrompt(ranked []IdentifiedTopic, trajectories map[string][]int)
 
 	for _, t := range ranked {
 		line := fmt.Sprintf("- #%d: \"%s\" — %s (%d posts)", t.Rank, t.Cluster.Label, t.Cluster.Description, t.PostCount)
-		if t.ExemplarHandle != "" {
+		if t.Cluster.IsMeme {
+			line += " (viral meme/phrase — search link provided)"
+		} else if t.ExemplarHandle != "" {
 			line += fmt.Sprintf(", exemplar by @%s", t.ExemplarHandle)
 		}
 		b.WriteString(line + "\n")

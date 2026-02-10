@@ -152,6 +152,105 @@ func TestFormatTrendingPost_NoExemplar(t *testing.T) {
 	}
 }
 
+func TestFormatTrendingPost_MemeTopicSearchLink(t *testing.T) {
+	ranked := []IdentifiedTopic{
+		{
+			RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Post a Banger", IsMeme: true}},
+			TopicID:     "t1",
+			Rank:        1,
+		},
+	}
+
+	text, facets := FormatTrendingPost(ranked, nil, 6)
+
+	if !strings.Contains(text, "1. Post a Banger 🔍") {
+		t.Errorf("expected meme topic with 🔍, text: %q", text)
+	}
+	if strings.Contains(text, "@") {
+		t.Errorf("meme topic should not have @handle, text: %q", text)
+	}
+
+	var linkFacet *Facet
+	for i := range facets {
+		if facets[i].Type == FacetLink {
+			linkFacet = &facets[i]
+			break
+		}
+	}
+	if linkFacet == nil {
+		t.Fatal("expected link facet for meme search")
+	}
+
+	extracted := text[linkFacet.ByteStart:linkFacet.ByteEnd]
+	if extracted != "🔍" {
+		t.Errorf("facet byte offset mismatch: expected '🔍', extracted %q (bytes %d-%d)", extracted, linkFacet.ByteStart, linkFacet.ByteEnd)
+	}
+	if linkFacet.Value != "https://bsky.app/search?q=Post+a+Banger" {
+		t.Errorf("unexpected search URL: %q", linkFacet.Value)
+	}
+}
+
+func TestFormatTrendingPost_MixedMemeAndExemplar(t *testing.T) {
+	ranked := []IdentifiedTopic{
+		{
+			RankedTopic:    RankedTopic{Cluster: TopicCluster{Label: "Donald Trump"}},
+			TopicID:        "t1",
+			Rank:           1,
+			ExemplarHandle: "alice.bsky.social",
+			ExemplarURI:    "at://did:plc:abc/app.bsky.feed.post/123",
+		},
+		{
+			RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Post a Banger", IsMeme: true}},
+			TopicID:     "t2",
+			Rank:        2,
+		},
+	}
+
+	text, facets := FormatTrendingPost(ranked, nil, 6)
+
+	if !strings.Contains(text, "1. Donald Trump @alice.bsky.social") {
+		t.Errorf("expected exemplar for non-meme topic, text: %q", text)
+	}
+	if !strings.Contains(text, "2. Post a Banger 🔍") {
+		t.Errorf("expected 🔍 for meme topic, text: %q", text)
+	}
+
+	linkCount := 0
+	for _, f := range facets {
+		if f.Type == FacetLink {
+			linkCount++
+			extracted := text[f.ByteStart:f.ByteEnd]
+			if strings.Contains(f.Value, "search?q=") {
+				if extracted != "🔍" {
+					t.Errorf("search facet offset mismatch: expected '🔍', got %q", extracted)
+				}
+			} else {
+				if extracted != "@alice.bsky.social" {
+					t.Errorf("exemplar facet offset mismatch: expected '@alice.bsky.social', got %q", extracted)
+				}
+			}
+		}
+	}
+	if linkCount != 2 {
+		t.Errorf("expected 2 link facets (exemplar + search), got %d", linkCount)
+	}
+}
+
+func TestFormatAltText_Meme(t *testing.T) {
+	ranked := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Post a Banger", IsMeme: true}}, Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather"}}, Rank: 2, ExemplarHandle: "bob.bsky.social"},
+	}
+
+	alt := FormatAltText(ranked)
+	if !strings.Contains(alt, "1. Post a Banger (search)") {
+		t.Errorf("expected '(search)' for meme topic, got: %q", alt)
+	}
+	if !strings.Contains(alt, "2. Weather (top post by @bob.bsky.social)") {
+		t.Errorf("expected exemplar for non-meme topic, got: %q", alt)
+	}
+}
+
 func TestConvertExemplarURI(t *testing.T) {
 	got := convertExemplarURI("at://did:plc:abc/app.bsky.feed.post/xyz")
 	want := "https://bsky.app/profile/did:plc:abc/post/xyz"
