@@ -253,3 +253,72 @@ func TestFallbackClusters(t *testing.T) {
 		t.Errorf("expected empty synonyms, got %v", clusters[0].Synonyms)
 	}
 }
+
+func TestDetectOverlappingPhrases(t *testing.T) {
+	tests := []struct {
+		name          string
+		terms         []TermScore
+		wantPhrases   int
+		wantPhrase    string
+		wantTermCount int
+	}{
+		{
+			name: "two overlapping bigrams",
+			terms: []TermScore{
+				{Term: "post_banger", Score: 5.0},
+				{Term: "banger_that", Score: 4.5},
+				{Term: "trump", Score: 12.0},
+			},
+			wantPhrases:   1,
+			wantPhrase:    "post banger that",
+			wantTermCount: 2,
+		},
+		{
+			name: "three-term chain",
+			terms: []TermScore{
+				{Term: "post_banger", Score: 5.0},
+				{Term: "banger_that", Score: 4.5},
+				{Term: "that_isnt", Score: 4.0},
+			},
+			wantPhrases:   1,
+			wantPhrase:    "post banger that isnt",
+			wantTermCount: 3,
+		},
+		{
+			name: "no overlaps",
+			terms: []TermScore{
+				{Term: "bad_bunny", Score: 5.0},
+				{Term: "age_verification", Score: 4.0},
+				{Term: "trump", Score: 12.0},
+			},
+			wantPhrases: 0,
+		},
+		{
+			name:        "no compound terms",
+			terms:       []TermScore{{Term: "trump", Score: 12.0}},
+			wantPhrases: 0,
+		},
+		{
+			name:        "empty terms",
+			terms:       nil,
+			wantPhrases: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			phrases := detectOverlappingPhrases(tt.terms)
+			if len(phrases) != tt.wantPhrases {
+				t.Fatalf("got %d phrases, want %d: %+v", len(phrases), tt.wantPhrases, phrases)
+			}
+			if tt.wantPhrases > 0 {
+				if phrases[0].Phrase != tt.wantPhrase {
+					t.Errorf("got phrase %q, want %q", phrases[0].Phrase, tt.wantPhrase)
+				}
+				if len(phrases[0].Terms) != tt.wantTermCount {
+					t.Errorf("got %d terms, want %d", len(phrases[0].Terms), tt.wantTermCount)
+				}
+			}
+		})
+	}
+}
