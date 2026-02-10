@@ -1,7 +1,7 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: Bump chart showing topic rank trajectories
-The system SHALL generate a 1200x800 PNG bump chart showing the rank positions (#1 through #5) of trending topics over the past 24 hours. The Y-axis SHALL be inverted (rank #1 at top, #5 at bottom). The X-axis SHALL show 24 hours in UTC with 6-hour markers. Each topic SHALL be drawn as a Gaussian-smoothed line in a distinct colour from the Okabe-Ito palette (colour-blind safe). Topic labels SHALL appear at the right end of each line.
+### Requirement: Bump chart showing topic rank trajectories (internal only)
+The system SHALL generate a 1200x800 PNG bump chart showing the rank positions (#1 through #5) of trending topics over the past 24 hours. The chart is generated for internal reference and snapshot storage but is **not included** in the posted trending topics content — posts are text-only. The Y-axis SHALL be inverted (rank #1 at top, #5 at bottom). The X-axis SHALL show 24 hours in UTC with 6-hour markers. Each topic SHALL be drawn as a Gaussian-smoothed line in a distinct colour from the Okabe-Ito palette (colour-blind safe). Topic labels SHALL appear at the right end of each line.
 
 #### Scenario: Chart generated with 24h of snapshots
 - **WHEN** topic_snapshots contains data spanning at least 6 hours

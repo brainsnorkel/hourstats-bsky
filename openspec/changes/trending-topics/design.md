@@ -72,13 +72,13 @@ This directly answers "what's rising and falling" — the visual language of lin
 
 **Alternatives considered**: Stacked area chart — harder to read individual trajectories. Multi-line volume chart — cluttered, doesn't show relative ranking. Heatmap — not enough data dimensions.
 
-### 6. Posting cadence: 6-hour standalone post
+### 6. Posting cadence: 6-hour standalone text post
 
-**Decision**: Post as standalone (not threaded to sentiment posts) every 6 hours.
+**Decision**: Post as standalone text-only (not threaded to sentiment posts) every 6 hours with `#hstrend` hashtag facet.
 
-The trending topics feature is conceptually separate from sentiment analysis. Threading it to the 30-minute chain would add noise to every cycle. Standalone posts with #trending #hourstatstrend let users mute the feature via Bluesky's mute-word feature without affecting their sentiment feed.
+The trending topics feature is conceptually separate from sentiment analysis. Threading it to the 30-minute chain would add noise to every cycle. Standalone posts with `#hstrend` let users mute the feature via Bluesky's mute-word feature without affecting their sentiment feed.
 
-A 6-hour cadence produces 4 posts/day — enough to track topic evolution without spamming.
+A 6-hour cadence produces 4 posts/day — enough to track topic evolution without spamming. Posts are text-only (no bump chart image) for a cleaner format — topic names and exemplar links communicate the essential information more directly. Movement indicators (rose/fell/new) were removed for the same reason.
 
 ### 7. Scheduling: dedicated tickers in main loop
 
@@ -88,17 +88,54 @@ This follows the established pattern (analysisTicker for 30-min sentiment, backu
 
 **Alternatives considered**: Piggybacking on the existing 30-min ticker — rejected because 15-min analysis granularity is needed for smooth bump chart lines. Using a goroutine with sleep — rejected for consistency with existing ticker pattern.
 
-### 8. Exemplar posts: hydrate at post time vs store engagement on ingest
+### 8. Exemplar posts: post_buffer JOIN instead of API hydration
 
-**Decision**: At 6-hour posting time, batch-fetch current engagement for topic-matching posts via `FeedGetPosts` API, pick the highest-engagement post per topic as the exemplar.
+**Decision**: At 6-hour posting time, JOIN `post_buffer` with `topic_tokens` to find the highest-engagement post per topic. No API calls needed.
 
-Jetstream delivers posts with zero engagement (they're brand new). The `post_buffer` hydrates engagement every 30 minutes but purges after 2 hours — far shorter than the 24-hour topic window. Storing engagement alongside tokens at ingest would capture stale near-zero values.
+The original design called `FeedGetPosts` API to hydrate engagement for exemplar candidates. This was replaced with `GetExemplarCandidates()` — a SQL query that JOINs `post_buffer` (which already has engagement data from the sentiment hydration cycle) with `topic_tokens` (which has keyword data). The query uses `json_each(tt.tokens)` to match against topic keywords, filters out multi-hashtag posts (spam), and ranks by engagement.
 
-Instead, at posting time we already know each topic's keyword set. We query `topic_tokens` for matching URIs, sample up to 50 URIs per topic, and call `FeedGetPosts` (the same API the hydrator uses) to get their **current** engagement. A post that's 20 hours old has accumulated far more engagement than it had at minute 0, so this produces better exemplars. Cost: ~10 API calls (250 URIs / 25 per batch) per 6-hour post — negligible given the existing 500/min rate limit.
+Benefits over the original API approach:
+- **Zero API calls**: Reads engagement from already-hydrated `post_buffer`
+- **Higher engagement scores**: Posts have accumulated hours of interactions (72-1,017 observed) vs 0-4 with the old approach
+- **Handle deduplication**: Each topic gets a unique exemplar author — if the top candidate's handle was already used by a higher-ranked topic, the next candidate is selected
+- **6-hour window**: Only recent posts are considered, ensuring fresh exemplars
 
-The exemplar URI and author handle are stored in `topic_snapshots` for chart alt text and movement comparison.
+The exemplar URI and author handle are stored in `topic_snapshots` for alt text.
 
-**Alternatives considered**: Storing engagement in `topic_tokens` at ingest — rejected because engagement is 0 at firehose time. Periodically re-hydrating topic_tokens — rejected for complexity and unnecessary API load. Using the post_buffer's engagement data — rejected because it purges at 2h, missing 22h of topic data.
+**Alternatives considered**: Original `FeedGetPosts` API hydration — replaced because `post_buffer` already has the data. Storing engagement in `topic_tokens` at ingest — rejected because engagement is 0 at firehose time.
+
+### 9. Spam filtering: multi-layer approach
+
+**Decision**: Three-layer spam filtering pipeline.
+
+1. **Ingestion: adult content filter** — Posts with Bluesky moderation self-labels (`sexual`, `nudity`, `graphic-media`) are excluded from tokenization via `HasAdultContent()`
+2. **Ingestion: hashtag spam filter** — Posts with more than one hashtag are excluded from tokenization. Promotional spam (e.g., counterfeit merchandise listings) typically includes 5-8 hashtags per post
+3. **TF-IDF query: engagement filter** — `GetTopicTokensSinceLimit()` JOINs `post_buffer` and requires `(likes + reposts + replies) > 0`. This filters zero-engagement posts (spam bots, unhydrated posts) at analysis time while preserving the raw token data
+
+The combination eliminated spam topics like "NFL Jerseys" and "Apparel" that were caused by bot accounts.
+
+**Alternatives considered**: Filtering on engagement at ingestion — rejected because engagement is 0 at firehose time, would filter everything. Account-level spam detection — rejected for complexity; the hashtag + engagement filters are sufficient. Stricter engagement thresholds (> 5, > 10) — not needed; even > 0 effectively separates real posts from spam bots.
+
+### 10. Gemini prompt hardening: temperature and merge rules
+
+**Decision**: Temperature 0.2 with aggressive merge instructions and generic label filtering.
+
+Early results showed two problems: (1) fragmented topics where sub-events appeared separately (e.g., "Super Bowl" and "NFL Jerseys" as distinct topics), and (2) catch-all groups like "Miscellaneous" or "Online Community" absorbing unrelated terms.
+
+Solutions:
+- **Temperature 0.2**: Reduces randomness for more deterministic, consistent grouping across calls
+- **Aggressive merge prompt**: "AGGRESSIVELY merge related terms into the single most well-known event, person, or subject"
+- **Target 5-7 groups**: "Aim for 5-7 truly DISTINCT topics. When in doubt, MERGE into fewer, bigger groups"
+- **`filterGenericClusters()`**: Post-processor that drops any cluster with generic label words (miscellaneous, general, various, other, etc.)
+- **Label format**: "1-3 words, subject only" with banned filler words (Posts, Mentions, Discussions, Event, Content, Media, etc.)
+
+### 11. Bigram extraction for multi-word names
+
+**Decision**: Extract bigrams (adjacent token pairs) during tokenization, stored as underscore-joined terms (e.g., `bad_bunny`, `super_bowl`).
+
+Single-word tokens miss multi-word proper nouns ("Bad Bunny" → "bad" + "bunny" individually). With bigrams, `bad_bunny` appears as a single TF-IDF candidate and naturally groups with the person's name. The Gemini prompt includes instructions that underscore terms represent multi-word phrases.
+
+**Alternatives considered**: Trigrams — rejected for token explosion. NER (Named Entity Recognition) — rejected for complexity and compute cost. Relying solely on Gemini grouping — works for some cases but misses when single words are too common individually.
 
 ## Risks / Trade-offs
 
