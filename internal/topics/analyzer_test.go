@@ -226,6 +226,107 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 	}
 }
 
+func TestBackfillFromPrevious_FillsToFive(t *testing.T) {
+	current := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "A"}}, TopicID: "t1", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "B"}}, TopicID: "t2", Rank: 2},
+	}
+	previous := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "C"}, PostCount: 50}, TopicID: "t3", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "D"}, PostCount: 40}, TopicID: "t4", Rank: 2},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "E"}, PostCount: 30}, TopicID: "t5", Rank: 3},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "F"}, PostCount: 20}, TopicID: "t6", Rank: 4},
+	}
+
+	result := backfillFromPrevious(current, previous)
+	if len(result) != 5 {
+		t.Fatalf("expected 5 topics, got %d", len(result))
+	}
+	if result[2].TopicID != "t3" || result[2].Rank != 3 {
+		t.Errorf("backfill[0]: got id=%q rank=%d, want t3 rank=3", result[2].TopicID, result[2].Rank)
+	}
+	if result[4].TopicID != "t5" || result[4].Rank != 5 {
+		t.Errorf("backfill[2]: got id=%q rank=%d, want t5 rank=5", result[4].TopicID, result[4].Rank)
+	}
+}
+
+func TestBackfillFromPrevious_AlreadyFive(t *testing.T) {
+	current := make([]IdentifiedTopic, 5)
+	for i := range current {
+		current[i] = IdentifiedTopic{TopicID: fmt.Sprintf("t%d", i), Rank: i + 1}
+	}
+	previous := []IdentifiedTopic{
+		{TopicID: "prev1", Rank: 1},
+	}
+
+	result := backfillFromPrevious(current, previous)
+	if len(result) != 5 {
+		t.Errorf("expected 5 (unchanged), got %d", len(result))
+	}
+}
+
+func TestBackfillFromPrevious_SkipsDuplicateTopicIDs(t *testing.T) {
+	current := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "A"}}, TopicID: "shared-id", Rank: 1},
+	}
+	previous := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "A-prev"}}, TopicID: "shared-id", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "B-prev"}}, TopicID: "new-id", Rank: 2},
+	}
+
+	result := backfillFromPrevious(current, previous)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 topics, got %d", len(result))
+	}
+	if result[1].TopicID != "new-id" {
+		t.Errorf("expected new-id, got %q", result[1].TopicID)
+	}
+}
+
+func TestBackfillFromPrevious_ClearsExemplarForRehydration(t *testing.T) {
+	current := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "A"}}, TopicID: "t1", Rank: 1},
+	}
+	previous := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "B"}}, TopicID: "t2", Rank: 1, ExemplarURI: "at://old/1", ExemplarHandle: "old.bsky.social"},
+	}
+
+	result := backfillFromPrevious(current, previous)
+	if result[1].ExemplarURI != "" {
+		t.Errorf("expected cleared ExemplarURI, got %q", result[1].ExemplarURI)
+	}
+	if result[1].ExemplarHandle != "" {
+		t.Errorf("expected cleared ExemplarHandle, got %q", result[1].ExemplarHandle)
+	}
+}
+
+func TestBackfillFromPrevious_IncludesMemes(t *testing.T) {
+	current := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "A"}}, TopicID: "t1", Rank: 1},
+	}
+	previous := []IdentifiedTopic{
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Post a Banger", IsMeme: true}}, TopicID: "t2", Rank: 1},
+	}
+
+	result := backfillFromPrevious(current, previous)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 topics, got %d", len(result))
+	}
+	if !result[1].Cluster.IsMeme {
+		t.Error("expected meme topic to be carried over")
+	}
+}
+
+func TestBackfillFromPrevious_NoPrevious(t *testing.T) {
+	current := []IdentifiedTopic{
+		{TopicID: "t1", Rank: 1},
+	}
+	result := backfillFromPrevious(current, nil)
+	if len(result) != 1 {
+		t.Errorf("expected 1 (unchanged), got %d", len(result))
+	}
+}
+
 func TestBuildTrajectories(t *testing.T) {
 	snapshots := []store.TopicSnapshotRow{
 		{SnapshotTime: "2026-01-01T00:00:00Z", TopicID: "t1", Rank: 3},
