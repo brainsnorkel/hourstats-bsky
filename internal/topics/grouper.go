@@ -205,6 +205,7 @@ func buildPrompt(terms []TermScore) string {
 	b.WriteString("- Groups should be meaningful, specific topics — not vague categories\n")
 	b.WriteString("- NEVER create catch-all groups with labels like \"Miscellaneous\", \"General\", \"Various\", \"Other\", \"Everyday\", \"Actions\", \"Activities\", \"Mixed\", \"Uncategorized\", or \"Uncategorised\"\n")
 	b.WriteString("- If a term doesn't fit a specific topic, leave it as a single-term group rather than lumping unrelated terms together\n")
+	b.WriteString("- Merge sub-topics of the same event into one group (e.g. NFL jerseys + Super Bowl = one group, halftime show + Super Bowl = one group)\n")
 	b.WriteString("- Terms containing underscores are multi-word phrases (e.g. bad_bunny means \"Bad Bunny\", super_bowl means \"Super Bowl\")\n")
 	b.WriteString("- Prefer grouping underscore phrases with their component single-word terms\n")
 	b.WriteString("- Use the multi-word form in labels when appropriate (e.g. label \"Bad Bunny\" not \"Bunny\")\n")
