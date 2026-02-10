@@ -1,14 +1,22 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: Tokenize root posts on ingest
-The system SHALL preprocess and tokenize every root post (non-reply) received from the Jetstream firehose. Tokenization MUST: lowercase the text, strip URLs (http/https patterns), strip @mentions, strip emoji (Unicode emoji ranges), remove English stopwords (~300 common words), and filter tokens to minimum 3 characters. The resulting token set SHALL be stored as a JSON array in the `topic_tokens` SQLite table alongside the post URI and creation timestamp.
+### Requirement: Tokenize root posts on ingest with spam filtering
+The system SHALL preprocess and tokenize every root post (non-reply) received from the Jetstream firehose, subject to ingestion filters. Posts SHALL be excluded from tokenization if: (1) they are replies (rec.Reply != nil), (2) they have adult content self-labels (rec.HasAdultContent()), or (3) they have more than one hashtag (strings.Count(rec.Text, "#") > 1). Tokenization MUST: lowercase the text, strip URLs (http/https patterns), strip @mentions, strip emoji (Unicode emoji ranges), remove English stopwords (~300 common words), filter tokens to minimum 3 characters, and extract bigrams (adjacent token pairs joined with underscores, e.g., "bad_bunny"). The resulting token set (unigrams + bigrams) SHALL be stored as a JSON array in the `topic_tokens` SQLite table alongside the post URI and creation timestamp.
 
 #### Scenario: Root post is tokenized and stored
-- **WHEN** a root post (rec.Reply == nil) passes the English language filter
-- **THEN** the system tokenizes the text and inserts a row into topic_tokens with the post URI, JSON token array, and created_at timestamp
+- **WHEN** a root post (rec.Reply == nil) passes the English language filter, has no adult content labels, and has 0 or 1 hashtags
+- **THEN** the system tokenizes the text (unigrams + bigrams) and inserts a row into topic_tokens with the post URI, JSON token array, and created_at timestamp
 
 #### Scenario: Reply post is not tokenized
 - **WHEN** a reply post (rec.Reply != nil) is received
+- **THEN** the system SHALL NOT insert any row into topic_tokens
+
+#### Scenario: Adult content post is not tokenized
+- **WHEN** a root post has Bluesky moderation self-labels (sexual, nudity, graphic-media)
+- **THEN** the system SHALL NOT insert any row into topic_tokens
+
+#### Scenario: Multi-hashtag spam post is not tokenized
+- **WHEN** a root post contains more than one hashtag
 - **THEN** the system SHALL NOT insert any row into topic_tokens
 
 #### Scenario: Post with only stopwords/URLs produces empty tokens

@@ -16,7 +16,7 @@ Bluesky HourStats is an automated bot that:
 - Posts summaries with the top 5 posts and overall community sentiment
 - Generates 7-day sentiment sparklines
 - Creates yearly sentiment charts (monthly posts)
-- Tracks trending topics with bump charts (TF-IDF + Gemini Flash)
+- Tracks trending topics (TF-IDF + Gemini Flash)
 - Posts daily top-post quote replies to the yearly thread
 
 ## Post Format
@@ -35,7 +35,7 @@ Bluesky is #satisfied
 - **Top 5 posts**: Ranked by engagement with clickable links
 - **Sentiment indicators**: + (positive), - (negative), x (neutral)
 - **7-day sparklines**: Visual sentiment trends posted with each summary
-- **Trending topics**: Bump chart showing top 5 topic trajectories over 24 hours
+- **Trending topics**: Top 5 topic list with exemplar post links, posted every 6 hours
 - **Sentiment trendlines**: Original posts vs reply sentiment comparison
 - **Yearly charts**: Monthly posts showing 365 days of sentiment data
 
@@ -47,7 +47,7 @@ The bot runs as a single Go binary on [Fly.io](https://fly.io) with the followin
 - **Analysis Cycle**: Every 30 minutes (wall-clock aligned), reads posts from the window, hydrates engagement via the Bluesky API, runs VADER sentiment analysis, and posts a summary with the top 5 most engaged posts.
 - **Sparkline Poster**: Generates and posts a 7-day sentiment sparkline chart as a reply to each summary.
 - **Sentiment Trendline**: Posts an original-vs-reply sentiment comparison chart.
-- **Trending Topics**: Every 6 hours, identifies top 5 topics using TF-IDF analysis grouped by Gemini Flash, posts a bump chart with exemplar posts.
+- **Trending Topics**: Every 6 hours, identifies top 5 topics using TF-IDF analysis grouped by Gemini Flash, posts a text summary with highest-engagement exemplar post links.
 - **Daily Cycle**: Aggregates daily sentiment averages, creates local + S3 backups, posts a daily top-post quote reply to the yearly thread.
 - **Yearly Poster**: On the 1st of each month at 01:00 UTC, generates and posts a yearly sentiment chart.
 
@@ -117,7 +117,7 @@ export GOOGLE_AI_API_KEY="your-gemini-api-key"
 4. **Engagement Ranking**: Ranks posts by total engagement (replies + likes + reposts)
 5. **Posting**: Publishes top 5 posts with sentiment indicators and mood hashtag
 6. **Visualizations**: Generates sparklines, sentiment trendlines, and yearly charts
-7. **Trending Topics**: TF-IDF extraction + Gemini Flash grouping → bump chart with exemplar posts
+7. **Trending Topics**: TF-IDF extraction + Gemini Flash grouping → text post with exemplar links
 
 ## Features
 
@@ -130,7 +130,7 @@ export GOOGLE_AI_API_KEY="your-gemini-api-key"
 - ✅ Original vs reply sentiment trendlines
 - ✅ Yearly sentiment charts with month markers
 - ✅ Daily sentiment aggregation
-- ✅ Trending topics with bump chart (TF-IDF + Gemini Flash, posted every 6h)
+- ✅ Trending topics with exemplar links (TF-IDF + Gemini Flash, posted every 6h)
 - ✅ Daily top-post quote reply to yearly thread
 - ✅ SQLite with WAL mode on persistent Fly.io volume
 - ✅ Daily SQLite → S3 backups (essential tables only)
@@ -140,9 +140,9 @@ export GOOGLE_AI_API_KEY="your-gemini-api-key"
 
 ### Trending Topics
 
-Every 6 hours, the bot identifies the top 5 trending topics on Bluesky and posts a standalone update with a bump chart showing topic trajectories over 24 hours. Topics are extracted using TF-IDF analysis of root posts, grouped by Google Gemini Flash for semantic understanding, and tracked with persistent identities so the same topic keeps its colour and position history across posts.
+Every 6 hours, the bot identifies the top 5 trending topics on Bluesky and posts a standalone text update. Topics are extracted using TF-IDF analysis of root posts (filtered for spam and adult content), grouped by Google Gemini Flash for semantic understanding, and tracked with persistent identities across ranking cycles.
 
-Each topic includes the highest-engagement exemplar post and movement indicators showing rank changes. Users can mute trending posts via `#trending` or `#hourstatstrend` without affecting the sentiment feed.
+Each topic includes a link to the highest-engagement exemplar post. Spam is filtered at three layers: adult content labels at ingestion, multi-hashtag posts at ingestion, and zero-engagement posts at TF-IDF query time. Users can mute trending posts via `#hstrend` without affecting the sentiment feed.
 
 See [docs/TRENDING_TOPICS.md](docs/TRENDING_TOPICS.md) for a detailed technical walkthrough.
 
