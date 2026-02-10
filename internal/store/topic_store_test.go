@@ -119,11 +119,49 @@ func TestGetExemplarCandidates_RankedByEngagement(t *testing.T) {
 	if len(candidates) != 2 {
 		t.Fatalf("expected 2 candidates, got %d", len(candidates))
 	}
+	// alice matches 2 keywords (trump+election), charlie matches 1 (trump).
+	// alice should win on keyword count; higher engagement is a bonus.
 	if candidates[0].Handle != "alice.bsky.social" {
-		t.Errorf("expected highest engagement first, got %q", candidates[0].Handle)
+		t.Errorf("expected most-relevant post first, got %q", candidates[0].Handle)
 	}
 	if candidates[0].Engagement != 175 {
 		t.Errorf("expected engagement 175, got %d", candidates[0].Engagement)
+	}
+}
+
+func TestGetExemplarCandidates_RelevanceBeatsEngagement(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	// Post 1: matches 3 keywords (highly relevant to "Winter Olympics") but moderate engagement
+	s.InsertTopicTokens(ctx, "at://a/1", `["winter","olympics","skiing","medal"]`, now)
+	// Post 2: matches only 1 keyword ("winter") but has massive engagement — off-topic post
+	s.InsertTopicTokens(ctx, "at://a/2", `["winter","senate","dhs","funding","ice"]`, now)
+
+	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "Winter Olympics skiing medal", AuthorDID: "did:plc:1", AuthorHandle: "olympicsfan.bsky.social", CreatedAt: now})
+	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Senate winter DHS funding fight", AuthorDID: "did:plc:2", AuthorHandle: "politico.bsky.social", CreatedAt: now})
+
+	// Post 2 has way more engagement but is only tangentially related
+	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=50, reposts=20, replies=10 WHERE uri='at://a/1'`)
+	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=5000, reposts=2000, replies=500 WHERE uri='at://a/2'`)
+
+	candidates, err := s.GetExemplarCandidates(ctx, []string{"winter", "olympics", "skiing", "medal"}, "2000-01-01T00:00:00Z", 50)
+	if err != nil {
+		t.Fatalf("GetExemplarCandidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	// Post 1 matches 3 keywords (winter, olympics, skiing, medal → 4 matches).
+	// Post 2 matches only 1 keyword (winter).
+	// Even though Post 2 has 7500 engagement vs Post 1's 80, Post 1 should win
+	// because keyword relevance is prioritized over raw engagement.
+	if candidates[0].Handle != "olympicsfan.bsky.social" {
+		t.Errorf("expected most keyword-relevant post first (olympicsfan), got %q with engagement %d", candidates[0].Handle, candidates[0].Engagement)
+	}
+	if candidates[1].Handle != "politico.bsky.social" {
+		t.Errorf("expected less relevant viral post second (politico), got %q", candidates[1].Handle)
 	}
 }
 

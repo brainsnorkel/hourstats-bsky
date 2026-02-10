@@ -146,7 +146,7 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 		   AND je.value IN (%s)
 		   AND (LENGTH(pb.text) - LENGTH(REPLACE(pb.text, '#', ''))) <= 1
 		 GROUP BY pb.uri
-		 ORDER BY eng DESC, COUNT(DISTINCT je.value) DESC
+		 ORDER BY COUNT(DISTINCT je.value) DESC, eng DESC
 		 LIMIT ?`,
 		strings.Join(placeholders, ","),
 	)
