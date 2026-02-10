@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+func insertPostWithEngagement(t *testing.T, s *Store, ctx context.Context, uri, text, createdAt string, likes int) {
+	t.Helper()
+	s.InsertPost(ctx, Post{URI: uri, CID: "cid", Text: text, AuthorDID: "did:plc:x", AuthorHandle: "test.bsky.social", CreatedAt: createdAt})
+	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=? WHERE uri=?`, likes, uri)
+}
+
 func TestTopicTokens_InsertAndGetSince(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -15,15 +21,13 @@ func TestTopicTokens_InsertAndGetSince(t *testing.T) {
 	mid := now.Add(-12 * time.Hour).Format(time.RFC3339)
 	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
 
-	if err := s.InsertTopicTokens(ctx, "at://a/post/1", `["hello","world"]`, old); err != nil {
-		t.Fatalf("insert old: %v", err)
-	}
-	if err := s.InsertTopicTokens(ctx, "at://a/post/2", `["foo","bar"]`, mid); err != nil {
-		t.Fatalf("insert mid: %v", err)
-	}
-	if err := s.InsertTopicTokens(ctx, "at://a/post/3", `["baz"]`, recent); err != nil {
-		t.Fatalf("insert recent: %v", err)
-	}
+	s.InsertTopicTokens(ctx, "at://a/post/1", `["hello","world"]`, old)
+	s.InsertTopicTokens(ctx, "at://a/post/2", `["foo","bar"]`, mid)
+	s.InsertTopicTokens(ctx, "at://a/post/3", `["baz"]`, recent)
+
+	insertPostWithEngagement(t, s, ctx, "at://a/post/1", "hello world", old, 5)
+	insertPostWithEngagement(t, s, ctx, "at://a/post/2", "foo bar", mid, 10)
+	insertPostWithEngagement(t, s, ctx, "at://a/post/3", "baz", recent, 3)
 
 	cutoff := now.Add(-13 * time.Hour).Format(time.RFC3339)
 	rows, err := s.GetTopicTokensSince(ctx, cutoff)
@@ -73,6 +77,9 @@ func TestTopicTokens_Purge(t *testing.T) {
 
 	s.InsertTopicTokens(ctx, "at://old/1", `["a"]`, old)
 	s.InsertTopicTokens(ctx, "at://new/1", `["b"]`, recent)
+
+	insertPostWithEngagement(t, s, ctx, "at://old/1", "old post", old, 1)
+	insertPostWithEngagement(t, s, ctx, "at://new/1", "new post", recent, 1)
 
 	cutoff := now.Add(-26 * time.Hour).Format(time.RFC3339)
 	deleted, err := s.PurgeTopicTokens(ctx, cutoff)
