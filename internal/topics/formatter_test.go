@@ -13,14 +13,14 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 
 	text, facets := FormatTrendingPost(ranked, nil)
 
-	if !strings.Contains(text, "1. Politics (NEW)") {
-		t.Errorf("expected '1. Politics (NEW)', text: %q", text)
+	if !strings.Contains(text, "1. Politics") {
+		t.Errorf("expected '1. Politics', text: %q", text)
 	}
 	if !strings.Contains(text, "@alice.bsky.social") {
 		t.Errorf("expected exemplar mention, text: %q", text)
 	}
-	if !strings.Contains(text, "2. Weather (NEW)") {
-		t.Errorf("expected '2. Weather (NEW)', text: %q", text)
+	if !strings.Contains(text, "2. Weather") {
+		t.Errorf("expected '2. Weather', text: %q", text)
 	}
 	if !strings.Contains(text, "#hstrend") {
 		t.Errorf("expected hashtag, text: %q", text)
@@ -44,7 +44,7 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 	}
 }
 
-func TestFormatTrendingPost_MovementIndicators(t *testing.T) {
+func TestFormatTrendingPost_NoMovementIndicators(t *testing.T) {
 	ranked := []IdentifiedTopic{
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "A"}}, TopicID: "t1", Rank: 1},
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "B"}}, TopicID: "t2", Rank: 2},
@@ -57,28 +57,14 @@ func TestFormatTrendingPost_MovementIndicators(t *testing.T) {
 
 	text, _ := FormatTrendingPost(ranked, previous)
 
-	if !strings.Contains(text, "1. A (+2)") {
-		t.Errorf("expected rose indicator, text: %q", text)
+	if strings.Contains(text, "(+") || strings.Contains(text, "(-") || strings.Contains(text, "(->)") || strings.Contains(text, "(NEW)") {
+		t.Errorf("expected no movement indicators, text: %q", text)
 	}
-	if !strings.Contains(text, "2. B (->)") {
-		t.Errorf("expected unchanged indicator, text: %q", text)
+	if !strings.Contains(text, "1. A") {
+		t.Errorf("expected '1. A', text: %q", text)
 	}
-	if !strings.Contains(text, "3. C (NEW)") {
-		t.Errorf("expected NEW indicator, text: %q", text)
-	}
-}
-
-func TestFormatTrendingPost_FellIndicator(t *testing.T) {
-	ranked := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "A"}}, TopicID: "t1", Rank: 3},
-	}
-	previous := []IdentifiedTopic{
-		{TopicID: "t1", Rank: 1},
-	}
-
-	text, _ := FormatTrendingPost(ranked, previous)
-	if !strings.Contains(text, "(-2)") {
-		t.Errorf("expected fell indicator, text: %q", text)
+	if !strings.Contains(text, "2. B") {
+		t.Errorf("expected '2. B', text: %q", text)
 	}
 }
 

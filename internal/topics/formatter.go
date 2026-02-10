@@ -22,17 +22,12 @@ type Facet struct {
 const maxGraphemes = 300
 
 func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (string, []Facet) {
-	prevRank := make(map[string]int)
-	for _, p := range previous {
-		prevRank[p.TopicID] = p.Rank
-	}
-
 	showExemplar := make([]bool, len(ranked))
 	for i := range ranked {
 		showExemplar[i] = true
 	}
 
-	text := buildTrendingText(ranked, prevRank, showExemplar)
+	text := buildTrendingText(ranked, showExemplar)
 	for len([]rune(text)) > maxGraphemes {
 		dropped := false
 		for i := len(ranked) - 1; i >= 0; i-- {
@@ -45,7 +40,7 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (s
 		if !dropped {
 			break
 		}
-		text = buildTrendingText(ranked, prevRank, showExemplar)
+		text = buildTrendingText(ranked, showExemplar)
 	}
 
 	filtered := make([]IdentifiedTopic, len(ranked))
@@ -61,13 +56,12 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (s
 	return text, facets
 }
 
-func buildTrendingText(ranked []IdentifiedTopic, prevRank map[string]int, showExemplar []bool) string {
+func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool) string {
 	var b strings.Builder
 	b.WriteString("Topics\n\n")
 
 	for i, topic := range ranked {
-		movement := movementIndicator(topic.TopicID, topic.Rank, prevRank)
-		line := fmt.Sprintf("%d. %s %s", topic.Rank, topic.Cluster.Label, movement)
+		line := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)
 		if showExemplar[i] && topic.ExemplarHandle != "" {
 			line += fmt.Sprintf(" @%s", topic.ExemplarHandle)
 		}
@@ -77,21 +71,6 @@ func buildTrendingText(ranked []IdentifiedTopic, prevRank map[string]int, showEx
 
 	b.WriteString("\n#hstrend")
 	return b.String()
-}
-
-func movementIndicator(topicID string, rank int, prevRank map[string]int) string {
-	prev, existed := prevRank[topicID]
-	if !existed {
-		return "(NEW)"
-	}
-	diff := prev - rank
-	if diff > 0 {
-		return fmt.Sprintf("(+%d)", diff)
-	}
-	if diff < 0 {
-		return fmt.Sprintf("(-%d)", -diff)
-	}
-	return "(->)"
 }
 
 func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
