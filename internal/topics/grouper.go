@@ -171,13 +171,17 @@ var genericLabelWords = map[string]bool{
 	"topics": true, "updates": true, "community": true, "online": true,
 	"opinions": true, "reactions": true, "criticism": true, "takes": true,
 	"views": true, "thoughts": true, "responses": true, "debate": true,
-	"controversy": true, "discourse": true,
+	"controversy": true, "discourse": true, "random": true, "randomly": true,
 }
 
 func filterGenericClusters(clusters []TopicCluster) []TopicCluster {
 	var filtered []TopicCluster
 	for _, c := range clusters {
-		words := strings.Fields(strings.ToLower(c.Label))
+		lower := strings.ToLower(strings.TrimSpace(c.Label))
+		if lower == "__discard__" {
+			continue
+		}
+		words := strings.Fields(lower)
 		generic := false
 		for _, w := range words {
 			if genericLabelWords[w] {
@@ -201,7 +205,7 @@ func buildPrompt(terms []TermScore) string {
 		fmt.Fprintf(&b, "- %s (%.2f)\n", t.Term, t.Score)
 	}
 	b.WriteString("\nReturn a JSON array of groups. Each group has:\n")
-	b.WriteString("- \"label\": short topic name (1-3 words, subject only — NO filler words like Posts, Mentions, Discussions, Event, Content, Media, Topics, News, Updates, Debate, Discourse, Controversy, Culture, Community, Platform, Social, Online, Opinions, Reactions, Criticism, Takes, Views, Thoughts, Responses)\n")
+	b.WriteString("- \"label\": short topic name (1-3 words, subject only — NO filler words like Posts, Mentions, Discussions, Event, Content, Media, Topics, News, Updates, Debate, Discourse, Controversy, Culture, Community, Platform, Social, Online, Opinions, Reactions, Criticism, Takes, Views, Thoughts, Responses, Random)\n")
 	b.WriteString("- \"description\": one sentence describing the topic\n")
 	b.WriteString("- \"keywords\": array of the original terms that belong to this group\n")
 	b.WriteString("- \"synonyms\": array of additional related terms not in the original list\n")
@@ -213,6 +217,7 @@ func buildPrompt(terms []TermScore) string {
 	b.WriteString("- If a term doesn't fit a specific topic, leave it as a single-term group rather than lumping unrelated terms together\n")
 	b.WriteString("- AGGRESSIVELY merge related terms into the single most well-known event, person, or subject. Use the most recognizable name as the label. If a major event (e.g. Super Bowl, World Cup, Oscars) is happening, ALL related terms (teams, players, jerseys, halftime, scores, venues, performances) MUST be merged into that event — never split into sub-topics.\n")
 	b.WriteString("- Aim for 5-7 truly DISTINCT topics. When in doubt, MERGE into fewer, bigger groups rather than splitting.\n")
+	b.WriteString("- If terms are too vague, generic, or describe meta-commentary rather than a specific subject (e.g. 'random', 'stuff', 'banger', 'wild', 'mood'), group them under the label \"__discard__\". Do NOT force vague terms into real topics. Only named events, people, places, organisations, or specific subjects should form topics.\n")
 	b.WriteString("- Terms containing underscores are multi-word phrases (e.g. bad_bunny means \"Bad Bunny\", super_bowl means \"Super Bowl\")\n")
 	b.WriteString("- Prefer grouping underscore phrases with their component single-word terms\n")
 	b.WriteString("- Use the multi-word form in labels when appropriate (e.g. label \"Bad Bunny\" not \"Bunny\")\n")

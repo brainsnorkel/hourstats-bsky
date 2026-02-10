@@ -242,5 +242,5 @@ var stopwords = map[string]bool{
 	"ever": true, "away": true, "enough": true, "else": true,
 	"fun": true, "friends": true, "friend": true, "care": true, "needs": true,
 	"might": true, "check": true, "face": true, "art": true, "media": true,
-	"house": true, "goes": true, "gone": true,
+	"house": true, "goes": true, "gone": true, "random": true, "randomly": true,
 }
