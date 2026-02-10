@@ -15,10 +15,11 @@ type TermScore struct {
 }
 
 type TopicCluster struct {
-	Label       string   `json:"label"`
-	Description string   `json:"description"`
-	Keywords    []string `json:"keywords"`
-	Synonyms    []string `json:"synonyms"`
+	Label         string   `json:"label"`
+	Description   string   `json:"description"`
+	Keywords      []string `json:"keywords"`
+	Synonyms      []string `json:"synonyms"`
+	Justification string   `json:"justification,omitempty"`
 }
 
 type RankedTopic struct {

@@ -26,16 +26,18 @@ func geminiMockHandler(clusters []TopicCluster) http.HandlerFunc {
 func TestGroupAndLabel_Success(t *testing.T) {
 	expected := []TopicCluster{
 		{
-			Label:       "US Politics",
-			Description: "Discussion about American politics",
-			Keywords:    []string{"trump", "election", "congress"},
-			Synonyms:    []string{"government", "political"},
+			Label:         "Donald Trump",
+			Description:   "Discussion about Donald Trump",
+			Keywords:      []string{"trump", "election", "congress"},
+			Synonyms:      []string{"government", "political"},
+			Justification: "Multiple terms relate to Trump and US government activity",
 		},
 		{
-			Label:       "Weather",
-			Description: "Weather discussion",
-			Keywords:    []string{"weather", "rain"},
-			Synonyms:    []string{"storm"},
+			Label:         "Weather",
+			Description:   "Weather discussion",
+			Keywords:      []string{"weather", "rain"},
+			Synonyms:      []string{"storm"},
+			Justification: "Weather-related terms cluster together",
 		},
 	}
 
@@ -58,8 +60,8 @@ func TestGroupAndLabel_Success(t *testing.T) {
 	if len(clusters) != 2 {
 		t.Fatalf("expected 2 clusters, got %d", len(clusters))
 	}
-	if clusters[0].Label != "US Politics" {
-		t.Errorf("expected label 'US Politics', got %q", clusters[0].Label)
+	if clusters[0].Label != "Donald Trump" {
+		t.Errorf("expected label 'Donald Trump', got %q", clusters[0].Label)
 	}
 	if len(clusters[0].Keywords) != 3 {
 		t.Errorf("expected 3 keywords, got %d", len(clusters[0].Keywords))
