@@ -195,6 +195,14 @@ var stopwords = map[string]bool{
 	"amazing": true, "awesome": true, "beautiful": true, "funny": true,
 	"crazy": true, "cool": true, "nice": true, "weird": true,
 
+	// meta-discussion words (describe discourse, not subjects)
+	"opinion": true, "opinions": true, "debate": true, "reaction": true, "reactions": true,
+	"controversy": true, "controversial": true, "criticism": true, "critique": true,
+	"thoughts": true, "perspective": true, "perspectives": true, "takes": true,
+	"discourse": true, "argument": true, "arguments": true, "discussion": true,
+	"response": true, "responses": true, "statement": true, "statements": true,
+	"comment": true, "comments": true, "views": true, "stance": true,
+
 	// generic activity verbs & gerunds
 	"watch": true, "watching": true, "show": true, "play": true, "playing": true,
 	"read": true, "post": true, "posted": true, "share": true, "follow": true,
