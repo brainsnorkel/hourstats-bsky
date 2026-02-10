@@ -49,6 +49,7 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 	for i, topic := range result {
 		allKeywords := append(topic.Cluster.Keywords, topic.Cluster.Synonyms...)
 		if len(allKeywords) == 0 {
+			slog.Info("exemplar: no keywords", "topic", topic.Cluster.Label)
 			continue
 		}
 
@@ -58,12 +59,14 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			continue
 		}
 		if len(uris) == 0 {
-			slog.Info("exemplar: no matching URIs", "topic", topic.Cluster.Label)
+			slog.Warn("exemplar: no matching URIs", "topic", topic.Cluster.Label, "keywords", allKeywords)
 			continue
 		}
+		slog.Info("exemplar: found candidate URIs", "topic", topic.Cluster.Label, "count", len(uris))
 
 		var bestURI, bestHandle string
 		bestEngagement := -1
+		var adultSkipped, usedSkipped, nilSkipped, fetchErrors int
 
 		for start := 0; start < len(uris); start += exemplarBatchSize {
 			end := start + exemplarBatchSize
@@ -73,18 +76,22 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 
 			views, err := h.fetcher.GetPosts(ctx, uris[start:end])
 			if err != nil {
-				slog.Warn("exemplar: fetch posts failed", "topic", topic.Cluster.Label, "error", err)
+				slog.Warn("exemplar: fetch posts failed", "topic", topic.Cluster.Label, "batch", start/exemplarBatchSize, "error", err)
+				fetchErrors++
 				continue
 			}
 
 			for _, v := range views {
 				if v == nil || v.Author == nil {
+					nilSkipped++
 					continue
 				}
 				if hasAdultLabel(v.Labels) {
+					adultSkipped++
 					continue
 				}
 				if usedHandles[v.Author.Handle] {
+					usedSkipped++
 					continue
 				}
 				eng := postEngagement(v)
@@ -104,6 +111,12 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			result[i].ExemplarURI = bestURI
 			result[i].ExemplarHandle = bestHandle
 			usedHandles[bestHandle] = true
+			slog.Info("exemplar: selected", "topic", topic.Cluster.Label, "handle", bestHandle, "engagement", bestEngagement)
+		} else {
+			slog.Warn("exemplar: no valid candidate found", "topic", topic.Cluster.Label,
+				"uris_checked", len(uris), "nil_skipped", nilSkipped,
+				"adult_skipped", adultSkipped, "used_skipped", usedSkipped,
+				"fetch_errors", fetchErrors)
 		}
 	}
 
