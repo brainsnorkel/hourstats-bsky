@@ -66,7 +66,8 @@ type geminiPart struct {
 }
 
 type geminiGenConfig struct {
-	ResponseMimeType string `json:"responseMimeType"`
+	ResponseMimeType string   `json:"responseMimeType"`
+	Temperature      *float64 `json:"temperature,omitempty"`
 }
 
 // geminiResponse is the response body from Gemini Flash.
@@ -92,12 +93,14 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 
 	prompt := buildPrompt(terms)
 
+	temp := 0.2
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
 			{Parts: []geminiPart{{Text: prompt}}},
 		},
 		GenerationConfig: geminiGenConfig{
 			ResponseMimeType: "application/json",
+			Temperature:      &temp,
 		},
 	}
 
@@ -205,8 +208,8 @@ func buildPrompt(terms []TermScore) string {
 	b.WriteString("- Groups should be meaningful, specific topics — not vague categories\n")
 	b.WriteString("- NEVER create catch-all groups with labels like \"Miscellaneous\", \"General\", \"Various\", \"Other\", \"Everyday\", \"Actions\", \"Activities\", \"Mixed\", \"Uncategorized\", or \"Uncategorised\"\n")
 	b.WriteString("- If a term doesn't fit a specific topic, leave it as a single-term group rather than lumping unrelated terms together\n")
-	b.WriteString("- AGGRESSIVELY merge sub-topics into the single most well-known event or subject they relate to. Label the merged group with the most famous, popular, or notorious name. Examples: NFL jerseys + halftime + touchdown + Super Bowl = \"Super Bowl\"; concert + setlist + Bad Bunny = \"Bad Bunny\"; indictment + trial + Trump = \"Trump\"\n")
-	b.WriteString("- When in doubt, MERGE into fewer, bigger groups rather than splitting into many small ones\n")
+	b.WriteString("- AGGRESSIVELY merge related terms into the single most well-known event, person, or subject. Use the most recognizable name as the label. If a major event (e.g. Super Bowl, World Cup, Oscars) is happening, ALL related terms (teams, players, jerseys, halftime, scores, venues, performances) MUST be merged into that event — never split into sub-topics.\n")
+	b.WriteString("- Aim for 5-7 truly DISTINCT topics. When in doubt, MERGE into fewer, bigger groups rather than splitting.\n")
 	b.WriteString("- Terms containing underscores are multi-word phrases (e.g. bad_bunny means \"Bad Bunny\", super_bowl means \"Super Bowl\")\n")
 	b.WriteString("- Prefer grouping underscore phrases with their component single-word terms\n")
 	b.WriteString("- Use the multi-word form in labels when appropriate (e.g. label \"Bad Bunny\" not \"Bunny\")\n")
