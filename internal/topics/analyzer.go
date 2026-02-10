@@ -233,6 +233,10 @@ func backfillFromPrevious(current, previous []IdentifiedTopic) []IdentifiedTopic
 		if currentIDs[prev.TopicID] {
 			continue
 		}
+		if overlapsCurrent(prev, current) {
+			slog.Info("topics: skipped backfill (semantic overlap)", "topic", prev.Cluster.Label)
+			continue
+		}
 		backfilled := prev
 		backfilled.Rank = nextRank
 		backfilled.ExemplarURI = ""
@@ -244,6 +248,15 @@ func backfillFromPrevious(current, previous []IdentifiedTopic) []IdentifiedTopic
 	}
 
 	return current
+}
+
+func overlapsCurrent(candidate IdentifiedTopic, current []IdentifiedTopic) bool {
+	for _, c := range current {
+		if jaccard(candidate.Cluster.Keywords, c.Cluster.Keywords) > jaccardThreshold {
+			return true
+		}
+	}
+	return false
 }
 
 func buildTrajectories(snapshots []store.TopicSnapshotRow, current []IdentifiedTopic) map[string][]int {
