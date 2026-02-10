@@ -181,7 +181,7 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		}
 	}
 
-	text, facets := FormatTrendingPost(latestTopics, previous)
+	text, facets := FormatTrendingPost(latestTopics, previous, 6)
 
 	if dryRun {
 		slog.Info("topics: DRY RUN trending post", "text", text, "facets", len(facets))
