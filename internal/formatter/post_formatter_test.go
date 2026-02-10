@@ -106,12 +106,11 @@ func TestFormatPostContent_ZeroNetSentiment(t *testing.T) {
 func TestFormatPostContent_HeaderFormat(t *testing.T) {
 	result := FormatPostContent(nil, "positive", 30, 1000, 12.0)
 	lines := strings.Split(result, "\n")
-	// First line: "Bluesky is #<word>"
+	// First line: "Bluesky is #<word> +X.X% sentiment"
 	if !strings.HasPrefix(lines[0], "Bluesky is #") {
 		t.Errorf("first line should start with 'Bluesky is #', got %q", lines[0])
 	}
-	// Second line: sentiment percentage
-	if !strings.Contains(lines[1], "% sentiment") {
-		t.Errorf("second line should contain sentiment, got %q", lines[1])
+	if !strings.Contains(lines[0], "% sentiment") {
+		t.Errorf("first line should contain sentiment percentage, got %q", lines[0])
 	}
 }

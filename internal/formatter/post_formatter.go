@@ -29,7 +29,7 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 	} else {
 		sentimentSign = ""
 	}
-	content := fmt.Sprintf("Bluesky is #%s\n%s%.1f%% sentiment\n\n", moodWord, sentimentSign, netSentiment)
+	content := fmt.Sprintf("Bluesky is #%s %s%.1f%% sentiment\n\n", moodWord, sentimentSign, netSentiment)
 
 	for i, post := range topPosts {
 		sentimentSymbol := getSentimentSymbol(post.Sentiment)
