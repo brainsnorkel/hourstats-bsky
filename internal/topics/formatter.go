@@ -21,13 +21,13 @@ type Facet struct {
 
 const maxGraphemes = 300
 
-func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (string, []Facet) {
+func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, analysisHours int) (string, []Facet) {
 	showExemplar := make([]bool, len(ranked))
 	for i := range ranked {
 		showExemplar[i] = true
 	}
 
-	text := buildTrendingText(ranked, showExemplar)
+	text := buildTrendingText(ranked, showExemplar, analysisHours)
 	for len([]rune(text)) > maxGraphemes {
 		dropped := false
 		for i := len(ranked) - 1; i >= 0; i-- {
@@ -40,7 +40,7 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (s
 		if !dropped {
 			break
 		}
-		text = buildTrendingText(ranked, showExemplar)
+		text = buildTrendingText(ranked, showExemplar, analysisHours)
 	}
 
 	filtered := make([]IdentifiedTopic, len(ranked))
@@ -56,9 +56,9 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic) (s
 	return text, facets
 }
 
-func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool) string {
+func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int) string {
 	var b strings.Builder
-	b.WriteString("Topics\n\n")
+	fmt.Fprintf(&b, "Trending topics (%dh)\n\n", analysisHours)
 
 	for i, topic := range ranked {
 		line := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)
