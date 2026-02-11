@@ -10,7 +10,12 @@ import (
 
 func makeTokenRow(uri string, tokens []string) store.TopicTokenRow {
 	b, _ := json.Marshal(tokens)
-	return store.TopicTokenRow{PostURI: uri, Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z"}
+	return store.TopicTokenRow{PostURI: uri, Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: "did:plc:" + uri}
+}
+
+func makeTokenRowWithAuthor(uri string, tokens []string, authorDID string) store.TopicTokenRow {
+	b, _ := json.Marshal(tokens)
+	return store.TopicTokenRow{PostURI: uri, Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: authorDID}
 }
 
 func TestComputeTFIDF_BasicRanking(t *testing.T) {
@@ -92,5 +97,32 @@ func TestComputeTFIDF_AllIdenticalTokens(t *testing.T) {
 	}
 	if len(results) > 0 && results[0].Term != "same" {
 		t.Errorf("expected 'same', got %q", results[0].Term)
+	}
+}
+
+func TestComputeTFIDF_SingleAuthorSpam(t *testing.T) {
+	spammer := "did:plc:spammer"
+	var rows []store.TopicTokenRow
+	for i := 0; i < 20; i++ {
+		rows = append(rows, makeTokenRowWithAuthor(fmt.Sprintf("at://spam/%d", i), []string{"excuse", "team_excuse"}, spammer))
+	}
+	for i := 0; i < 20; i++ {
+		rows = append(rows, makeTokenRow(fmt.Sprintf("at://legit/%d", i), []string{"weather", "rain"}))
+	}
+
+	results := ComputeTFIDF(rows)
+	termMap := make(map[string]bool)
+	for _, r := range results {
+		termMap[r.Term] = true
+	}
+
+	if termMap["excuse"] {
+		t.Error("single-author term 'excuse' should be filtered by MinUniqueAuthors")
+	}
+	if termMap["team_excuse"] {
+		t.Error("single-author term 'team_excuse' should be filtered by MinUniqueAuthors")
+	}
+	if !termMap["weather"] {
+		t.Error("multi-author term 'weather' should pass MinUniqueAuthors")
 	}
 }

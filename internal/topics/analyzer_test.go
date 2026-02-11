@@ -80,19 +80,19 @@ func buildTestTokens() []store.TopicTokenRow {
 	for i := 0; i < 50; i++ {
 		b, _ := json.Marshal([]string{"trump", "election"})
 		rows = append(rows, store.TopicTokenRow{
-			PostURI: fmt.Sprintf("at://a/%d", i), Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z",
+			PostURI: fmt.Sprintf("at://a/%d", i), Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: fmt.Sprintf("did:plc:a%d", i),
 		})
 	}
 	for i := 0; i < 40; i++ {
 		b, _ := json.Marshal([]string{"weather", "rain"})
 		rows = append(rows, store.TopicTokenRow{
-			PostURI: fmt.Sprintf("at://b/%d", i), Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z",
+			PostURI: fmt.Sprintf("at://b/%d", i), Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: fmt.Sprintf("did:plc:b%d", i),
 		})
 	}
 	for i := 0; i < 30; i++ {
 		b, _ := json.Marshal([]string{"sports", "football"})
 		rows = append(rows, store.TopicTokenRow{
-			PostURI: fmt.Sprintf("at://c/%d", i), Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z",
+			PostURI: fmt.Sprintf("at://c/%d", i), Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: fmt.Sprintf("did:plc:c%d", i),
 		})
 	}
 	return rows
