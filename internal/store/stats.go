@@ -10,35 +10,35 @@ import (
 
 // StatsSnapshot represents a point-in-time capture of system statistics.
 type StatsSnapshot struct {
-	ID                     int64
-	SnapshotTime           time.Time
-	ActiveEndpoint         string
-	EndpointRotations      int
-	ReconnectCount         int
-	ConnectionUptimeSeconds int
-	EventsReceived         int
-	PostsProcessed         int
-	EventsSkipped          int
-	ConsumerErrors         int
-	TotalFirehosePosts     int
-	EnglishPostsStored     int
-	RootPosts              int
-	ReplyPosts             int
-	PostsPerMinuteAvg      float64
-	AnalysisRan            int
-	PostsConsidered        int
-	PostsHydrated          int
-	HydrationErrors        int
-	SentimentResult        string
-	PostingSkipped         int
+	ID                      int64     `json:"id"`
+	SnapshotTime            time.Time `json:"snapshot_time"`
+	ActiveEndpoint          string    `json:"active_endpoint"`
+	EndpointRotations       int       `json:"endpoint_rotations"`
+	ReconnectCount          int       `json:"reconnect_count"`
+	ConnectionUptimeSeconds int       `json:"connection_uptime_seconds"`
+	EventsReceived          int       `json:"events_received"`
+	PostsProcessed          int       `json:"posts_processed"`
+	EventsSkipped           int       `json:"events_skipped"`
+	ConsumerErrors          int       `json:"consumer_errors"`
+	TotalFirehosePosts      int       `json:"total_firehose_posts"`
+	EnglishPostsStored      int       `json:"english_posts_stored"`
+	RootPosts               int       `json:"root_posts"`
+	ReplyPosts              int       `json:"reply_posts"`
+	PostsPerMinuteAvg       float64   `json:"posts_per_minute_avg"`
+	AnalysisRan             int       `json:"analysis_ran"`
+	PostsConsidered         int       `json:"posts_considered"`
+	PostsHydrated           int       `json:"posts_hydrated"`
+	HydrationErrors         int       `json:"hydration_errors"`
+	SentimentResult         string    `json:"sentiment_result"`
+	PostingSkipped          int       `json:"posting_skipped"`
 }
 
 // StatsEvent represents a logged event in the system.
 type StatsEvent struct {
-	ID        int64
-	EventTime time.Time
-	EventType string
-	Details   string
+	ID        int64     `json:"id"`
+	EventTime time.Time `json:"event_time"`
+	EventType string    `json:"event_type"`
+	Details   string    `json:"details"`
 }
 
 // InsertStatsSnapshot inserts a new stats snapshot record.
