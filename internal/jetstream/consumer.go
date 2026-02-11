@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	DefaultEndpoint       = "wss://jetstream2.us-east.bsky.network/subscribe"
+	DefaultEndpoint       = "wss://jetstream2.us-west.bsky.network/subscribe"
 	DefaultCollection     = "app.bsky.feed.post"
 	DefaultCursorInterval = 10 * time.Second
 
