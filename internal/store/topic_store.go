@@ -14,18 +14,18 @@ type TopicTokenRow struct {
 }
 
 type TopicSnapshotRow struct {
-	ID             int64
-	SnapshotTime   string
-	Rank           int
-	TopicID        string
-	Label          string
-	Description    string
-	PostCount      int
-	Keywords       string
-	ExemplarURI    string
-	ExemplarHandle string
-	IsMeme         bool
-	Justification  string
+	ID             int64  `json:"id"`
+	SnapshotTime   string `json:"snapshot_time"`
+	Rank           int    `json:"rank"`
+	TopicID        string `json:"topic_id"`
+	Label          string `json:"label"`
+	Description    string `json:"description"`
+	PostCount      int    `json:"post_count"`
+	Keywords       string `json:"keywords"`
+	ExemplarURI    string `json:"exemplar_uri"`
+	ExemplarHandle string `json:"exemplar_handle"`
+	IsMeme         bool   `json:"is_meme"`
+	Justification  string `json:"justification"`
 }
 
 type TopicIdentityRow struct {
