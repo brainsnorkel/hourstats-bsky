@@ -55,6 +55,9 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 
 		found := false
 		for _, c := range candidates {
+			if c.Handle == "" {
+				continue // skip unhydrated posts — no handle for @mention
+			}
 			if usedHandles[c.Handle] {
 				continue
 			}
@@ -66,7 +69,7 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			break
 		}
 		if !found {
-			slog.Warn("exemplar: all candidates had used handles", "topic", topic.Cluster.Label, "candidates", len(candidates))
+			slog.Warn("exemplar: no hydrated candidate available", "topic", topic.Cluster.Label, "candidates", len(candidates))
 		}
 	}
 

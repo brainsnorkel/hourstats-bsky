@@ -161,6 +161,7 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 		 JOIN post_buffer pb ON tp.post_uri = pb.uri
 		 WHERE tp.token IN (%s)
 		   AND tp.created_at >= ?
+		   AND pb.author_handle != ''
 		 GROUP BY pb.uri
 		 ORDER BY COUNT(DISTINCT tp.token) DESC, eng DESC
 		 LIMIT ?`,
