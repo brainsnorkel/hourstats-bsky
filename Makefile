@@ -1,7 +1,7 @@
 # HourStats Makefile
 
 .PHONY: build test test-unit test-lambdas clean deps fmt lint graph-lab help \
-	build-hourstats deploy-prod deploy-staging deploy-all fly-status fly-logs-prod fly-logs-staging
+	build-hourstats build-stats deploy-prod deploy-staging deploy-all fly-status fly-logs-prod fly-logs-staging
 
 # Build the application
 build:
@@ -83,6 +83,9 @@ lint:
 build-hourstats:
 	CGO_ENABLED=0 go build -o bin/hourstats ./cmd/hourstats
 
+build-stats:
+	go build -o bin/hourstats-stats ./cmd/hourstats-stats
+
 deploy-prod:
 	fly deploy -c fly.prod.toml --ha=false
 
@@ -119,6 +122,7 @@ help:
 	@echo "  fmt                - Format code"
 	@echo "  lint               - Lint code (requires golangci-lint)"
 	@echo "  build-hourstats    - Build Fly.io binary (cmd/hourstats)"
+	@echo "  build-stats        - Build stats CLI tool (cmd/hourstats-stats)"
 	@echo "  deploy-prod        - Deploy to hourstats-prod on Fly.io"
 	@echo "  deploy-staging     - Deploy to hourstats-staging on Fly.io"
 	@echo "  deploy-all         - Deploy to both prod and staging"

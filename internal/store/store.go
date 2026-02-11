@@ -250,6 +250,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_topic_snapshots_time ON topic_snapshots(snapshot_time)`,
 
 		`ALTER TABLE topic_snapshots ADD COLUMN is_meme INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE topic_snapshots ADD COLUMN justification TEXT NOT NULL DEFAULT ''`,
 
 		`CREATE TABLE IF NOT EXISTS topic_identity (
 			topic_id TEXT PRIMARY KEY,
@@ -267,6 +268,40 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (token, post_uri)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_token_postings_token_created ON token_postings(token, created_at)`,
+
+		`CREATE TABLE IF NOT EXISTS stats_snapshots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			snapshot_time TEXT NOT NULL,
+			active_endpoint TEXT NOT NULL DEFAULT '',
+			endpoint_rotations INTEGER NOT NULL DEFAULT 0,
+			reconnect_count INTEGER NOT NULL DEFAULT 0,
+			connection_uptime_seconds INTEGER NOT NULL DEFAULT 0,
+			events_received INTEGER NOT NULL DEFAULT 0,
+			posts_processed INTEGER NOT NULL DEFAULT 0,
+			events_skipped INTEGER NOT NULL DEFAULT 0,
+			consumer_errors INTEGER NOT NULL DEFAULT 0,
+			total_firehose_posts INTEGER NOT NULL DEFAULT 0,
+			english_posts_stored INTEGER NOT NULL DEFAULT 0,
+			root_posts INTEGER NOT NULL DEFAULT 0,
+			reply_posts INTEGER NOT NULL DEFAULT 0,
+			posts_per_minute_avg REAL NOT NULL DEFAULT 0,
+			analysis_ran INTEGER NOT NULL DEFAULT 0,
+			posts_considered INTEGER NOT NULL DEFAULT 0,
+			posts_hydrated INTEGER NOT NULL DEFAULT 0,
+			hydration_errors INTEGER NOT NULL DEFAULT 0,
+			sentiment_result TEXT NOT NULL DEFAULT '',
+			posting_skipped INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_stats_snapshots_time ON stats_snapshots(snapshot_time)`,
+
+		`CREATE TABLE IF NOT EXISTS stats_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_time TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			details TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_stats_events_time ON stats_events(event_time)`,
+		`CREATE INDEX IF NOT EXISTS idx_stats_events_type ON stats_events(event_type)`,
 	}
 
 	for _, stmt := range stmts {
