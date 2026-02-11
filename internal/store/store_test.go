@@ -86,7 +86,7 @@ func TestPostBuffer_PurgeExpired(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert a post with an old inserted_at by directly using SQL
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO post_buffer (uri, cid, text, author_did, created_at, inserted_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		"at://did:plc:old/app.bsky.feed.post/old", "cid", "old post", "did:plc:old",

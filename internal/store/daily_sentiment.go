@@ -13,7 +13,7 @@ func (s *Store) StoreDailySentiment(ctx context.Context, dp DailySentimentDataPo
 	now := nowUTC()
 	ttl := time.Now().UTC().Add(3 * 365 * 24 * time.Hour).Unix() // 3 years TTL
 
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO daily_sentiment (date, run_id, average_sentiment, min_sentiment, max_sentiment, q1_sentiment, median_sentiment, q3_sentiment, total_runs, total_posts, created_at, ttl)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(date) DO UPDATE SET
@@ -40,7 +40,7 @@ func (s *Store) StoreDailySentiment(ctx context.Context, dp DailySentimentDataPo
 func (s *Store) GetDailySentimentHistory(ctx context.Context, days int) ([]DailySentimentDataPoint, error) {
 	startDate := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT date, run_id, average_sentiment, min_sentiment, max_sentiment, q1_sentiment, median_sentiment, q3_sentiment, total_runs, total_posts, created_at, ttl
 		 FROM daily_sentiment
 		 WHERE date >= ?
@@ -98,7 +98,7 @@ func (s *Store) GetDailySentimentForDate(ctx context.Context, date string) (*Dai
 	var dp DailySentimentDataPoint
 	var createdStr string
 
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT date, run_id, average_sentiment, min_sentiment, max_sentiment, q1_sentiment, median_sentiment, q3_sentiment, total_runs, total_posts, created_at, ttl
 		 FROM daily_sentiment WHERE date = ?`,
 		date,
@@ -126,7 +126,7 @@ func (s *Store) GetWeeklyPostTotals(ctx context.Context) ([]WeeklyPostTotal, err
 	}
 	currentWeekStart := now.AddDate(0, 0, -(weekday - 1)).Truncate(24 * time.Hour)
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT strftime('%Y-%m-%d', timestamp) AS day,
 		        SUM(total_posts) AS en_total,
 		        SUM(total_firehose_posts) AS firehose_total

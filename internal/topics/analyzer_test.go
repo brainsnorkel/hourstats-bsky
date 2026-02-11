@@ -71,6 +71,9 @@ func (m *mockAnalyzerStore) PurgeTopicIdentities(_ context.Context, _ string) (i
 func (m *mockAnalyzerStore) GetExemplarCandidates(_ context.Context, _ []string, _ string, _ int) ([]store.ExemplarCandidate, error) {
 	return nil, nil
 }
+func (m *mockAnalyzerStore) SetKeyValue(_ context.Context, _, _ string) error {
+	return nil
+}
 
 func buildTestTokens() []store.TopicTokenRow {
 	var rows []store.TopicTokenRow

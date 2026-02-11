@@ -14,7 +14,7 @@ func (s *Store) CreateRun(ctx context.Context, run RunState) error {
 	topPostsJSON := marshalJSON(run.TopPosts)
 	ttl := time.Now().UTC().Add(48 * time.Hour).Unix()
 
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO runs (run_id, status, analysis_interval_minutes, cutoff_time, total_posts_retrieved,
 			overall_sentiment, net_sentiment_percentage, top_posts, top_post_uri, top_post_cid,
 			created_at, updated_at, ttl)
@@ -34,7 +34,7 @@ func (s *Store) CreateRun(ctx context.Context, run RunState) error {
 func (s *Store) UpdateRun(ctx context.Context, run RunState) error {
 	topPostsJSON := marshalJSON(run.TopPosts)
 
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`UPDATE runs SET status=?, total_posts_retrieved=?, overall_sentiment=?,
 			net_sentiment_percentage=?, top_posts=?, top_post_uri=?, top_post_cid=?,
 			updated_at=?
@@ -59,7 +59,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (*RunState, error) {
 		topPostsJSON string
 	)
 
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT run_id, status, analysis_interval_minutes, cutoff_time, total_posts_retrieved,
 			overall_sentiment, net_sentiment_percentage, top_posts, top_post_uri, top_post_cid,
 			created_at, updated_at, ttl
@@ -97,7 +97,7 @@ func (s *Store) GetLatestCompletedRun(ctx context.Context) (*RunState, error) {
 		topPostsJSON string
 	)
 
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT run_id, status, analysis_interval_minutes, cutoff_time, total_posts_retrieved,
 			overall_sentiment, net_sentiment_percentage, top_posts, top_post_uri, top_post_cid,
 			created_at, updated_at, ttl
@@ -126,7 +126,7 @@ func (s *Store) GetLatestCompletedRun(ctx context.Context) (*RunState, error) {
 // PurgeExpiredRuns deletes runs older than olderThan and returns the count removed.
 func (s *Store) PurgeExpiredRuns(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.writeDB.ExecContext(ctx,
 		`DELETE FROM runs WHERE created_at < ?`,
 		timeToStr(cutoff),
 	)

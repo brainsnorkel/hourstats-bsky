@@ -54,7 +54,7 @@ func TestFlushWriteBatch_PostsOnly(t *testing.T) {
 	}
 
 	var tokenCount int
-	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM topic_tokens`).Scan(&tokenCount)
+	s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM topic_tokens`).Scan(&tokenCount)
 	if tokenCount != 0 {
 		t.Errorf("expected 0 topic_tokens rows, got %d", tokenCount)
 	}
@@ -104,13 +104,13 @@ func TestFlushWriteBatch_WithTokens(t *testing.T) {
 	}
 
 	var topicCount int
-	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM topic_tokens`).Scan(&topicCount)
+	s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM topic_tokens`).Scan(&topicCount)
 	if topicCount != 2 {
 		t.Errorf("expected 2 topic_tokens rows, got %d", topicCount)
 	}
 
 	var postingCount int
-	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings`).Scan(&postingCount)
+	s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings`).Scan(&postingCount)
 	if postingCount != 5 {
 		t.Errorf("expected 5 token_postings rows (2+3), got %d", postingCount)
 	}

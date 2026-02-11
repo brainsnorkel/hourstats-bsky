@@ -27,7 +27,7 @@ func (s *Store) InsertPost(ctx context.Context, post Post) error {
 		isReply = 1
 	}
 
-	_, err := s.db.ExecContext(ctx, q,
+	_, err := s.writeDB.ExecContext(ctx, q,
 		post.URI, post.CID, post.Text, post.AuthorDID, post.AuthorHandle,
 		post.Likes, post.Reposts, post.Replies, post.Sentiment, post.EngagementScore,
 		post.CreatedAt, nowUTC(), isReply,
@@ -40,7 +40,7 @@ func (s *Store) InsertPost(ctx context.Context, post Post) error {
 
 // InsertPostsBatch inserts multiple posts in a single transaction.
 func (s *Store) InsertPostsBatch(ctx context.Context, posts []Post) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
@@ -88,7 +88,7 @@ func (s *Store) GetPostsSince(ctx context.Context, since time.Time) ([]Post, err
 		WHERE created_at >= ?
 		ORDER BY created_at ASC`
 
-	rows, err := s.db.QueryContext(ctx, q, timeToStr(since))
+	rows, err := s.readDB.QueryContext(ctx, q, timeToStr(since))
 	if err != nil {
 		return nil, fmt.Errorf("query posts: %w", err)
 	}
@@ -112,7 +112,7 @@ func (s *Store) GetPostsSince(ctx context.Context, since time.Time) ([]Post, err
 // GetPostCount returns the number of posts with created_at >= since.
 func (s *Store) GetPostCount(ctx context.Context, since time.Time) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM post_buffer WHERE created_at >= ?`,
 		timeToStr(since),
 	).Scan(&count)
@@ -124,7 +124,7 @@ func (s *Store) GetPostCount(ctx context.Context, since time.Time) (int, error) 
 
 // UpdatePostEngagement updates engagement metrics and author handle for a post.
 func (s *Store) UpdatePostEngagement(ctx context.Context, uri string, likes, reposts, replies int, authorHandle, sentiment string, engagementScore float64) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`UPDATE post_buffer SET likes=?, reposts=?, replies=?, author_handle=?, sentiment=?, engagement_score=? WHERE uri=?`,
 		likes, reposts, replies, authorHandle, sentiment, engagementScore, uri,
 	)
@@ -137,7 +137,7 @@ func (s *Store) UpdatePostEngagement(ctx context.Context, uri string, likes, rep
 // PurgeExpiredPosts deletes posts older than olderThan in chunks, returning the count removed.
 func (s *Store) PurgeExpiredPosts(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := timeToStr(time.Now().UTC().Add(-olderThan))
-	return purgeInChunks(ctx, s.db,
+	return purgeInChunks(ctx, s.writeDB,
 		`DELETE FROM post_buffer WHERE rowid IN (SELECT rowid FROM post_buffer WHERE inserted_at < ? LIMIT 1000)`,
 		cutoff,
 	)

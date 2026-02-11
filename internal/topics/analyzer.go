@@ -22,6 +22,7 @@ type AnalyzerStore interface {
 	GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]store.TopicSnapshotRow, error)
 	PurgeTopicSnapshots(ctx context.Context, cutoff string) (int64, error)
 	UpdateSnapshotExemplar(ctx context.Context, snapshotID int64, exemplarURI, exemplarHandle string) error
+	SetKeyValue(ctx context.Context, key, value string) error
 }
 
 type TrendingPoster interface {
@@ -209,6 +210,10 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	bskyFacets := convertFacets(facets)
 	if err := poster.PostWithFacets(ctx, text, bskyFacets); err != nil {
 		return fmt.Errorf("post trending: %w", err)
+	}
+
+	if err := a.store.SetKeyValue(ctx, "trending_post_last_time", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		slog.Warn("topics: failed to record trending post time", "error", err)
 	}
 
 	slog.Info("topics: trending post published", "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -31,6 +32,7 @@ type StatsSnapshot struct {
 	HydrationErrors         int       `json:"hydration_errors"`
 	SentimentResult         string    `json:"sentiment_result"`
 	PostingSkipped          int       `json:"posting_skipped"`
+	DroppedPosts            int       `json:"dropped_posts"`
 }
 
 // StatsEvent represents a logged event in the system.
@@ -43,9 +45,10 @@ type StatsEvent struct {
 
 // PostingEntry describes the last time a particular post type was made.
 type PostingEntry struct {
-	LastPosted string `json:"last_posted"`
-	Summary    string `json:"summary"`
-	URI        string `json:"uri,omitempty"`
+	LastPosted      string `json:"last_posted"`
+	Summary         string `json:"summary"`
+	URI             string `json:"uri,omitempty"`
+	NextAnticipated string `json:"next_anticipated,omitempty"`
 }
 
 // PostingActivity aggregates the most recent posting times for each post type.
@@ -98,34 +101,122 @@ func (s *Store) GetPostingActivity(ctx context.Context) (*PostingActivity, error
 		}
 	}
 
-	// 4. Trending topics — latest topic snapshot
+	// 4. Trending topics — prefer actual post time from key_value, fall back to snapshot time
+	trendingEntry, err := s.GetKeyValueWithTimestamp(ctx, "trending_post_last_time")
+	if err != nil {
+		return nil, fmt.Errorf("posting activity: %w", err)
+	}
 	snapshotTime, topicCount, err := s.GetLatestTopicSnapshotTime(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("posting activity: %w", err)
 	}
-	if snapshotTime != "" {
+	if trendingEntry != nil {
+		summary := "Trending topics post"
+		if topicCount > 0 {
+			summary = fmt.Sprintf("%d trending topics", topicCount)
+		}
+		pa.TrendingTopics = &PostingEntry{
+			LastPosted: trendingEntry.Value,
+			Summary:    summary,
+		}
+	} else if snapshotTime != "" {
 		pa.TrendingTopics = &PostingEntry{
 			LastPosted: snapshotTime,
-			Summary:    fmt.Sprintf("%d trending topics", topicCount),
+			Summary:    fmt.Sprintf("%d trending topics (analysis)", topicCount),
 		}
 	}
+
+	// Compute next anticipated times from schedule intervals stored in key_value.
+	pa.fillNextAnticipated(ctx, s)
 
 	return pa, nil
 }
 
+// fillNextAnticipated reads schedule intervals from key_value and computes
+// wall-clock aligned next fire times for each post type.
+func (pa *PostingActivity) fillNextAnticipated(ctx context.Context, s *Store) {
+	now := time.Now().UTC()
+
+	// Sentiment: wall-clock aligned to N minutes
+	if v, err := s.getKeyValueOpt(ctx, "schedule_sentiment_minutes"); err == nil && v != "" {
+		if mins, err := strconv.Atoi(v); err == nil && mins > 0 {
+			d := time.Duration(mins) * time.Minute
+			next := now.Truncate(d).Add(d)
+			if pa.SentimentSummary == nil {
+				pa.SentimentSummary = &PostingEntry{Summary: "(no data)"}
+			}
+			pa.SentimentSummary.NextAnticipated = timeToStr(next)
+		}
+	}
+
+	// Daily quote: fires at 00:00 UTC daily (same as backup ticker)
+	if v, err := s.getKeyValueOpt(ctx, "schedule_daily_quote_hour"); err == nil && v != "" {
+		if hour, err := strconv.Atoi(v); err == nil {
+			next := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, time.UTC)
+			if !next.After(now) {
+				next = next.Add(24 * time.Hour)
+			}
+			if pa.DailyQuote == nil {
+				pa.DailyQuote = &PostingEntry{Summary: "(no data)"}
+			}
+			pa.DailyQuote.NextAnticipated = timeToStr(next)
+		}
+	}
+
+	// Yearly chart: fires at 01:00 UTC daily
+	if v, err := s.getKeyValueOpt(ctx, "schedule_yearly_hour"); err == nil && v != "" {
+		if hour, err := strconv.Atoi(v); err == nil {
+			next := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, time.UTC)
+			if !next.After(now) {
+				next = next.Add(24 * time.Hour)
+			}
+			if pa.YearlyChart == nil {
+				pa.YearlyChart = &PostingEntry{Summary: "(no data)"}
+			}
+			pa.YearlyChart.NextAnticipated = timeToStr(next)
+		}
+	}
+
+	// Trending post: wall-clock aligned to N hours
+	if v, err := s.getKeyValueOpt(ctx, "schedule_trending_post_hours"); err == nil && v != "" {
+		if hours, err := strconv.Atoi(v); err == nil && hours > 0 {
+			d := time.Duration(hours) * time.Hour
+			next := now.Truncate(d).Add(d)
+			if pa.TrendingTopics == nil {
+				pa.TrendingTopics = &PostingEntry{Summary: "(no data)"}
+			}
+			pa.TrendingTopics.NextAnticipated = timeToStr(next)
+		}
+	}
+}
+
+// getKeyValueOpt returns the value for a key, or ("", nil) if not found.
+func (s *Store) getKeyValueOpt(ctx context.Context, key string) (string, error) {
+	entry, err := s.GetKeyValueWithTimestamp(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	if entry == nil {
+		return "", nil
+	}
+	return entry.Value, nil
+}
+
 // InsertStatsSnapshot inserts a new stats snapshot record.
 func (s *Store) InsertStatsSnapshot(ctx context.Context, snap *StatsSnapshot) error {
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO stats_snapshots (snapshot_time, active_endpoint, endpoint_rotations, reconnect_count,
 			connection_uptime_seconds, events_received, posts_processed, events_skipped, consumer_errors,
 			total_firehose_posts, english_posts_stored, root_posts, reply_posts, posts_per_minute_avg,
-			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
+			dropped_posts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		timeToStr(snap.SnapshotTime), snap.ActiveEndpoint, snap.EndpointRotations, snap.ReconnectCount,
 		snap.ConnectionUptimeSeconds, snap.EventsReceived, snap.PostsProcessed, snap.EventsSkipped,
 		snap.ConsumerErrors, snap.TotalFirehosePosts, snap.EnglishPostsStored, snap.RootPosts,
 		snap.ReplyPosts, snap.PostsPerMinuteAvg, snap.AnalysisRan, snap.PostsConsidered,
 		snap.PostsHydrated, snap.HydrationErrors, snap.SentimentResult, snap.PostingSkipped,
+		snap.DroppedPosts,
 	)
 	if err != nil {
 		return fmt.Errorf("insert stats snapshot: %w", err)
@@ -136,7 +227,7 @@ func (s *Store) InsertStatsSnapshot(ctx context.Context, snap *StatsSnapshot) er
 
 // InsertStatsEvent inserts a new stats event record.
 func (s *Store) InsertStatsEvent(ctx context.Context, e *StatsEvent) error {
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO stats_events (event_time, event_type, details)
 		 VALUES (?, ?, ?)`,
 		timeToStr(e.EventTime), e.EventType, e.Details,
@@ -154,11 +245,12 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 	var snap StatsSnapshot
 	var snapshotTimeStr string
 
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT id, snapshot_time, active_endpoint, endpoint_rotations, reconnect_count,
 			connection_uptime_seconds, events_received, posts_processed, events_skipped, consumer_errors,
 			total_firehose_posts, english_posts_stored, root_posts, reply_posts, posts_per_minute_avg,
-			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped
+			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
+			dropped_posts
 		 FROM stats_snapshots
 		 ORDER BY snapshot_time DESC
 		 LIMIT 1`,
@@ -168,6 +260,7 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 		&snap.ConsumerErrors, &snap.TotalFirehosePosts, &snap.EnglishPostsStored, &snap.RootPosts,
 		&snap.ReplyPosts, &snap.PostsPerMinuteAvg, &snap.AnalysisRan, &snap.PostsConsidered,
 		&snap.PostsHydrated, &snap.HydrationErrors, &snap.SentimentResult, &snap.PostingSkipped,
+		&snap.DroppedPosts,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -182,11 +275,12 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 
 // GetSnapshotHistory returns snapshots since the given time, ordered by snapshot_time DESC, limited to `limit` rows.
 func (s *Store) GetSnapshotHistory(ctx context.Context, since time.Time, limit int) ([]StatsSnapshot, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT id, snapshot_time, active_endpoint, endpoint_rotations, reconnect_count,
 			connection_uptime_seconds, events_received, posts_processed, events_skipped, consumer_errors,
 			total_firehose_posts, english_posts_stored, root_posts, reply_posts, posts_per_minute_avg,
-			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped
+			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
+			dropped_posts
 		 FROM stats_snapshots
 		 WHERE snapshot_time >= ?
 		 ORDER BY snapshot_time DESC
@@ -208,6 +302,7 @@ func (s *Store) GetSnapshotHistory(ctx context.Context, since time.Time, limit i
 			&snap.ConsumerErrors, &snap.TotalFirehosePosts, &snap.EnglishPostsStored, &snap.RootPosts,
 			&snap.ReplyPosts, &snap.PostsPerMinuteAvg, &snap.AnalysisRan, &snap.PostsConsidered,
 			&snap.PostsHydrated, &snap.HydrationErrors, &snap.SentimentResult, &snap.PostingSkipped,
+			&snap.DroppedPosts,
 		); err != nil {
 			return nil, fmt.Errorf("scan snapshot: %w", err)
 		}
@@ -233,7 +328,7 @@ func (s *Store) GetEvents(ctx context.Context, since time.Time, eventType string
 	query += ` ORDER BY event_time DESC LIMIT ?`
 	args = append(args, limit)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query events: %w", err)
 	}
@@ -259,7 +354,7 @@ func (s *Store) PurgeExpiredStats(ctx context.Context, olderThan time.Duration) 
 	cutoffStr := timeToStr(cutoff)
 
 	// Delete from stats_snapshots
-	result1, err := s.db.ExecContext(ctx,
+	result1, err := s.writeDB.ExecContext(ctx,
 		`DELETE FROM stats_snapshots WHERE snapshot_time < ?`,
 		cutoffStr,
 	)
@@ -269,7 +364,7 @@ func (s *Store) PurgeExpiredStats(ctx context.Context, olderThan time.Duration) 
 	count1, _ := result1.RowsAffected()
 
 	// Delete from stats_events
-	result2, err := s.db.ExecContext(ctx,
+	result2, err := s.writeDB.ExecContext(ctx,
 		`DELETE FROM stats_events WHERE event_time < ?`,
 		cutoffStr,
 	)
