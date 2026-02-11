@@ -21,7 +21,22 @@ const (
 
 	maxBackoff     = 30 * time.Second
 	initialBackoff = 1 * time.Second
+
+	// Endpoint rotation: if we see this many drops within the window,
+	// rotate to the next endpoint.
+	rotateAfterDrops  = 3
+	rotateDropWindow  = 3 * time.Minute
+	healthyResetAfter = 2 * time.Minute
 )
+
+// AllEndpoints lists the four public Jetstream instances, us-west first
+// since the Fly.io app runs in sjc.
+var AllEndpoints = []string{
+	"wss://jetstream2.us-west.bsky.network/subscribe",
+	"wss://jetstream1.us-west.bsky.network/subscribe",
+	"wss://jetstream2.us-east.bsky.network/subscribe",
+	"wss://jetstream1.us-east.bsky.network/subscribe",
+}
 
 // PostHandler is called for each new post event.
 type PostHandler func(event *Event, record *PostRecord)
@@ -34,7 +49,8 @@ type CursorLoader func(ctx context.Context) (int64, error)
 
 // ConsumerConfig holds configuration for the Jetstream consumer.
 type ConsumerConfig struct {
-	Endpoint       string
+	Endpoint       string   // Single endpoint (backwards compat; ignored if Endpoints is set)
+	Endpoints      []string // Ordered list of endpoints to rotate through on failure
 	Collections    []string
 	CursorInterval time.Duration
 	OnPost         PostHandler
@@ -43,8 +59,15 @@ type ConsumerConfig struct {
 }
 
 func (c *ConsumerConfig) setDefaults() {
+	if len(c.Endpoints) == 0 {
+		if c.Endpoint != "" {
+			c.Endpoints = []string{c.Endpoint}
+		} else {
+			c.Endpoints = AllEndpoints
+		}
+	}
 	if c.Endpoint == "" {
-		c.Endpoint = DefaultEndpoint
+		c.Endpoint = c.Endpoints[0]
 	}
 	if len(c.Collections) == 0 {
 		c.Collections = []string{DefaultCollection}
@@ -61,6 +84,11 @@ type Consumer struct {
 	mu     sync.Mutex
 	conn   *websocket.Conn
 	stats  Stats
+
+	// Endpoint rotation state.
+	endpointIdx int       // index into cfg.Endpoints
+	dropTimes   []time.Time // timestamps of recent drops
+	connectedAt time.Time   // when current connection was established
 }
 
 // Stats tracks consumer metrics.
@@ -78,8 +106,14 @@ func NewConsumer(cfg ConsumerConfig) *Consumer {
 	return &Consumer{cfg: cfg}
 }
 
+// ActiveEndpoint returns the currently active endpoint URL.
+func (c *Consumer) ActiveEndpoint() string {
+	return c.cfg.Endpoints[c.endpointIdx]
+}
+
 // Run connects to Jetstream and processes events until ctx is cancelled.
-// It automatically reconnects with exponential backoff on failures.
+// It automatically reconnects with exponential backoff on failures and
+// rotates to alternative endpoints when repeated drops are detected.
 func (c *Consumer) Run(ctx context.Context) error {
 	cursor, err := c.loadInitialCursor(ctx)
 	if err != nil {
@@ -96,6 +130,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 	backoff := initialBackoff
 	for {
+		c.connectedAt = time.Now()
 		err := c.connectAndConsume(ctx)
 		if ctx.Err() != nil {
 			c.persistCursorNow(context.Background())
@@ -103,10 +138,46 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 
 		c.stats.Reconnects.Add(1)
+		now := time.Now()
+
+		// Track this drop and prune old ones outside the window.
+		c.dropTimes = append(c.dropTimes, now)
+		cutoff := now.Add(-rotateDropWindow)
+		pruned := c.dropTimes[:0]
+		for _, t := range c.dropTimes {
+			if t.After(cutoff) {
+				pruned = append(pruned, t)
+			}
+		}
+		c.dropTimes = pruned
+
+		// If we were connected long enough, the endpoint is healthy —
+		// don't count earlier drops against it.
+		if now.Sub(c.connectedAt) >= healthyResetAfter {
+			c.dropTimes = c.dropTimes[len(c.dropTimes)-1:] // keep only latest
+			backoff = initialBackoff
+		}
+
+		rotated := false
+		if len(c.dropTimes) >= rotateAfterDrops && len(c.cfg.Endpoints) > 1 {
+			prev := c.ActiveEndpoint()
+			c.endpointIdx = (c.endpointIdx + 1) % len(c.cfg.Endpoints)
+			c.dropTimes = nil // reset counter for new endpoint
+			backoff = initialBackoff
+			rotated = true
+			slog.Warn("rotating jetstream endpoint due to instability",
+				"from", prev,
+				"to", c.ActiveEndpoint(),
+				"drops_in_window", rotateAfterDrops,
+			)
+		}
+
 		slog.Warn("connection lost, reconnecting",
 			"error", err,
 			"backoff", backoff,
 			"reconnects", c.stats.Reconnects.Load(),
+			"endpoint", c.ActiveEndpoint(),
+			"rotated", rotated,
 		)
 
 		select {
@@ -116,7 +187,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 		case <-time.After(backoff):
 		}
 
-		backoff = time.Duration(math.Min(float64(backoff)*2, float64(maxBackoff)))
+		if !rotated {
+			backoff = time.Duration(math.Min(float64(backoff)*2, float64(maxBackoff)))
+		}
 	}
 }
 
@@ -130,7 +203,7 @@ func (c *Consumer) GetStats() (events, posts, skipped, reconnects, errors int64)
 }
 
 func (c *Consumer) buildURL() string {
-	u, _ := url.Parse(c.cfg.Endpoint)
+	u, _ := url.Parse(c.ActiveEndpoint())
 	q := u.Query()
 	for _, col := range c.cfg.Collections {
 		q.Add("wantedCollections", col)
