@@ -86,9 +86,10 @@ type Consumer struct {
 	stats  Stats
 
 	// Endpoint rotation state.
-	endpointIdx int       // index into cfg.Endpoints
-	dropTimes   []time.Time // timestamps of recent drops
-	connectedAt time.Time   // when current connection was established
+	endpointIdx        int         // index into cfg.Endpoints
+	endpointRotations  atomic.Int64 // count of endpoint rotations
+	dropTimes          []time.Time // timestamps of recent drops
+	connectedAt        time.Time   // when current connection was established (protected by mu)
 }
 
 // Stats tracks consumer metrics.
@@ -98,6 +99,18 @@ type Stats struct {
 	EventsSkipped  atomic.Int64
 	Reconnects     atomic.Int64
 	Errors         atomic.Int64
+}
+
+// StatsReport is an exported snapshot of consumer statistics.
+type StatsReport struct {
+	EventsReceived    int64
+	PostsProcessed    int64
+	EventsSkipped     int64
+	Reconnects        int64
+	Errors            int64
+	EndpointRotations int64
+	ActiveEndpoint    string
+	ConnectionUptime  time.Duration
 }
 
 // NewConsumer creates a new Jetstream consumer.
@@ -130,7 +143,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 	backoff := initialBackoff
 	for {
+		c.mu.Lock()
 		c.connectedAt = time.Now()
+		c.mu.Unlock()
 		err := c.connectAndConsume(ctx)
 		if ctx.Err() != nil {
 			c.persistCursorNow(context.Background())
@@ -153,7 +168,10 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 		// If we were connected long enough, the endpoint is healthy —
 		// don't count earlier drops against it.
-		if now.Sub(c.connectedAt) >= healthyResetAfter {
+		c.mu.Lock()
+		connectedDuration := now.Sub(c.connectedAt)
+		c.mu.Unlock()
+		if connectedDuration >= healthyResetAfter {
 			c.dropTimes = c.dropTimes[len(c.dropTimes)-1:] // keep only latest
 			backoff = initialBackoff
 		}
@@ -162,6 +180,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		if len(c.dropTimes) >= rotateAfterDrops && len(c.cfg.Endpoints) > 1 {
 			prev := c.ActiveEndpoint()
 			c.endpointIdx = (c.endpointIdx + 1) % len(c.cfg.Endpoints)
+			c.endpointRotations.Add(1)
 			c.dropTimes = nil // reset counter for new endpoint
 			backoff = initialBackoff
 			rotated = true
@@ -200,6 +219,37 @@ func (c *Consumer) GetStats() (events, posts, skipped, reconnects, errors int64)
 		c.stats.EventsSkipped.Load(),
 		c.stats.Reconnects.Load(),
 		c.stats.Errors.Load()
+}
+
+// GetStatsReport returns a comprehensive snapshot of consumer statistics.
+func (c *Consumer) GetStatsReport() StatsReport {
+	c.mu.Lock()
+	var uptime time.Duration
+	if !c.connectedAt.IsZero() {
+		uptime = time.Since(c.connectedAt)
+	}
+	c.mu.Unlock()
+
+	return StatsReport{
+		EventsReceived:    c.stats.EventsReceived.Load(),
+		PostsProcessed:    c.stats.PostsProcessed.Load(),
+		EventsSkipped:     c.stats.EventsSkipped.Load(),
+		Reconnects:        c.stats.Reconnects.Load(),
+		Errors:            c.stats.Errors.Load(),
+		EndpointRotations: c.endpointRotations.Load(),
+		ActiveEndpoint:    c.ActiveEndpoint(),
+		ConnectionUptime:  uptime,
+	}
+}
+
+// ConnectionUptime returns the duration since the current connection was established.
+func (c *Consumer) ConnectionUptime() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.connectedAt.IsZero() {
+		return 0
+	}
+	return time.Since(c.connectedAt)
 }
 
 func (c *Consumer) buildURL() string {

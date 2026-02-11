@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -22,16 +21,11 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/jetstream"
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
+	"github.com/christophergentle/hourstats-bsky/internal/stats"
+	"github.com/christophergentle/hourstats-bsky/internal/statsapi"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
-
-// firehosePostCount tracks ALL posts seen from the Jetstream firehose
-// (before the English filter). It is snapshotted and reset each analysis cycle.
-var firehosePostCount atomic.Int64
-
-// lastPostReceived tracks the last time a post was processed from Jetstream.
-var lastPostReceived atomic.Int64
 
 func main() {
 	profile := envOr("HOURSTATS_PROFILE", "staging")
@@ -82,13 +76,31 @@ func main() {
 	defer db.Close()
 	slog.Info("database opened", "path", dbPath)
 
+	// Initialize stats collector
+	collector := stats.New(db)
+	if err := collector.LogEvent(context.Background(), "app_start", fmt.Sprintf("profile=%s pid=%d", profile, os.Getpid())); err != nil {
+		slog.Warn("failed to log app_start event", "error", err)
+	}
+
+	// Start stats HTTP API
+	statsPort := 9111
+	if p := os.Getenv("STATS_PORT"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil {
+			statsPort = parsed
+		}
+	}
+	statsServer := statsapi.New(db, statsPort)
+	if err := statsServer.Start(); err != nil {
+		slog.Error("failed to start stats API", "error", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	go runJetstream(ctx, db, trendingEnabled)
+	go runJetstream(ctx, db, trendingEnabled, collector)
 
 	// Wall-clock aligned tickers: fire at clean UTC clock boundaries
 	// so that deploys/restarts don't shift the schedule.
@@ -119,6 +131,8 @@ func main() {
 		slog.Info("s3 backup enabled", "bucket", s3BackupBucket, "region", s3BackupRegion)
 	}
 
+	statsSnapshotCh := newWallClockTicker(30 * time.Minute)
+
 	stallCheckTicker := time.NewTicker(5 * time.Minute)
 	defer stallCheckTicker.Stop()
 
@@ -134,10 +148,19 @@ func main() {
 		case sig := <-sigCh:
 			slog.Info("received signal, shutting down", "signal", sig)
 			cancel()
+			// Take final snapshot and shut down stats API
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := collector.TakeSnapshot(shutdownCtx); err != nil {
+				slog.Warn("final stats snapshot failed", "error", err)
+			}
+			if err := statsServer.Shutdown(shutdownCtx); err != nil {
+				slog.Warn("stats API shutdown error", "error", err)
+			}
+			shutdownCancel()
 			return
 
 		case <-analysisCh:
-			runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes)
+			runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes, collector)
 
 		case <-backupCh:
 			runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
@@ -168,15 +191,21 @@ func main() {
 				slog.Error("trending post failed", "error", err)
 			}
 
+		case <-statsSnapshotCh:
+			if err := collector.TakeSnapshot(ctx); err != nil {
+				slog.Error("stats snapshot failed", "error", err)
+			}
+
 		case <-stallCheckTicker.C:
-			lastMs := lastPostReceived.Load()
-			if lastMs > 0 {
-				sinceLastPost := time.Since(time.UnixMilli(lastMs))
+			lastPost := collector.LastPostReceived()
+			if !lastPost.IsZero() {
+				sinceLastPost := time.Since(lastPost)
 				if sinceLastPost > 5*time.Minute {
 					slog.Warn("jetstream stall detected: no posts received recently",
 						"last_post_age", sinceLastPost.Round(time.Second),
-						"firehose_total", firehosePostCount.Load(),
+						"firehose_total", collector.GetFirehoseCount(),
 					)
+					_ = collector.LogEvent(ctx, "stall_detected", fmt.Sprintf("last_post_age=%s", time.Since(lastPost).Truncate(time.Second)))
 				}
 			}
 		}
@@ -187,11 +216,10 @@ func main() {
 // Jetstream consumer
 // ---------------------------------------------------------------------------
 
-func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
+func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, collector *stats.Collector) {
 	cfg := jetstream.ConsumerConfig{
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
-			firehosePostCount.Add(1)
-			lastPostReceived.Store(time.Now().UnixMilli())
+			collector.IncrementFirehosePost()
 
 			if strings.TrimSpace(rec.Text) == "" {
 				return
@@ -215,6 +243,8 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
 			if err := db.InsertPost(ctx, post); err != nil {
 				slog.Error("insert post failed", "uri", post.URI, "error", err)
 			}
+
+			collector.IncrementEnglishPost(rec.Reply != nil)
 
 			if trendingEnabled && rec.Reply == nil && !rec.HasAdultContent() {
 				hashtagCount := strings.Count(rec.Text, "#")
@@ -242,10 +272,14 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
 
 	for {
 		consumer := jetstream.NewConsumer(cfg)
+		collector.SetConsumer(consumer)
 		err := consumer.Run(ctx)
+		collector.SetConsumer(nil)
 		if ctx.Err() != nil {
 			return
 		}
+
+		_ = collector.LogEvent(ctx, "connection_drop", fmt.Sprintf("endpoint=%s error=%v", consumer.ActiveEndpoint(), err))
 
 		slog.Error("jetstream consumer exited unexpectedly, will restart",
 			"error", err,
@@ -269,7 +303,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool) {
 // 30-minute analysis cycle
 // ---------------------------------------------------------------------------
 
-func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password string, dryRun bool, analysisMinutes int) {
+func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password string, dryRun bool, analysisMinutes int, collector *stats.Collector) {
 	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102-150405"))
 	slog.Info("analysis cycle starting", "run_id", runID)
 
@@ -351,6 +385,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	overallSentiment, netSentimentPct := calculateOverallSentiment(analyzed)
 	rootSentimentPct, replySentimentPct := calculateSplitSentiment(analyzed)
 
+	collector.RecordAnalysis(len(posts), result.Hydrated, result.Errors, overallSentiment, lowConfidence)
+
 	sort.Slice(analyzed, func(i, j int) bool {
 		return analyzed[i].EngagementScore > analyzed[j].EngagementScore
 	})
@@ -401,7 +437,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		slog.Error("create run failed", "error", err)
 	}
 
-	firehoseSnapshot := int(firehosePostCount.Swap(0))
+	firehoseSnapshot := int(collector.SwapFirehoseCount())
 
 	avgCompound := netSentimentPct / 100.0
 	sdp := store.SentimentDataPoint{
@@ -453,6 +489,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	purged, _ := db.PurgeExpiredPosts(ctx, 2*time.Hour)
 	if purged > 0 {
 		slog.Info("purged expired posts", "count", purged)
+	}
+
+	statsPurged, _ := db.PurgeExpiredStats(ctx, 90*24*time.Hour)
+	if statsPurged > 0 {
+		slog.Info("purged expired stats", "count", statsPurged)
 	}
 
 	slog.Info("analysis cycle complete",

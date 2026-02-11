@@ -18,7 +18,7 @@ type AnalyzerStore interface {
 	GetTopicTokensSinceLimit(ctx context.Context, cutoff string, limit int) ([]store.TopicTokenRow, error)
 	CountTopicTokensSince(ctx context.Context, cutoff string) (int64, error)
 	PurgeTopicTokens(ctx context.Context, cutoff string) (int64, error)
-	InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string, isMeme bool) error
+	InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string, isMeme bool, justification string) error
 	GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]store.TopicSnapshotRow, error)
 	PurgeTopicSnapshots(ctx context.Context, cutoff string) (int64, error)
 	UpdateSnapshotExemplar(ctx context.Context, snapshotID int64, exemplarURI, exemplarHandle string) error
@@ -115,7 +115,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		kwJSON, _ := json.Marshal(topic.Cluster.Keywords)
 		if err := a.store.InsertTopicSnapshot(ctx, now, topic.Rank, topic.TopicID,
 			topic.Cluster.Label, topic.Cluster.Description, topic.PostCount,
-			string(kwJSON), "", "", topic.Cluster.IsMeme); err != nil {
+			string(kwJSON), "", "", topic.Cluster.IsMeme, topic.Cluster.Justification); err != nil {
 			return fmt.Errorf("insert snapshot: %w", err)
 		}
 	}

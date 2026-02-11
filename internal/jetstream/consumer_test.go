@@ -288,3 +288,82 @@ func TestRealJetstreamEvent_FullParse(t *testing.T) {
 		t.Errorf("Text = %q", rec.Text)
 	}
 }
+
+func TestConsumer_GetStatsReport(t *testing.T) {
+	eps := []string{
+		"wss://a.example.com/subscribe",
+		"wss://b.example.com/subscribe",
+	}
+	c := NewConsumer(ConsumerConfig{
+		Endpoints:   eps,
+		Collections: []string{"app.bsky.feed.post"},
+	})
+
+	// Get initial stats report - should have zero values
+	report := c.GetStatsReport()
+
+	if report.EventsReceived != 0 {
+		t.Errorf("EventsReceived = %d, want 0", report.EventsReceived)
+	}
+	if report.PostsProcessed != 0 {
+		t.Errorf("PostsProcessed = %d, want 0", report.PostsProcessed)
+	}
+	if report.EventsSkipped != 0 {
+		t.Errorf("EventsSkipped = %d, want 0", report.EventsSkipped)
+	}
+	if report.Reconnects != 0 {
+		t.Errorf("Reconnects = %d, want 0", report.Reconnects)
+	}
+	if report.Errors != 0 {
+		t.Errorf("Errors = %d, want 0", report.Errors)
+	}
+	if report.EndpointRotations != 0 {
+		t.Errorf("EndpointRotations = %d, want 0", report.EndpointRotations)
+	}
+	if report.ActiveEndpoint != eps[0] {
+		t.Errorf("ActiveEndpoint = %q, want %q", report.ActiveEndpoint, eps[0])
+	}
+	if report.ConnectionUptime != 0 {
+		t.Errorf("ConnectionUptime = %v, want 0", report.ConnectionUptime)
+	}
+
+	// Simulate some activity
+	c.stats.EventsReceived.Add(100)
+	c.stats.PostsProcessed.Add(50)
+	c.stats.EventsSkipped.Add(30)
+	c.stats.Reconnects.Add(2)
+	c.stats.Errors.Add(5)
+	c.endpointRotations.Add(1)
+
+	// Set connection time to simulate uptime
+	c.mu.Lock()
+	c.connectedAt = time.Now().Add(-5 * time.Second)
+	c.mu.Unlock()
+
+	report = c.GetStatsReport()
+
+	if report.EventsReceived != 100 {
+		t.Errorf("EventsReceived = %d, want 100", report.EventsReceived)
+	}
+	if report.PostsProcessed != 50 {
+		t.Errorf("PostsProcessed = %d, want 50", report.PostsProcessed)
+	}
+	if report.EventsSkipped != 30 {
+		t.Errorf("EventsSkipped = %d, want 30", report.EventsSkipped)
+	}
+	if report.Reconnects != 2 {
+		t.Errorf("Reconnects = %d, want 2", report.Reconnects)
+	}
+	if report.Errors != 5 {
+		t.Errorf("Errors = %d, want 5", report.Errors)
+	}
+	if report.EndpointRotations != 1 {
+		t.Errorf("EndpointRotations = %d, want 1", report.EndpointRotations)
+	}
+	if report.ActiveEndpoint != eps[0] {
+		t.Errorf("ActiveEndpoint = %q, want %q", report.ActiveEndpoint, eps[0])
+	}
+	if report.ConnectionUptime < 4*time.Second || report.ConnectionUptime > 6*time.Second {
+		t.Errorf("ConnectionUptime = %v, want ~5s", report.ConnectionUptime)
+	}
+}
