@@ -39,28 +39,32 @@ type TopicIdentityRow struct {
 }
 
 func (s *Store) InsertTopicTokens(ctx context.Context, postURI, tokensJSON, createdAt string) error {
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin topic token tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO topic_tokens (post_uri, tokens, created_at) VALUES (?, ?, ?)`,
 		postURI, tokensJSON, createdAt,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("insert topic_tokens: %w", err)
 	}
 
-	// Dual-write: denormalize tokens into token_postings for fast exemplar lookups.
 	var tokens []string
 	if err := json.Unmarshal([]byte(tokensJSON), &tokens); err != nil {
-		return nil // non-fatal: topic_tokens row already written
+		return tx.Commit()
 	}
 	for _, tok := range tokens {
-		if _, err := s.db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO token_postings (token, post_uri, created_at) VALUES (?, ?, ?)`,
 			tok, postURI, createdAt,
 		); err != nil {
 			return fmt.Errorf("insert token_postings: %w", err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) GetTopicTokensSince(ctx context.Context, cutoff string) ([]TopicTokenRow, error) {
@@ -121,18 +125,14 @@ func (s *Store) CountTopicTokensSince(ctx context.Context, cutoff string) (int64
 }
 
 func (s *Store) PurgeTopicTokens(ctx context.Context, cutoff string) (int64, error) {
-	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM topic_tokens WHERE created_at < ?`, cutoff,
-	)
+	total, err := purgeInChunks(ctx, s.db, `DELETE FROM topic_tokens WHERE rowid IN (SELECT rowid FROM topic_tokens WHERE created_at < ? LIMIT 1000)`, cutoff)
 	if err != nil {
-		return 0, fmt.Errorf("purge topic_tokens: %w", err)
+		return total, fmt.Errorf("purge topic_tokens: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM token_postings WHERE created_at < ?`, cutoff,
-	); err != nil {
-		return 0, fmt.Errorf("purge token_postings: %w", err)
+	if _, err := purgeInChunks(ctx, s.db, `DELETE FROM token_postings WHERE rowid IN (SELECT rowid FROM token_postings WHERE created_at < ? LIMIT 1000)`, cutoff); err != nil {
+		return total, fmt.Errorf("purge token_postings: %w", err)
 	}
-	return result.RowsAffected()
+	return total, nil
 }
 
 // ExemplarCandidate is a post matched by keyword with engagement from post_buffer.

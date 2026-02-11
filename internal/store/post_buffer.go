@@ -134,15 +134,11 @@ func (s *Store) UpdatePostEngagement(ctx context.Context, uri string, likes, rep
 	return nil
 }
 
-// PurgeExpiredPosts deletes posts older than olderThan and returns the count removed.
+// PurgeExpiredPosts deletes posts older than olderThan in chunks, returning the count removed.
 func (s *Store) PurgeExpiredPosts(ctx context.Context, olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().UTC().Add(-olderThan)
-	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM post_buffer WHERE inserted_at < ?`,
-		timeToStr(cutoff),
+	cutoff := timeToStr(time.Now().UTC().Add(-olderThan))
+	return purgeInChunks(ctx, s.db,
+		`DELETE FROM post_buffer WHERE rowid IN (SELECT rowid FROM post_buffer WHERE inserted_at < ? LIMIT 1000)`,
+		cutoff,
 	)
-	if err != nil {
-		return 0, fmt.Errorf("purge posts: %w", err)
-	}
-	return result.RowsAffected()
 }

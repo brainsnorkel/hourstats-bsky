@@ -268,6 +268,7 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (token, post_uri)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_token_postings_token_created ON token_postings(token, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_token_postings_created_at ON token_postings(created_at)`,
 
 		`CREATE TABLE IF NOT EXISTS stats_snapshots (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -314,6 +315,31 @@ func (s *Store) migrate() error {
 		}
 	}
 	return nil
+}
+
+// purgeInChunks deletes rows matching query in batches of 1000, yielding
+// briefly between chunks so other writers can acquire the lock.
+// The query MUST contain a LIMIT clause (e.g. "DELETE FROM t WHERE rowid IN
+// (SELECT rowid FROM t WHERE ... LIMIT 1000)").
+func purgeInChunks(ctx context.Context, db *sql.DB, query string, args ...any) (int64, error) {
+	var total int64
+	for {
+		if ctx.Err() != nil {
+			return total, ctx.Err()
+		}
+		result, err := db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return total, err
+		}
+		n, _ := result.RowsAffected()
+		total += n
+		if n < 1000 {
+			break
+		}
+		// Yield briefly to let firehose batch writes through.
+		time.Sleep(10 * time.Millisecond)
+	}
+	return total, nil
 }
 
 // timeToStr formats a time.Time as RFC3339 in UTC.

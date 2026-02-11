@@ -100,7 +100,9 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	go runJetstream(ctx, db, trendingEnabled, collector)
+	writeCh := make(chan store.PendingWrite, 10000)
+	go runWriteFlusher(ctx, db, writeCh, collector)
+	go runJetstream(ctx, db, trendingEnabled, collector, writeCh)
 
 	// Wall-clock aligned tickers: fire at clean UTC clock boundaries
 	// so that deploys/restarts don't shift the schedule.
@@ -216,7 +218,7 @@ func main() {
 // Jetstream consumer
 // ---------------------------------------------------------------------------
 
-func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, collector *stats.Collector) {
+func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, collector *stats.Collector, writeCh chan<- store.PendingWrite) {
 	cfg := jetstream.ConsumerConfig{
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
 			collector.IncrementFirehosePost()
@@ -240,23 +242,28 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 				CreatedAt: createdAt,
 				IsReply:   rec.Reply != nil,
 			}
-			if err := db.InsertPost(ctx, post); err != nil {
-				slog.Error("insert post failed", "uri", post.URI, "error", err)
-			}
 
 			collector.IncrementEnglishPost(rec.Reply != nil)
 
+			pw := store.PendingWrite{
+				Post:      post,
+				CreatedAt: createdAt,
+			}
 			if trendingEnabled && rec.Reply == nil && !rec.HasAdultContent() {
 				hashtagCount := strings.Count(rec.Text, "#")
 				if hashtagCount <= 1 {
 					toks := topics.Tokenize(rec.Text)
 					if len(toks) > 0 {
 						tokJSON, _ := json.Marshal(toks)
-						if err := db.InsertTopicTokens(ctx, post.URI, string(tokJSON), createdAt); err != nil {
-							slog.Warn("insert topic tokens failed", "uri", post.URI, "error", err)
-						}
+						pw.TokensJSON = string(tokJSON)
 					}
 				}
+			}
+
+			select {
+			case writeCh <- pw:
+			default:
+				slog.Warn("write buffer full, dropping post", "uri", post.URI)
 			}
 		},
 		SaveCursor: func(saveCtx context.Context, cursor int64) error {
@@ -295,6 +302,59 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Write buffer flusher — batches firehose writes to reduce SQLite contention
+// ---------------------------------------------------------------------------
+
+func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.PendingWrite, collector *stats.Collector) {
+	const (
+		maxBatch  = 500
+		flushFreq = 2 * time.Second
+	)
+	ticker := time.NewTicker(flushFreq)
+	defer ticker.Stop()
+
+	batch := make([]store.PendingWrite, 0, maxBatch)
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := db.FlushWriteBatch(ctx, batch); err != nil {
+			slog.Error("flush write batch failed", "batch_size", len(batch), "error", err)
+			_ = collector.LogEvent(ctx, "batch_flush_error", fmt.Sprintf("size=%d err=%v", len(batch), err))
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case w, ok := <-ch:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, w)
+			if len(batch) >= maxBatch {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-ctx.Done():
+			// Drain remaining items from channel before exiting
+			for {
+				select {
+				case w := <-ch:
+					batch = append(batch, w)
+				default:
+					flush()
+					return
+				}
+			}
 		}
 	}
 }
@@ -480,10 +540,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		}
 
 		rootURI, rootCID := postedURI, postedCID
-		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
-		if sparkURI != "" {
-			postSentimentTrendline(ctx, db, bskyClient, rootURI, rootCID, sparkURI, sparkCID, dryRun)
-		}
+		postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
 	}
 
 	purged, _ := db.PurgeExpiredPosts(ctx, 7*time.Hour)
@@ -548,63 +605,6 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 	}
 	slog.Info("sparkline posted", "points", len(history))
 	return sparkURI, sparkCID
-}
-
-func postSentimentTrendline(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, rootURI, rootCID, parentURI, parentCID string, dryRun bool) (string, string) {
-	history, err := db.GetSentimentHistory(ctx, 7*24*time.Hour)
-	if err != nil {
-		slog.Error("get sentiment history for trendline failed", "error", err)
-		return "", ""
-	}
-
-	var withSplitData []store.SentimentDataPoint
-	for _, dp := range history {
-		if dp.RootSentimentPct != 0 || dp.ReplySentimentPct != 0 {
-			withSplitData = append(withSplitData, dp)
-		}
-	}
-	if len(withSplitData) < 2 {
-		slog.Info("insufficient split sentiment data for trendline", "points", len(withSplitData))
-		return "", ""
-	}
-
-	gen := sparkline.NewSentimentTrendlineGenerator(nil)
-	imgData, err := gen.GenerateSentimentTrendline(withSplitData)
-	if err != nil {
-		slog.Error("generate sentiment trendline failed", "error", err)
-		return "", ""
-	}
-
-	var rootSum, replySum float64
-	for _, dp := range withSplitData {
-		rootSum += dp.RootSentimentPct
-		replySum += dp.ReplySentimentPct
-	}
-	n := float64(len(withSplitData))
-	rootAvg := rootSum / n
-	replyAvg := replySum / n
-
-	postText := fmt.Sprintf("Seven day original post vs reply sentiment\nOriginal post average: %.1f%%\nReply post average: %.1f%%", rootAvg, replyAvg)
-	altText := fmt.Sprintf("Seven day sentiment trendline. Original posts average: %.1f%%. Replies average: %.1f%%.",
-		rootAvg, replyAvg)
-
-	if dryRun {
-		slog.Info("DRY_RUN: would post sentiment trendline", "points", len(withSplitData), "image_bytes", len(imgData))
-		return "", ""
-	}
-
-	var trendURI, trendCID string
-	if parentURI != "" && parentCID != "" {
-		trendURI, trendCID, err = bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, rootURI, rootCID, parentURI, parentCID)
-		if err != nil {
-			slog.Warn("sentiment trendline reply failed, posting standalone", "error", err)
-			trendURI, trendCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
-		}
-	} else {
-		trendURI, trendCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
-	}
-	slog.Info("sentiment trendline posted", "points", len(withSplitData))
-	return trendURI, trendCID
 }
 
 func generateSparklineAltText(points []state.SentimentDataPoint) string {
