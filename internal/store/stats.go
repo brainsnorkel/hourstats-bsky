@@ -41,6 +41,78 @@ type StatsEvent struct {
 	Details   string    `json:"details"`
 }
 
+// PostingEntry describes the last time a particular post type was made.
+type PostingEntry struct {
+	LastPosted string `json:"last_posted"`
+	Summary    string `json:"summary"`
+	URI        string `json:"uri,omitempty"`
+}
+
+// PostingActivity aggregates the most recent posting times for each post type.
+type PostingActivity struct {
+	SentimentSummary *PostingEntry `json:"sentiment_summary"`
+	YearlyChart      *PostingEntry `json:"yearly_chart"`
+	DailyQuote       *PostingEntry `json:"daily_quote"`
+	TrendingTopics   *PostingEntry `json:"trending_topics"`
+}
+
+// GetPostingActivity assembles posting activity from multiple tables.
+func (s *Store) GetPostingActivity(ctx context.Context) (*PostingActivity, error) {
+	pa := &PostingActivity{}
+
+	// 1. Sentiment summary — latest completed run
+	run, err := s.GetLatestCompletedRun(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("posting activity: %w", err)
+	}
+	if run != nil {
+		pa.SentimentSummary = &PostingEntry{
+			LastPosted: timeToStr(run.CreatedAt),
+			Summary:    fmt.Sprintf("%s (%.1f%%), %d posts", run.OverallSentiment, run.NetSentimentPercentage, run.TotalPostsRetrieved),
+			URI:        run.TopPostURI,
+		}
+	}
+
+	// 2. Yearly chart — key_value "yearly_post_uri"
+	yearlyEntry, err := s.GetKeyValueWithTimestamp(ctx, "yearly_post_uri")
+	if err != nil {
+		return nil, fmt.Errorf("posting activity: %w", err)
+	}
+	if yearlyEntry != nil {
+		pa.YearlyChart = &PostingEntry{
+			LastPosted: yearlyEntry.UpdatedAt,
+			Summary:    "Yearly sentiment chart",
+			URI:        yearlyEntry.Value,
+		}
+	}
+
+	// 3. Daily quote — key_value "daily_quote_last_date"
+	quoteEntry, err := s.GetKeyValueWithTimestamp(ctx, "daily_quote_last_date")
+	if err != nil {
+		return nil, fmt.Errorf("posting activity: %w", err)
+	}
+	if quoteEntry != nil {
+		pa.DailyQuote = &PostingEntry{
+			LastPosted: quoteEntry.UpdatedAt,
+			Summary:    fmt.Sprintf("Top post quote for %s", quoteEntry.Value),
+		}
+	}
+
+	// 4. Trending topics — latest topic snapshot
+	snapshotTime, topicCount, err := s.GetLatestTopicSnapshotTime(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("posting activity: %w", err)
+	}
+	if snapshotTime != "" {
+		pa.TrendingTopics = &PostingEntry{
+			LastPosted: snapshotTime,
+			Summary:    fmt.Sprintf("%d trending topics", topicCount),
+		}
+	}
+
+	return pa, nil
+}
+
 // InsertStatsSnapshot inserts a new stats snapshot record.
 func (s *Store) InsertStatsSnapshot(ctx context.Context, snap *StatsSnapshot) error {
 	result, err := s.db.ExecContext(ctx,
