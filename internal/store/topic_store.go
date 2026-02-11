@@ -39,7 +39,7 @@ type TopicIdentityRow struct {
 }
 
 func (s *Store) InsertTopicTokens(ctx context.Context, postURI, tokensJSON, createdAt string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin topic token tx: %w", err)
 	}
@@ -96,7 +96,7 @@ func (s *Store) GetTopicTokensSinceLimit(ctx context.Context, cutoff string, lim
 			ORDER BY tt.created_at ASC`
 		args = []any{cutoff}
 	}
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query topic_tokens: %w", err)
 	}
@@ -115,7 +115,7 @@ func (s *Store) GetTopicTokensSinceLimit(ctx context.Context, cutoff string, lim
 
 func (s *Store) CountTopicTokensSince(ctx context.Context, cutoff string) (int64, error) {
 	var count int64
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM topic_tokens WHERE created_at >= ?`, cutoff,
 	).Scan(&count)
 	if err != nil {
@@ -125,11 +125,11 @@ func (s *Store) CountTopicTokensSince(ctx context.Context, cutoff string) (int64
 }
 
 func (s *Store) PurgeTopicTokens(ctx context.Context, cutoff string) (int64, error) {
-	total, err := purgeInChunks(ctx, s.db, `DELETE FROM topic_tokens WHERE rowid IN (SELECT rowid FROM topic_tokens WHERE created_at < ? LIMIT 1000)`, cutoff)
+	total, err := purgeInChunks(ctx, s.writeDB, `DELETE FROM topic_tokens WHERE rowid IN (SELECT rowid FROM topic_tokens WHERE created_at < ? LIMIT 1000)`, cutoff)
 	if err != nil {
 		return total, fmt.Errorf("purge topic_tokens: %w", err)
 	}
-	if _, err := purgeInChunks(ctx, s.db, `DELETE FROM token_postings WHERE rowid IN (SELECT rowid FROM token_postings WHERE created_at < ? LIMIT 1000)`, cutoff); err != nil {
+	if _, err := purgeInChunks(ctx, s.writeDB, `DELETE FROM token_postings WHERE rowid IN (SELECT rowid FROM token_postings WHERE created_at < ? LIMIT 1000)`, cutoff); err != nil {
 		return total, fmt.Errorf("purge token_postings: %w", err)
 	}
 	return total, nil
@@ -169,7 +169,7 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 		strings.Join(placeholders, ","),
 	)
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.readDB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query exemplar candidates: %w", err)
 	}
@@ -191,7 +191,7 @@ func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, ra
 	if isMeme {
 		isMemeInt = 1
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO topic_snapshots (snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle, is_meme, justification)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		snapshotTime, rank, topicID, label, description, postCount, keywordsJSON, exemplarURI, exemplarHandle, isMemeInt, justification,
@@ -203,7 +203,7 @@ func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, ra
 }
 
 func (s *Store) GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]TopicSnapshotRow, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT id, snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle, is_meme, COALESCE(justification, '') as justification
 		 FROM topic_snapshots WHERE snapshot_time >= ? ORDER BY snapshot_time ASC, rank ASC`,
 		cutoff,
@@ -227,7 +227,7 @@ func (s *Store) GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]To
 }
 
 func (s *Store) GetRecentTopicSnapshots(ctx context.Context, since string, limit int) ([]TopicSnapshotRow, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT id, snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle, is_meme, COALESCE(justification, '') as justification
 		 FROM topic_snapshots WHERE snapshot_time >= ? ORDER BY snapshot_time DESC, rank ASC LIMIT ?`,
 		since, limit,
@@ -251,7 +251,7 @@ func (s *Store) GetRecentTopicSnapshots(ctx context.Context, since string, limit
 }
 
 func (s *Store) PurgeTopicSnapshots(ctx context.Context, cutoff string) (int64, error) {
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.writeDB.ExecContext(ctx,
 		`DELETE FROM topic_snapshots WHERE snapshot_time < ?`, cutoff,
 	)
 	if err != nil {
@@ -261,7 +261,7 @@ func (s *Store) PurgeTopicSnapshots(ctx context.Context, cutoff string) (int64, 
 }
 
 func (s *Store) UpdateSnapshotExemplar(ctx context.Context, snapshotID int64, exemplarURI, exemplarHandle string) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`UPDATE topic_snapshots SET exemplar_uri=?, exemplar_handle=? WHERE id=?`,
 		exemplarURI, exemplarHandle, snapshotID,
 	)
@@ -272,7 +272,7 @@ func (s *Store) UpdateSnapshotExemplar(ctx context.Context, snapshotID int64, ex
 }
 
 func (s *Store) UpsertTopicIdentity(ctx context.Context, topicID, label, keywordsJSON, firstSeen, lastSeen string, peakRank int) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO topic_identity (topic_id, canonical_label, keywords, first_seen, last_seen, peak_rank)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(topic_id) DO UPDATE SET
@@ -289,7 +289,7 @@ func (s *Store) UpsertTopicIdentity(ctx context.Context, topicID, label, keyword
 }
 
 func (s *Store) GetRecentTopicIdentities(ctx context.Context, cutoff string) ([]TopicIdentityRow, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT topic_id, canonical_label, keywords, first_seen, last_seen, peak_rank
 		 FROM topic_identity WHERE last_seen >= ? ORDER BY last_seen DESC`,
 		cutoff,
@@ -315,7 +315,7 @@ func (s *Store) GetRecentTopicIdentities(ctx context.Context, cutoff string) ([]
 func (s *Store) GetLatestTopicSnapshotTime(ctx context.Context) (string, int, error) {
 	var snapshotTime string
 	var count int
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT snapshot_time, COUNT(*) FROM topic_snapshots
 		 GROUP BY snapshot_time ORDER BY snapshot_time DESC LIMIT 1`,
 	).Scan(&snapshotTime, &count)
@@ -329,7 +329,7 @@ func (s *Store) GetLatestTopicSnapshotTime(ctx context.Context) (string, int, er
 }
 
 func (s *Store) PurgeTopicIdentities(ctx context.Context, cutoff string) (int64, error) {
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.writeDB.ExecContext(ctx,
 		`DELETE FROM topic_identity WHERE last_seen < ?`, cutoff,
 	)
 	if err != nil {

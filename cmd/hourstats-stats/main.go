@@ -45,9 +45,10 @@ type Event struct {
 }
 
 type PostingEntry struct {
-	LastPosted string `json:"last_posted"`
-	Summary    string `json:"summary"`
-	URI        string `json:"uri,omitempty"`
+	LastPosted      string `json:"last_posted"`
+	Summary         string `json:"summary"`
+	URI             string `json:"uri,omitempty"`
+	NextAnticipated string `json:"next_anticipated,omitempty"`
 }
 
 type PostingActivity struct {
@@ -474,7 +475,29 @@ func printPostingEntry(label string, entry *PostingEntry) {
 		fmt.Printf("%-14s (no data)\n", label+":")
 		return
 	}
-	fmt.Printf("%-14s %-12s  %s\n", label+":", formatAge(entry.LastPosted), entry.Summary)
+	age := formatAge(entry.LastPosted)
+	next := ""
+	if entry.NextAnticipated != "" {
+		next = " (next: " + formatCountdown(entry.NextAnticipated) + ")"
+	}
+	fmt.Printf("%-14s %-12s  %s%s\n", label+":", age, entry.Summary, next)
+}
+
+func formatCountdown(timestamp string) string {
+	parsed, err := time.Parse("2006-01-02T15:04:05Z", timestamp)
+	if err != nil {
+		return timestamp
+	}
+	d := time.Until(parsed)
+	if d <= 0 {
+		return "now"
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
 }
 
 func abbreviateEndpoint(endpoint string) string {

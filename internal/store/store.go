@@ -14,10 +14,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Store wraps a SQLite database connection with all hourstats storage operations.
+// Store wraps separate read and write SQLite connection pools for hourstats.
+// The write pool is limited to 1 connection to serialize writes at the Go level,
+// while the read pool allows up to 4 concurrent readers via WAL mode.
 type Store struct {
-	db     *sql.DB
-	dbPath string
+	readDB  *sql.DB
+	writeDB *sql.DB
+	dbPath  string
 }
 
 // Post represents a Bluesky post in the buffer.
@@ -108,42 +111,59 @@ type WeeklyPostTotal struct {
 	TotalFirehosePosts int
 }
 
-// New opens (or creates) a SQLite database at dbPath, enables WAL mode,
-// and runs schema migrations.
+// New opens (or creates) a SQLite database at dbPath with separate read/write pools.
 func New(dbPath string) (*Store, error) {
-	params := url.Values{}
-	params.Add("_pragma", "busy_timeout(30000)")
-	params.Add("_pragma", "journal_mode(WAL)")
-	params.Add("_pragma", "synchronous(NORMAL)")
-	params.Add("_pragma", "foreign_keys(ON)")
-	dsn := fmt.Sprintf("file:%s?%s", dbPath, params.Encode())
+	writeParams := url.Values{}
+	writeParams.Add("_pragma", "busy_timeout(30000)")
+	writeParams.Add("_pragma", "journal_mode(WAL)")
+	writeParams.Add("_pragma", "synchronous(NORMAL)")
+	writeParams.Add("_pragma", "foreign_keys(ON)")
+	writeDSN := fmt.Sprintf("file:%s?%s", dbPath, writeParams.Encode())
 
-	db, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open("sqlite", writeDSN)
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return nil, fmt.Errorf("open write db: %w", err)
 	}
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
 
-	// Limit connection pool to reduce SQLite write contention.
-	// WAL mode allows concurrent reads, but only one writer at a time.
-	db.SetMaxOpenConns(2)
-	db.SetMaxIdleConns(2)
+	readParams := url.Values{}
+	readParams.Add("_pragma", "busy_timeout(30000)")
+	readParams.Add("_pragma", "journal_mode(WAL)")
+	readParams.Add("_pragma", "foreign_keys(ON)")
+	readParams.Add("_pragma", "query_only(ON)")
+	readDSN := fmt.Sprintf("file:%s?%s", dbPath, readParams.Encode())
 
-	s := &Store{db: db, dbPath: dbPath}
+	readDB, err := sql.Open("sqlite", readDSN)
+	if err != nil {
+		writeDB.Close()
+		return nil, fmt.Errorf("open read db: %w", err)
+	}
+	readDB.SetMaxOpenConns(4)
+	readDB.SetMaxIdleConns(4)
+
+	s := &Store{readDB: readDB, writeDB: writeDB, dbPath: dbPath}
 	if err := s.migrate(); err != nil {
-		db.Close()
+		writeDB.Close()
+		readDB.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return s, nil
 }
 
-// Close closes the underlying database connection.
+// Close closes both underlying database connections.
 func (s *Store) Close() error {
-	return s.db.Close()
+	wErr := s.writeDB.Close()
+	rErr := s.readDB.Close()
+	if wErr != nil {
+		return wErr
+	}
+	return rErr
 }
 
-// DB returns the underlying *sql.DB for advanced use cases.
+// DB returns the read pool for external callers (e.g. statsapi).
 func (s *Store) DB() *sql.DB {
-	return s.db
+	return s.readDB
 }
 
 func (s *Store) migrate() error {
@@ -303,10 +323,12 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_stats_events_time ON stats_events(event_time)`,
 		`CREATE INDEX IF NOT EXISTS idx_stats_events_type ON stats_events(event_type)`,
+
+		`ALTER TABLE stats_snapshots ADD COLUMN dropped_posts INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, stmt := range stmts {
-		if _, err := s.db.Exec(stmt); err != nil {
+		if _, err := s.writeDB.Exec(stmt); err != nil {
 			// ALTER TABLE fails with "duplicate column" on repeat runs — safe to ignore.
 			if strings.Contains(err.Error(), "duplicate column") {
 				continue
@@ -327,7 +349,12 @@ func purgeInChunks(ctx context.Context, db *sql.DB, query string, args ...any) (
 		if ctx.Err() != nil {
 			return total, ctx.Err()
 		}
-		result, err := db.ExecContext(ctx, query, args...)
+		var result sql.Result
+		err := withRetry(ctx, func() error {
+			var execErr error
+			result, execErr = db.ExecContext(ctx, query, args...)
+			return execErr
+		})
 		if err != nil {
 			return total, err
 		}
@@ -336,7 +363,6 @@ func purgeInChunks(ctx context.Context, db *sql.DB, query string, args ...any) (
 		if n < 1000 {
 			break
 		}
-		// Yield briefly to let firehose batch writes through.
 		time.Sleep(10 * time.Millisecond)
 	}
 	return total, nil
@@ -374,6 +400,28 @@ func unmarshalPosts(data string) []Post {
 // nowUTC returns the current UTC time string.
 func nowUTC() string {
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+func withRetry(ctx context.Context, fn func() error) error {
+	backoffs := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
+	var lastErr error
+	for i := 0; i <= len(backoffs); i++ {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+		if !strings.Contains(lastErr.Error(), "database is locked") {
+			return lastErr
+		}
+		if i < len(backoffs) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoffs[i]):
+			}
+		}
+	}
+	return lastErr
 }
 
 // Ensure context is used (import guard).

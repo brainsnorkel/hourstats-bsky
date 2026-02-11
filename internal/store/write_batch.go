@@ -13,20 +13,32 @@ type PendingWrite struct {
 	CreatedAt  string
 }
 
-// FlushWriteBatch inserts all pending writes in a single transaction.
-// Posts go to post_buffer (upsert), tokens to topic_tokens + token_postings.
+// FlushWriteBatch inserts posts then tokens in separate transactions so that
+// a SQLITE_BUSY on the token transaction does not discard post data.
 func (s *Store) FlushWriteBatch(ctx context.Context, writes []PendingWrite) error {
 	if len(writes) == 0 {
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	if err := s.FlushPostBatch(ctx, writes); err != nil {
+		return err
+	}
+	return s.FlushTokenBatch(ctx, writes)
+}
+
+// FlushPostBatch inserts posts into post_buffer in a single transaction.
+func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) error {
+	if len(writes) == 0 {
+		return nil
+	}
+
+	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin batch tx: %w", err)
+		return fmt.Errorf("begin post batch tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	postStmt, err := tx.PrepareContext(ctx, `INSERT INTO post_buffer (uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, inserted_at, is_reply)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO post_buffer (uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, inserted_at, is_reply)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(uri) DO UPDATE SET
 			cid=excluded.cid,
@@ -42,7 +54,42 @@ func (s *Store) FlushWriteBatch(ctx context.Context, writes []PendingWrite) erro
 	if err != nil {
 		return fmt.Errorf("prepare post stmt: %w", err)
 	}
-	defer postStmt.Close()
+	defer stmt.Close()
+
+	now := nowUTC()
+	for _, w := range writes {
+		isReply := 0
+		if w.Post.IsReply {
+			isReply = 1
+		}
+		if _, err := stmt.ExecContext(ctx, w.Post.URI, w.Post.CID, w.Post.Text, w.Post.AuthorDID, w.Post.AuthorHandle,
+			w.Post.Likes, w.Post.Reposts, w.Post.Replies, w.Post.Sentiment, w.Post.EngagementScore,
+			w.Post.CreatedAt, now, isReply); err != nil {
+			return fmt.Errorf("insert post %s: %w", w.Post.URI, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// FlushTokenBatch inserts topic tokens and token postings in a single transaction.
+func (s *Store) FlushTokenBatch(ctx context.Context, writes []PendingWrite) error {
+	hasTokens := false
+	for _, w := range writes {
+		if w.TokensJSON != "" {
+			hasTokens = true
+			break
+		}
+	}
+	if !hasTokens {
+		return nil
+	}
+
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin token batch tx: %w", err)
+	}
+	defer tx.Rollback()
 
 	tokenStmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO topic_tokens (post_uri, tokens, created_at) VALUES (?, ?, ?)`)
 	if err != nil {
@@ -56,18 +103,7 @@ func (s *Store) FlushWriteBatch(ctx context.Context, writes []PendingWrite) erro
 	}
 	defer postingStmt.Close()
 
-	now := nowUTC()
 	for _, w := range writes {
-		isReply := 0
-		if w.Post.IsReply {
-			isReply = 1
-		}
-		if _, err := postStmt.ExecContext(ctx, w.Post.URI, w.Post.CID, w.Post.Text, w.Post.AuthorDID, w.Post.AuthorHandle,
-			w.Post.Likes, w.Post.Reposts, w.Post.Replies, w.Post.Sentiment, w.Post.EngagementScore,
-			w.Post.CreatedAt, now, isReply); err != nil {
-			return fmt.Errorf("insert post %s: %w", w.Post.URI, err)
-		}
-
 		if w.TokensJSON == "" {
 			continue
 		}

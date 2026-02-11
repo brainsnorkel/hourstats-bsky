@@ -11,7 +11,7 @@ func (s *Store) StoreSentimentDataPoint(ctx context.Context, dp SentimentDataPoi
 	now := nowUTC()
 	ttl := time.Now().UTC().Add(8 * 24 * time.Hour).Unix() // 8 days TTL
 
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO sentiment_history (run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, root_sentiment_pct, reply_sentiment_pct, created_at, ttl)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(run_id, timestamp) DO UPDATE SET
@@ -38,7 +38,7 @@ func (s *Store) StoreSentimentDataPoint(ctx context.Context, dp SentimentDataPoi
 func (s *Store) GetSentimentHistory(ctx context.Context, duration time.Duration) ([]SentimentDataPoint, error) {
 	since := time.Now().UTC().Add(-duration)
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, root_sentiment_pct, reply_sentiment_pct, created_at, ttl
 		 FROM sentiment_history
 		 WHERE timestamp >= ?
@@ -73,7 +73,7 @@ func (s *Store) GetDailyPostCounts(ctx context.Context, duration time.Duration) 
 	since := time.Now().UTC().Add(-duration)
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT strftime('%Y-%m-%d', timestamp) AS day_bucket,
 		        SUM(total_posts) AS total,
 		        SUM(total_firehose_posts) AS total_firehose
@@ -104,7 +104,7 @@ func (s *Store) GetDailyPostCounts(ctx context.Context, duration time.Duration) 
 // PurgeExpiredSentimentHistory deletes sentiment records older than olderThan.
 func (s *Store) PurgeExpiredSentimentHistory(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.writeDB.ExecContext(ctx,
 		`DELETE FROM sentiment_history WHERE timestamp < ?`,
 		timeToStr(cutoff),
 	)

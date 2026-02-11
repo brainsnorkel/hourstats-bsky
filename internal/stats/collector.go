@@ -37,6 +37,9 @@ type Collector struct {
 	firehosePosts    atomic.Int64
 	lastPostReceived atomic.Int64 // Unix timestamp of last post received
 
+	// Dropped-post counter — incremented when the write buffer is full
+	droppedPosts atomic.Int64
+
 	// Last-seen cumulative values for delta computation (NOT atomic — only read/written in TakeSnapshot)
 	lastSeen struct {
 		eventsReceived    int64
@@ -114,6 +117,16 @@ func (c *Collector) LastPostReceived() time.Time {
 	return time.Unix(ts, 0)
 }
 
+// IncrementDroppedPosts adds n to the dropped-post counter.
+func (c *Collector) IncrementDroppedPosts(n int) {
+	c.droppedPosts.Add(int64(n))
+}
+
+// SwapDroppedPosts returns the current dropped-post count and resets it to zero.
+func (c *Collector) SwapDroppedPosts() int64 {
+	return c.droppedPosts.Swap(0)
+}
+
 // RecordAnalysis records the results from the last analysis cycle (thread-safe).
 func (c *Collector) RecordAnalysis(postsConsidered, postsHydrated, hydrationErrors int, sentiment string, skipped bool) {
 	c.mu.Lock()
@@ -174,6 +187,9 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	firehoseDelta := currentFirehose - c.lastSeen.firehosePosts
 	c.lastSeen.firehosePosts = currentFirehose
 
+	// Read and reset dropped-post counter
+	droppedDelta := c.droppedPosts.Swap(0)
+
 	// Compute posts per minute (30-minute window)
 	postsPerMinute := float64(englishDelta) / 30.0
 
@@ -209,6 +225,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		HydrationErrors:         hydrationErrors,
 		SentimentResult:         sentimentResult,
 		PostingSkipped:          boolToInt(postingSkipped),
+		DroppedPosts:            int(droppedDelta),
 	}
 
 	// Persist snapshot

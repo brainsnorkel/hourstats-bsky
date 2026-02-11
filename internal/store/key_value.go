@@ -18,7 +18,7 @@ type KeyValueEntry struct {
 // Returns nil, nil if the key does not exist.
 func (s *Store) GetKeyValueWithTimestamp(ctx context.Context, key string) (*KeyValueEntry, error) {
 	var entry KeyValueEntry
-	err := s.db.QueryRowContext(ctx,
+	err := s.readDB.QueryRowContext(ctx,
 		`SELECT key, value, updated_at FROM key_value WHERE key = ?`, key,
 	).Scan(&entry.Key, &entry.Value, &entry.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -31,7 +31,7 @@ func (s *Store) GetKeyValueWithTimestamp(ctx context.Context, key string) (*KeyV
 }
 
 func (s *Store) SetKeyValue(ctx context.Context, key, value string) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO key_value (key, value, updated_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
 		key, value,
@@ -44,7 +44,7 @@ func (s *Store) SetKeyValue(ctx context.Context, key, value string) error {
 
 func (s *Store) GetKeyValue(ctx context.Context, key string) (string, error) {
 	var value string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM key_value WHERE key = ?`, key).Scan(&value)
+	err := s.readDB.QueryRowContext(ctx, `SELECT value FROM key_value WHERE key = ?`, key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("key not found: %s: %w", key, err)
 	}

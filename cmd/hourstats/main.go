@@ -82,6 +82,14 @@ func main() {
 		slog.Warn("failed to log app_start event", "error", err)
 	}
 
+	// Record schedule intervals so the stats API can compute next-anticipated times.
+	_ = db.SetKeyValue(context.Background(), "schedule_sentiment_minutes", strconv.Itoa(analysisMinutes))
+	_ = db.SetKeyValue(context.Background(), "schedule_daily_quote_hour", "0")
+	_ = db.SetKeyValue(context.Background(), "schedule_yearly_hour", "1")
+	if trendingEnabled {
+		_ = db.SetKeyValue(context.Background(), "schedule_trending_post_hours", strconv.Itoa(trendingPostHours))
+	}
+
 	// Start stats HTTP API
 	statsPort := 9111
 	if p := os.Getenv("STATS_PORT"); p != "" {
@@ -263,6 +271,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 			select {
 			case writeCh <- pw:
 			default:
+				collector.IncrementDroppedPosts(1)
 				slog.Warn("write buffer full, dropping post", "uri", post.URI)
 			}
 		},
@@ -312,7 +321,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 
 func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.PendingWrite, collector *stats.Collector) {
 	const (
-		maxBatch  = 500
+		maxBatch  = 150
 		flushFreq = 500 * time.Millisecond
 	)
 	ticker := time.NewTicker(flushFreq)
@@ -324,9 +333,17 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 		if len(batch) == 0 {
 			return
 		}
-		if err := db.FlushWriteBatch(ctx, batch); err != nil {
-			slog.Error("flush write batch failed", "batch_size", len(batch), "error", err)
-			_ = collector.LogEvent(ctx, "batch_flush_error", fmt.Sprintf("size=%d err=%v", len(batch), err))
+		n := len(batch)
+		start := time.Now()
+		if err := db.FlushPostBatch(ctx, batch); err != nil {
+			slog.Error("flush post batch failed", "batch_size", n, "error", err)
+			_ = collector.LogEvent(ctx, "batch_flush_error", fmt.Sprintf("size=%d err=%v", n, err))
+		}
+		if err := db.FlushTokenBatch(ctx, batch); err != nil {
+			slog.Warn("flush token batch failed", "batch_size", n, "error", err)
+		}
+		if dur := time.Since(start); dur > 200*time.Millisecond {
+			slog.Warn("slow write flush", "batch_size", n, "duration_ms", dur.Milliseconds())
 		}
 		batch = batch[:0]
 	}

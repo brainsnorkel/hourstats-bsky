@@ -9,7 +9,7 @@ import (
 func insertPostWithEngagement(t *testing.T, s *Store, ctx context.Context, uri, text, createdAt string, likes int) {
 	t.Helper()
 	s.InsertPost(ctx, Post{URI: uri, CID: "cid", Text: text, AuthorDID: "did:plc:x", AuthorHandle: "test.bsky.social", CreatedAt: createdAt})
-	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=? WHERE uri=?`, likes, uri)
+	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=? WHERE uri=?`, likes, uri)
 }
 
 func TestTopicTokens_InsertAndGetSince(t *testing.T) {
@@ -109,8 +109,8 @@ func TestGetExemplarCandidates_RankedByEngagement(t *testing.T) {
 	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Rainy day", AuthorDID: "did:plc:2", AuthorHandle: "bob.bsky.social", CreatedAt: now})
 	s.InsertPost(ctx, Post{URI: "at://a/3", CID: "cid3", Text: "Trump rally MAGA", AuthorDID: "did:plc:3", AuthorHandle: "charlie.bsky.social", CreatedAt: now})
 
-	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=100, reposts=50, replies=25 WHERE uri='at://a/1'`)
-	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=5, reposts=2, replies=1 WHERE uri='at://a/3'`)
+	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=100, reposts=50, replies=25 WHERE uri='at://a/1'`)
+	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=5, reposts=2, replies=1 WHERE uri='at://a/3'`)
 
 	candidates, err := s.GetExemplarCandidates(ctx, []string{"trump", "election"}, "2000-01-01T00:00:00Z", 50)
 	if err != nil {
@@ -143,8 +143,8 @@ func TestGetExemplarCandidates_RelevanceBeatsEngagement(t *testing.T) {
 	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Senate winter DHS funding fight", AuthorDID: "did:plc:2", AuthorHandle: "politico.bsky.social", CreatedAt: now})
 
 	// Post 2 has way more engagement but is only tangentially related
-	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=50, reposts=20, replies=10 WHERE uri='at://a/1'`)
-	s.db.ExecContext(ctx, `UPDATE post_buffer SET likes=5000, reposts=2000, replies=500 WHERE uri='at://a/2'`)
+	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=50, reposts=20, replies=10 WHERE uri='at://a/1'`)
+	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=5000, reposts=2000, replies=500 WHERE uri='at://a/2'`)
 
 	candidates, err := s.GetExemplarCandidates(ctx, []string{"winter", "olympics", "skiing", "medal"}, "2000-01-01T00:00:00Z", 50)
 	if err != nil {
@@ -409,7 +409,7 @@ func TestInsertTopicTokens_PopulatesTokenPostings(t *testing.T) {
 	}
 
 	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings WHERE post_uri='at://a/post/1'`).Scan(&count); err != nil {
+	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings WHERE post_uri='at://a/post/1'`).Scan(&count); err != nil {
 		t.Fatalf("count token_postings: %v", err)
 	}
 	if count != 3 {
@@ -417,7 +417,7 @@ func TestInsertTopicTokens_PopulatesTokenPostings(t *testing.T) {
 	}
 
 	var token string
-	if err := s.db.QueryRowContext(ctx, `SELECT token FROM token_postings WHERE post_uri='at://a/post/1' AND token='beta'`).Scan(&token); err != nil {
+	if err := s.readDB.QueryRowContext(ctx, `SELECT token FROM token_postings WHERE post_uri='at://a/post/1' AND token='beta'`).Scan(&token); err != nil {
 		t.Fatalf("query specific token: %v", err)
 	}
 	if token != "beta" {
@@ -445,13 +445,13 @@ func TestPurgeTopicTokens_AlsoPurgesTokenPostings(t *testing.T) {
 	}
 
 	var remaining int
-	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings`).Scan(&remaining)
+	s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings`).Scan(&remaining)
 	if remaining != 1 {
 		t.Errorf("expected 1 token_postings row remaining, got %d", remaining)
 	}
 
 	var token string
-	s.db.QueryRowContext(ctx, `SELECT token FROM token_postings`).Scan(&token)
+	s.readDB.QueryRowContext(ctx, `SELECT token FROM token_postings`).Scan(&token)
 	if token != "fresh" {
 		t.Errorf("expected surviving token 'fresh', got %q", token)
 	}

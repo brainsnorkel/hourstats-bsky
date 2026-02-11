@@ -14,7 +14,7 @@ func (s *Store) GetTopPostForDate(ctx context.Context, date string) (*Post, erro
 	}
 	dayEnd := parsed.Add(24 * time.Hour).Format(time.RFC3339)
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT top_posts FROM runs WHERE created_at >= ? AND created_at < ?`,
 		dayStart, dayEnd,
 	)
