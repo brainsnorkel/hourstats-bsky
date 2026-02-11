@@ -3,6 +3,7 @@ package jetstream
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestEvent_IsPostCreate(t *testing.T) {
@@ -135,14 +136,87 @@ func TestConsumerConfig_Defaults(t *testing.T) {
 	cfg := ConsumerConfig{}
 	cfg.setDefaults()
 
-	if cfg.Endpoint != DefaultEndpoint {
-		t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, DefaultEndpoint)
+	if cfg.Endpoint != AllEndpoints[0] {
+		t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, AllEndpoints[0])
+	}
+	if len(cfg.Endpoints) != len(AllEndpoints) {
+		t.Errorf("Endpoints length = %d, want %d", len(cfg.Endpoints), len(AllEndpoints))
 	}
 	if len(cfg.Collections) != 1 || cfg.Collections[0] != DefaultCollection {
 		t.Errorf("Collections = %v, want [%s]", cfg.Collections, DefaultCollection)
 	}
 	if cfg.CursorInterval != DefaultCursorInterval {
 		t.Errorf("CursorInterval = %v, want %v", cfg.CursorInterval, DefaultCursorInterval)
+	}
+}
+
+func TestConsumerConfig_SingleEndpoint(t *testing.T) {
+	cfg := ConsumerConfig{Endpoint: "wss://custom.example.com/subscribe"}
+	cfg.setDefaults()
+
+	if len(cfg.Endpoints) != 1 || cfg.Endpoints[0] != "wss://custom.example.com/subscribe" {
+		t.Errorf("Endpoints = %v, want single custom endpoint", cfg.Endpoints)
+	}
+}
+
+func TestConsumerConfig_ExplicitEndpoints(t *testing.T) {
+	eps := []string{"wss://a.example.com/subscribe", "wss://b.example.com/subscribe"}
+	cfg := ConsumerConfig{Endpoints: eps}
+	cfg.setDefaults()
+
+	if len(cfg.Endpoints) != 2 {
+		t.Fatalf("Endpoints length = %d, want 2", len(cfg.Endpoints))
+	}
+	if cfg.Endpoint != eps[0] {
+		t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, eps[0])
+	}
+}
+
+func TestConsumer_EndpointRotation(t *testing.T) {
+	eps := []string{
+		"wss://a.example.com/subscribe",
+		"wss://b.example.com/subscribe",
+		"wss://c.example.com/subscribe",
+	}
+	c := NewConsumer(ConsumerConfig{
+		Endpoints:   eps,
+		Collections: []string{"app.bsky.feed.post"},
+	})
+
+	if c.ActiveEndpoint() != eps[0] {
+		t.Fatalf("initial endpoint = %q, want %q", c.ActiveEndpoint(), eps[0])
+	}
+
+	// Simulate 3 rapid drops (within rotateDropWindow).
+	now := time.Now()
+	c.dropTimes = []time.Time{
+		now.Add(-2 * time.Minute),
+		now.Add(-1 * time.Minute),
+		now,
+	}
+
+	// Should rotate since len(dropTimes) >= rotateAfterDrops.
+	if len(c.dropTimes) < rotateAfterDrops {
+		t.Fatalf("expected %d+ drops, got %d", rotateAfterDrops, len(c.dropTimes))
+	}
+
+	c.endpointIdx = (c.endpointIdx + 1) % len(c.cfg.Endpoints)
+	c.dropTimes = nil
+
+	if c.ActiveEndpoint() != eps[1] {
+		t.Errorf("after rotation = %q, want %q", c.ActiveEndpoint(), eps[1])
+	}
+
+	// Rotate again.
+	c.endpointIdx = (c.endpointIdx + 1) % len(c.cfg.Endpoints)
+	if c.ActiveEndpoint() != eps[2] {
+		t.Errorf("second rotation = %q, want %q", c.ActiveEndpoint(), eps[2])
+	}
+
+	// Wraps around.
+	c.endpointIdx = (c.endpointIdx + 1) % len(c.cfg.Endpoints)
+	if c.ActiveEndpoint() != eps[0] {
+		t.Errorf("wrap around = %q, want %q", c.ActiveEndpoint(), eps[0])
 	}
 }
 
