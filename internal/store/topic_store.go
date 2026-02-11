@@ -12,6 +12,7 @@ type TopicTokenRow struct {
 	PostURI   string
 	Tokens    string
 	CreatedAt string
+	AuthorDID string
 }
 
 type TopicSnapshotRow struct {
@@ -78,8 +79,8 @@ func (s *Store) GetTopicTokensSinceLimit(ctx context.Context, cutoff string, lim
 	var query string
 	var args []any
 	if limit > 0 {
-		query = `SELECT tt.post_uri, tt.tokens, tt.created_at FROM (
-			SELECT tt.post_uri, tt.tokens, tt.created_at
+		query = `SELECT tt.post_uri, tt.tokens, tt.created_at, tt.author_did FROM (
+			SELECT tt.post_uri, tt.tokens, tt.created_at, pb.author_did
 			FROM topic_tokens tt
 			JOIN post_buffer pb ON tt.post_uri = pb.uri
 			WHERE tt.created_at >= ?
@@ -88,7 +89,7 @@ func (s *Store) GetTopicTokensSinceLimit(ctx context.Context, cutoff string, lim
 		) tt ORDER BY tt.created_at ASC`
 		args = []any{cutoff, limit}
 	} else {
-		query = `SELECT tt.post_uri, tt.tokens, tt.created_at
+		query = `SELECT tt.post_uri, tt.tokens, tt.created_at, pb.author_did
 			FROM topic_tokens tt
 			JOIN post_buffer pb ON tt.post_uri = pb.uri
 			WHERE tt.created_at >= ?
@@ -105,7 +106,7 @@ func (s *Store) GetTopicTokensSinceLimit(ctx context.Context, cutoff string, lim
 	var result []TopicTokenRow
 	for rows.Next() {
 		var r TopicTokenRow
-		if err := rows.Scan(&r.PostURI, &r.Tokens, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.PostURI, &r.Tokens, &r.CreatedAt, &r.AuthorDID); err != nil {
 			return nil, fmt.Errorf("scan topic_tokens: %w", err)
 		}
 		result = append(result, r)

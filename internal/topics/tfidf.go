@@ -15,6 +15,7 @@ func ComputeTFIDF(rows []store.TopicTokenRow) []TermScore {
 
 	totalDocs := float64(len(rows))
 	docFreq := make(map[string]int)
+	authorFreq := make(map[string]map[string]bool) // term -> set of author DIDs
 	termFreqs := make([]map[string]int, len(rows))
 
 	for i, row := range rows {
@@ -30,6 +31,12 @@ func ComputeTFIDF(rows []store.TopicTokenRow) []TermScore {
 			if !seen[tok] {
 				docFreq[tok]++
 				seen[tok] = true
+				if row.AuthorDID != "" {
+					if authorFreq[tok] == nil {
+						authorFreq[tok] = make(map[string]bool)
+					}
+					authorFreq[tok][row.AuthorDID] = true
+				}
 			}
 		}
 		termFreqs[i] = tf
@@ -38,6 +45,9 @@ func ComputeTFIDF(rows []store.TopicTokenRow) []TermScore {
 	tfidfScores := make(map[string]float64)
 	for term, df := range docFreq {
 		if df < MinDocFrequency {
+			continue
+		}
+		if len(authorFreq[term]) < MinUniqueAuthors {
 			continue
 		}
 		idf := math.Log(totalDocs / float64(df))

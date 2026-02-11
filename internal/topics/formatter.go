@@ -3,6 +3,7 @@ package topics
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -85,7 +86,6 @@ func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
 	searchFrom := 0
 	for _, topic := range ranked {
 		if topic.Cluster.IsMeme {
-			// Meme topics: link the 🔍 to a Bluesky search URL
 			const searchIcon = "🔍"
 			idx := strings.Index(text[searchFrom:], searchIcon)
 			if idx < 0 {
@@ -95,7 +95,7 @@ func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
 			byteEnd := byteStart + len([]byte(searchIcon))
 			searchFrom = byteEnd
 
-			searchURL := "https://bsky.app/search?q=" + url.QueryEscape(topic.Cluster.Label)
+			searchURL := "https://bsky.app/search?q=" + url.QueryEscape(memeSearchQuery(topic.Cluster.Keywords))
 			facets = append(facets, Facet{
 				ByteStart: byteStart,
 				ByteEnd:   byteEnd,
@@ -139,6 +139,31 @@ func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
 	}
 
 	return facets
+}
+
+func memeSearchQuery(keywords []string) string {
+	if len(keywords) == 0 {
+		return ""
+	}
+
+	var compounds []string
+	for _, kw := range keywords {
+		if strings.Contains(kw, "_") {
+			compounds = append(compounds, kw)
+		}
+	}
+
+	if len(compounds) > 0 {
+		sort.Slice(compounds, func(i, j int) bool {
+			return len(compounds[i]) > len(compounds[j])
+		})
+		return strings.ReplaceAll(compounds[0], "_", " ")
+	}
+
+	if len(keywords) > 3 {
+		keywords = keywords[:3]
+	}
+	return strings.Join(keywords, " ")
 }
 
 func convertExemplarURI(uri string) string {

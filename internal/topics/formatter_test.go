@@ -155,9 +155,13 @@ func TestFormatTrendingPost_NoExemplar(t *testing.T) {
 func TestFormatTrendingPost_MemeTopicSearchLink(t *testing.T) {
 	ranked := []IdentifiedTopic{
 		{
-			RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Post a Banger", IsMeme: true}},
-			TopicID:     "t1",
-			Rank:        1,
+			RankedTopic: RankedTopic{Cluster: TopicCluster{
+				Label:    "Post a Banger",
+				IsMeme:   true,
+				Keywords: []string{"post", "banger", "post_banger"},
+			}},
+			TopicID: "t1",
+			Rank:    1,
 		},
 	}
 
@@ -185,8 +189,8 @@ func TestFormatTrendingPost_MemeTopicSearchLink(t *testing.T) {
 	if extracted != "🔍" {
 		t.Errorf("facet byte offset mismatch: expected '🔍', extracted %q (bytes %d-%d)", extracted, linkFacet.ByteStart, linkFacet.ByteEnd)
 	}
-	if linkFacet.Value != "https://bsky.app/search?q=Post+a+Banger" {
-		t.Errorf("unexpected search URL: %q", linkFacet.Value)
+	if linkFacet.Value != "https://bsky.app/search?q=post+banger" {
+		t.Errorf("unexpected search URL: %q (expected keywords-based query)", linkFacet.Value)
 	}
 }
 
@@ -200,9 +204,13 @@ func TestFormatTrendingPost_MixedMemeAndExemplar(t *testing.T) {
 			ExemplarURI:    "at://did:plc:abc/app.bsky.feed.post/123",
 		},
 		{
-			RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Post a Banger", IsMeme: true}},
-			TopicID:     "t2",
-			Rank:        2,
+			RankedTopic: RankedTopic{Cluster: TopicCluster{
+				Label:    "Post a Banger",
+				IsMeme:   true,
+				Keywords: []string{"post", "banger", "post_banger"},
+			}},
+			TopicID: "t2",
+			Rank:    2,
 		},
 	}
 
@@ -248,6 +256,28 @@ func TestFormatAltText_Meme(t *testing.T) {
 	}
 	if !strings.Contains(alt, "2. Weather (top post by @bob.bsky.social)") {
 		t.Errorf("expected exemplar for non-meme topic, got: %q", alt)
+	}
+}
+
+func TestMemeSearchQuery(t *testing.T) {
+	tests := []struct {
+		name     string
+		keywords []string
+		want     string
+	}{
+		{"compound preferred", []string{"post", "banger", "post_banger"}, "post banger"},
+		{"longest compound wins", []string{"post_banger", "banger_that_goes", "post"}, "banger that goes"},
+		{"no compounds", []string{"excuse", "team", "sports"}, "excuse team sports"},
+		{"no compounds truncated", []string{"a", "b", "c", "d", "e"}, "a b c"},
+		{"empty", []string{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := memeSearchQuery(tt.keywords)
+			if got != tt.want {
+				t.Errorf("memeSearchQuery(%v) = %q, want %q", tt.keywords, got, tt.want)
+			}
+		})
 	}
 }
 

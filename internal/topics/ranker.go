@@ -31,7 +31,11 @@ func RankTopics(clusters []TopicCluster, rows []store.TopicTokenRow) []RankedTop
 		sets[i] = clusterSet{cluster: c, terms: terms}
 	}
 
-	counts := make([]int, len(clusters))
+	authorSets := make([]map[string]bool, len(clusters))
+	for i := range clusters {
+		authorSets[i] = make(map[string]bool)
+	}
+
 	for _, row := range rows {
 		var tokens []string
 		if err := json.Unmarshal([]byte(row.Tokens), &tokens); err != nil {
@@ -40,7 +44,9 @@ func RankTopics(clusters []TopicCluster, rows []store.TopicTokenRow) []RankedTop
 		for i, cs := range sets {
 			for _, tok := range tokens {
 				if cs.terms[tok] {
-					counts[i]++
+					if row.AuthorDID != "" {
+						authorSets[i][row.AuthorDID] = true
+					}
 					break
 				}
 			}
@@ -51,7 +57,7 @@ func RankTopics(clusters []TopicCluster, rows []store.TopicTokenRow) []RankedTop
 	for i, cs := range sets {
 		ranked[i] = RankedTopic{
 			Cluster:   cs.cluster,
-			PostCount: counts[i],
+			PostCount: len(authorSets[i]),
 		}
 	}
 

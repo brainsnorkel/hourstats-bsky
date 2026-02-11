@@ -10,7 +10,7 @@ import (
 
 func makeRankerTokenRow(uri string, tokens []string) store.TopicTokenRow {
 	b, _ := json.Marshal(tokens)
-	return store.TopicTokenRow{PostURI: uri, Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z"}
+	return store.TopicTokenRow{PostURI: uri, Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: "did:plc:" + uri}
 }
 
 func TestRankTopics_BasicRanking(t *testing.T) {
@@ -113,6 +113,35 @@ func TestRankTopics_PostMatchesMultipleClusters(t *testing.T) {
 	}
 	if ranked[0].PostCount != 1 || ranked[1].PostCount != 1 {
 		t.Errorf("expected both counts=1, got %d and %d", ranked[0].PostCount, ranked[1].PostCount)
+	}
+}
+
+func TestRankTopics_AuthorDeduplication(t *testing.T) {
+	clusters := []TopicCluster{
+		{Label: "Spam Topic", Keywords: []string{"spam_word"}, Synonyms: []string{}},
+		{Label: "Real Topic", Keywords: []string{"real_word"}, Synonyms: []string{}},
+	}
+
+	spammer := "did:plc:spammer"
+	var rows []store.TopicTokenRow
+	for i := 0; i < 50; i++ {
+		b, _ := json.Marshal([]string{"spam_word"})
+		rows = append(rows, store.TopicTokenRow{PostURI: fmt.Sprintf("at://spam/%d", i), Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: spammer})
+	}
+	for i := 0; i < 10; i++ {
+		b, _ := json.Marshal([]string{"real_word"})
+		rows = append(rows, store.TopicTokenRow{PostURI: fmt.Sprintf("at://real/%d", i), Tokens: string(b), CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: fmt.Sprintf("did:plc:user%d", i)})
+	}
+
+	ranked := RankTopics(clusters, rows)
+	if ranked[0].Cluster.Label != "Real Topic" {
+		t.Errorf("expected 'Real Topic' (10 unique authors) to rank above 'Spam Topic' (1 author), got %q first", ranked[0].Cluster.Label)
+	}
+	if ranked[0].PostCount != 10 {
+		t.Errorf("expected 10 unique authors for Real Topic, got %d", ranked[0].PostCount)
+	}
+	if ranked[1].PostCount != 1 {
+		t.Errorf("expected 1 unique author for Spam Topic, got %d", ranked[1].PostCount)
 	}
 }
 
