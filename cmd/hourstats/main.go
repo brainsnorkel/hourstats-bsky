@@ -326,6 +326,20 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	}
 	posts = hydrated
 
+	// Guard: skip posting when too few posts are available (e.g. Jetstream
+	// connection instability).  We still run sentiment + store the data point
+	// so there are no gaps in the historical record, but we don't publish a
+	// misleading summary or sparkline.
+	const minPostsRequired = 1000
+	lowConfidence := len(posts) < minPostsRequired
+
+	if lowConfidence {
+		slog.Warn("low post count — sentiment will be recorded but posting skipped",
+			"posts", len(posts),
+			"min_required", minPostsRequired,
+		)
+	}
+
 	analyzerPosts := toAnalyzerPosts(posts)
 	sa := analyzer.New()
 	analyzed, err := sa.AnalyzePosts(analyzerPosts)
@@ -366,9 +380,13 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		}
 	}
 
+	status := "complete"
+	if lowConfidence {
+		status = "low_confidence"
+	}
 	runState := store.RunState{
 		RunID:                   runID,
-		Status:                  "complete",
+		Status:                  status,
 		AnalysisIntervalMinutes: analysisMinutes,
 		CutoffTime:              cutoff,
 		TotalPostsRetrieved:     len(posts),
@@ -403,7 +421,14 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		slog.Error("store sentiment data point failed", "error", err)
 	}
 
-	if dryRun {
+	if lowConfidence {
+		slog.Warn("skipping post due to low confidence",
+			"posts", len(posts),
+			"min_required", minPostsRequired,
+			"sentiment", overallSentiment,
+			"net_pct", fmt.Sprintf("%.1f%%", netSentimentPct),
+		)
+	} else if dryRun {
 		slog.Info("DRY_RUN: would post summary",
 			"sentiment", overallSentiment,
 			"net_pct", netSentimentPct,
