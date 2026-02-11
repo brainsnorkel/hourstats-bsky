@@ -486,7 +486,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		}
 	}
 
-	purged, _ := db.PurgeExpiredPosts(ctx, 2*time.Hour)
+	purged, _ := db.PurgeExpiredPosts(ctx, 7*time.Hour)
 	if purged > 0 {
 		slog.Info("purged expired posts", "count", purged)
 	}
