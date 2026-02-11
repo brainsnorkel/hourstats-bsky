@@ -19,6 +19,7 @@ type StatsStore interface {
 	GetSnapshotHistory(ctx context.Context, since time.Time, limit int) ([]store.StatsSnapshot, error)
 	GetEvents(ctx context.Context, since time.Time, eventType string, limit int) ([]store.StatsEvent, error)
 	GetRecentTopicSnapshots(ctx context.Context, since string, limit int) ([]store.TopicSnapshotRow, error)
+	GetPostingActivity(ctx context.Context) (*store.PostingActivity, error)
 }
 
 // Server provides an HTTP API for querying stats.
@@ -36,6 +37,7 @@ func New(store StatsStore, port int) *Server {
 	mux.HandleFunc("GET /stats/history", s.handleHistory)
 	mux.HandleFunc("GET /stats/events", s.handleEvents)
 	mux.HandleFunc("GET /stats/topics", s.handleTopics)
+	mux.HandleFunc("GET /stats/posting", s.handlePosting)
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
@@ -250,6 +252,19 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handlePosting returns recent posting activity for each post type.
+// GET /stats/posting
+func (s *Server) handlePosting(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	activity, err := s.store.GetPostingActivity(ctx)
+	if err != nil {
+		slog.Error("failed to get posting activity", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, activity)
 }
 
 // writeError writes a JSON error response.

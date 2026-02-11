@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -307,6 +308,24 @@ func (s *Store) GetRecentTopicIdentities(ctx context.Context, cutoff string) ([]
 		result = append(result, r)
 	}
 	return result, rows.Err()
+}
+
+// GetLatestTopicSnapshotTime returns the most recent snapshot_time and the count
+// of topics in that snapshot. Returns ("", 0, nil) if no snapshots exist.
+func (s *Store) GetLatestTopicSnapshotTime(ctx context.Context) (string, int, error) {
+	var snapshotTime string
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT snapshot_time, COUNT(*) FROM topic_snapshots
+		 GROUP BY snapshot_time ORDER BY snapshot_time DESC LIMIT 1`,
+	).Scan(&snapshotTime, &count)
+	if err == sql.ErrNoRows {
+		return "", 0, nil
+	}
+	if err != nil {
+		return "", 0, fmt.Errorf("get latest topic snapshot time: %w", err)
+	}
+	return snapshotTime, count, nil
 }
 
 func (s *Store) PurgeTopicIdentities(ctx context.Context, cutoff string) (int64, error) {

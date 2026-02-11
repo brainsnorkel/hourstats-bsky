@@ -44,6 +44,19 @@ type Event struct {
 	Details   string `json:"details"`
 }
 
+type PostingEntry struct {
+	LastPosted string `json:"last_posted"`
+	Summary    string `json:"summary"`
+	URI        string `json:"uri,omitempty"`
+}
+
+type PostingActivity struct {
+	SentimentSummary *PostingEntry `json:"sentiment_summary"`
+	YearlyChart      *PostingEntry `json:"yearly_chart"`
+	DailyQuote       *PostingEntry `json:"daily_quote"`
+	TrendingTopics   *PostingEntry `json:"trending_topics"`
+}
+
 type TopicSnapshot struct {
 	ID             int64    `json:"id"`
 	SnapshotTime   string   `json:"snapshot_time"`
@@ -196,7 +209,21 @@ func cmdSummary() {
 				e.EventType,
 				e.Details)
 		}
+		fmt.Println()
 	}
+
+	// Fetch posting activity
+	postingBody, _ := apiGet("/stats/posting")
+	var posting PostingActivity
+	if postingBody != nil {
+		json.Unmarshal(postingBody, &posting)
+	}
+
+	fmt.Println("--- Recent Posts ---")
+	printPostingEntry("Sentiment", posting.SentimentSummary)
+	printPostingEntry("Yearly", posting.YearlyChart)
+	printPostingEntry("Daily Quote", posting.DailyQuote)
+	printPostingEntry("Topics", posting.TrendingTopics)
 }
 
 func cmdLatest() {
@@ -416,6 +443,38 @@ func formatInt(n int) string {
 		result.WriteRune(c)
 	}
 	return result.String()
+}
+
+func formatAge(timestamp string) string {
+	parsed, err := time.Parse("2006-01-02T15:04:05Z", timestamp)
+	if err != nil {
+		parsed, err = time.Parse("2006-01-02 15:04:05", timestamp)
+		if err != nil {
+			return timestamp
+		}
+	}
+	d := time.Since(parsed)
+	if d < 0 {
+		d = 0
+	}
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh ago", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm ago", hours, mins)
+	}
+	return fmt.Sprintf("%dm ago", mins)
+}
+
+func printPostingEntry(label string, entry *PostingEntry) {
+	if entry == nil {
+		fmt.Printf("%-14s (no data)\n", label+":")
+		return
+	}
+	fmt.Printf("%-14s %-12s  %s\n", label+":", formatAge(entry.LastPosted), entry.Summary)
 }
 
 func abbreviateEndpoint(endpoint string) string {
