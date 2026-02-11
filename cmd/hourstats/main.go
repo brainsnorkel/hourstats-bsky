@@ -100,7 +100,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	writeCh := make(chan store.PendingWrite, 10000)
+	writeCh := make(chan store.PendingWrite, 50000)
 	go runWriteFlusher(ctx, db, writeCh, collector)
 	go runJetstream(ctx, db, trendingEnabled, collector, writeCh)
 
@@ -313,7 +313,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.PendingWrite, collector *stats.Collector) {
 	const (
 		maxBatch  = 500
-		flushFreq = 2 * time.Second
+		flushFreq = 500 * time.Millisecond
 	)
 	ticker := time.NewTicker(flushFreq)
 	defer ticker.Stop()
