@@ -364,7 +364,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	// connection instability).  We still run sentiment + store the data point
 	// so there are no gaps in the historical record, but we don't publish a
 	// misleading summary or sparkline.
-	const minPostsRequired = 1000
+	const minPostsRequired = 500
 	lowConfidence := len(posts) < minPostsRequired
 
 	if lowConfidence {
