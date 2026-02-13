@@ -644,8 +644,8 @@ func createUserHandleFacets(text string, posts []Post) []*bsky.RichtextFacet {
 		// Find the hashtag in the text
 		hashtagStart := strings.Index(text, "#")
 		if hashtagStart != -1 {
-			// Find the end of the hashtag (end of line or space)
-			hashtagEnd := strings.Index(text[hashtagStart:], "\n")
+			// Find the end of the hashtag (space or end of line)
+			hashtagEnd := strings.IndexAny(text[hashtagStart:], " \n")
 			if hashtagEnd == -1 {
 				hashtagEnd = len(text)
 			} else {

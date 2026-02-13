@@ -14,10 +14,10 @@ kill_timeout = 15
   ANALYSIS_INTERVAL_MINUTES = "30"
   TRENDING_ENABLED = "true"
   TRENDING_INTERVAL = "15"
-  TRENDING_POST_HOURS = "1"
+  TRENDING_POST_HOURS = "6"
   S3_BACKUP_BUCKET = "hourstats-sqlite-backups"
   S3_BACKUP_REGION = "us-west-2"
-  BACKUP_RETAIN_DAYS = "1"
+  BACKUP_RETAIN_DAYS = "7"
 
 [mounts]
   source = "data"
