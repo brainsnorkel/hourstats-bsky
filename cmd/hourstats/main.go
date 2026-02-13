@@ -76,6 +76,10 @@ func main() {
 	defer db.Close()
 	slog.Info("database opened", "path", dbPath)
 
+	if err := db.RunStartupMaintenance(context.Background()); err != nil {
+		slog.Warn("startup maintenance failed", "error", err)
+	}
+
 	// Initialize stats collector
 	collector := stats.New(db)
 	if err := collector.LogEvent(context.Background(), "app_start", fmt.Sprintf("profile=%s pid=%d", profile, os.Getpid())); err != nil {
@@ -145,6 +149,9 @@ func main() {
 
 	stallCheckTicker := time.NewTicker(5 * time.Minute)
 	defer stallCheckTicker.Stop()
+
+	walCheckpointTicker := time.NewTicker(5 * time.Minute)
+	defer walCheckpointTicker.Stop()
 
 	runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 
@@ -218,6 +225,9 @@ func main() {
 					_ = collector.LogEvent(ctx, "stall_detected", fmt.Sprintf("last_post_age=%s", time.Since(lastPost).Truncate(time.Second)))
 				}
 			}
+
+		case <-walCheckpointTicker.C:
+			db.RunWALCheckpoint(ctx)
 		}
 	}
 }
@@ -321,8 +331,8 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 
 func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.PendingWrite, collector *stats.Collector) {
 	const (
-		maxBatch  = 150
-		flushFreq = 500 * time.Millisecond
+		maxBatch  = 500
+		flushFreq = 2 * time.Second
 	)
 	ticker := time.NewTicker(flushFreq)
 	defer ticker.Stop()

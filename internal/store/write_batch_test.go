@@ -111,8 +111,8 @@ func TestFlushWriteBatch_WithTokens(t *testing.T) {
 
 	var postingCount int
 	s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings`).Scan(&postingCount)
-	if postingCount != 5 {
-		t.Errorf("expected 5 token_postings rows (2+3), got %d", postingCount)
+	if postingCount != 0 {
+		t.Errorf("expected 0 token_postings rows (no longer written on ingest), got %d", postingCount)
 	}
 }
 
