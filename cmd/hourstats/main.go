@@ -357,7 +357,7 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 		if err := db.FlushTokenBatch(ctx, batch); err != nil {
 			slog.Warn("flush token batch failed", "batch_size", n, "error", err)
 		}
-		if dur := time.Since(start); dur > 200*time.Millisecond {
+		if dur := time.Since(start); dur > 1*time.Second {
 			slog.Warn("slow write flush", "batch_size", n, "duration_ms", dur.Milliseconds())
 		}
 		batch = batch[:0]

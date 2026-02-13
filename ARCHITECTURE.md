@@ -92,7 +92,17 @@ Tickers fire at clean UTC clock boundaries (e.g., :00 and :30 for the 30-minute 
 
 ## SQLite Database
 
-All state stored in a single SQLite file on Fly.io persistent volume (`/data/hourstats-{profile}.db`). WAL mode enabled, 10-second busy timeout.
+All state stored in a single SQLite file on Fly.io persistent volume (`/data/hourstats-{profile}.db`). WAL mode enabled, three separate connection pools.
+
+### Connection Pools
+
+| Pool | Max conns | Busy timeout | Purpose |
+|------|-----------|--------------|---------|
+| `writeDB` | 1 | 30s | All writes (batched post/token inserts, run state, purges) |
+| `readDB` | 4 | 30s | All reads (analysis, topics, stats API). `query_only=ON` pragma. |
+| `maintDB` | 1 | 1s | WAL checkpoints only. Short timeout so it never blocks writers. |
+
+On startup, `RunStartupMaintenance()` cleans derived tables, purges stale rows, and forces a WAL checkpoint before the firehose connects. During operation, `RunWALCheckpoint()` runs PASSIVE checkpoints every 5 minutes via the maintenance pool. See [docs/WRITE_BOTTLENECK_FIX.md](docs/WRITE_BOTTLENECK_FIX.md) for the full write path design and scaling guidance.
 
 ### Tables
 
@@ -105,6 +115,7 @@ All state stored in a single SQLite file on Fly.io persistent volume (`/data/hou
 | `daily_top_post` | Highest engagement post per day | 3 years |
 | `key_value` | Jetstream cursor, general settings | Permanent |
 | `topic_tokens` | Tokenized root posts for TF-IDF | 26 hours |
+| `token_postings` | Schema preserved but no longer written during ingest | Emptied on startup |
 | `topic_snapshots` | 15-min topic analysis results | 48 hours |
 | `topic_identity` | Persistent topic UUIDs and colours | 7 days |
 
@@ -173,7 +184,7 @@ hourstats-bsky/
 
 1. **Single binary on Fly.io**: All components run in one process as goroutines. No networking between components, no IAM, no managed databases. $5/month for the Hobby plan covers everything.
 
-2. **SQLite over DynamoDB**: At ~58 writes/sec (Bluesky post volume), SQLite handles the load trivially in WAL mode. DynamoDB would cost $29–190/month for the same write volume; SQLite costs $0.
+2. **SQLite over DynamoDB**: At ~25 writes/sec (English posts from Bluesky, batched 500 at a time every 2 seconds), SQLite handles the load in WAL mode with headroom to ~400 writes/sec. DynamoDB would cost $29–190/month for the same write volume; SQLite costs $0.
 
 3. **Jetstream over search API**: The search API captures ~10% of posts with a 10,000-result pagination cap. Jetstream delivers 100% of posts in real time via WebSocket.
 
