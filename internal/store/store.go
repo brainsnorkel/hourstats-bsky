@@ -229,6 +229,19 @@ func (s *Store) RunWALCheckpoint(ctx context.Context) {
 	s.maintDB.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)")
 }
 
+// RunVacuum reclaims freelist pages from high-churn tables (post_buffer, topic_tokens).
+// This rewrites the entire database file, briefly blocking all readers.
+// Call during low-traffic periods (e.g. weekly at midnight UTC).
+func (s *Store) RunVacuum(ctx context.Context) error {
+	slog.Info("vacuum: starting")
+	start := time.Now()
+	if _, err := s.writeDB.ExecContext(ctx, "VACUUM"); err != nil {
+		return fmt.Errorf("vacuum: %w", err)
+	}
+	slog.Info("vacuum: complete", "elapsed", time.Since(start).Round(time.Millisecond))
+	return nil
+}
+
 // DB returns the read pool for external callers (e.g. statsapi).
 func (s *Store) DB() *sql.DB {
 	return s.readDB
