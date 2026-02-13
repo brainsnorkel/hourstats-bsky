@@ -183,6 +183,11 @@ func main() {
 			runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 			runDailyAggregation(ctx, db)
 			runDailyTopPostQuote(ctx, db, handle, password, dryRun)
+			if time.Now().UTC().Weekday() == time.Sunday {
+				if err := db.RunVacuum(ctx); err != nil {
+					slog.Error("weekly vacuum failed", "error", err)
+				}
+			}
 
 		case <-yearlyPostCh:
 			runYearlyPosting(ctx, db, handle, password, dryRun)
