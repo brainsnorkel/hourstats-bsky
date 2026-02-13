@@ -336,7 +336,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 
 func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.PendingWrite, collector *stats.Collector) {
 	const (
-		maxBatch  = 500
+		maxBatch  = 1500
 		flushFreq = 2 * time.Second
 	)
 	ticker := time.NewTicker(flushFreq)
