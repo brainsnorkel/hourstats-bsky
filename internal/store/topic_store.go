@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -40,32 +39,14 @@ type TopicIdentityRow struct {
 }
 
 func (s *Store) InsertTopicTokens(ctx context.Context, postURI, tokensJSON, createdAt string) error {
-	tx, err := s.writeDB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin topic token tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx,
+	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT OR IGNORE INTO topic_tokens (post_uri, tokens, created_at) VALUES (?, ?, ?)`,
 		postURI, tokensJSON, createdAt,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("insert topic_tokens: %w", err)
 	}
-
-	var tokens []string
-	if err := json.Unmarshal([]byte(tokensJSON), &tokens); err != nil {
-		return tx.Commit()
-	}
-	for _, tok := range tokens {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO token_postings (token, post_uri, created_at) VALUES (?, ?, ?)`,
-			tok, postURI, createdAt,
-		); err != nil {
-			return fmt.Errorf("insert token_postings: %w", err)
-		}
-	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) GetTopicTokensSince(ctx context.Context, cutoff string) ([]TopicTokenRow, error) {
@@ -130,9 +111,6 @@ func (s *Store) PurgeTopicTokens(ctx context.Context, cutoff string) (int64, err
 	if err != nil {
 		return total, fmt.Errorf("purge topic_tokens: %w", err)
 	}
-	if _, err := purgeInChunks(ctx, s.writeDB, `DELETE FROM token_postings WHERE rowid IN (SELECT rowid FROM token_postings WHERE created_at < ? LIMIT 1000)`, cutoff); err != nil {
-		return total, fmt.Errorf("purge token_postings: %w", err)
-	}
 	return total, nil
 }
 
@@ -159,13 +137,13 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 
 	q := fmt.Sprintf(
 		`SELECT pb.uri, pb.author_handle, (pb.likes + pb.reposts + pb.replies) AS eng
-		 FROM token_postings tp
-		 JOIN post_buffer pb ON tp.post_uri = pb.uri
-		 WHERE tp.token IN (%s)
-		   AND tp.created_at >= ?
+		 FROM topic_tokens tt, json_each(tt.tokens) je
+		 JOIN post_buffer pb ON tt.post_uri = pb.uri
+		 WHERE je.value IN (%s)
+		   AND tt.created_at >= ?
 		   AND pb.author_handle != ''
 		 GROUP BY pb.uri
-		 ORDER BY COUNT(DISTINCT tp.token) DESC, eng DESC
+		 ORDER BY COUNT(DISTINCT je.value) DESC, eng DESC
 		 LIMIT ?`,
 		strings.Join(placeholders, ","),
 	)

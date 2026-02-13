@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -72,7 +71,9 @@ func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) error
 	return tx.Commit()
 }
 
-// FlushTokenBatch inserts topic tokens and token postings in a single transaction.
+// FlushTokenBatch inserts topic tokens in a single transaction.
+// token_postings is no longer maintained on the ingest hot path;
+// exemplar queries use json_each on topic_tokens instead.
 func (s *Store) FlushTokenBatch(ctx context.Context, writes []PendingWrite) error {
 	hasTokens := false
 	for _, w := range writes {
@@ -97,29 +98,12 @@ func (s *Store) FlushTokenBatch(ctx context.Context, writes []PendingWrite) erro
 	}
 	defer tokenStmt.Close()
 
-	postingStmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO token_postings (token, post_uri, created_at) VALUES (?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare posting stmt: %w", err)
-	}
-	defer postingStmt.Close()
-
 	for _, w := range writes {
 		if w.TokensJSON == "" {
 			continue
 		}
-
 		if _, err := tokenStmt.ExecContext(ctx, w.Post.URI, w.TokensJSON, w.CreatedAt); err != nil {
 			return fmt.Errorf("insert topic_tokens %s: %w", w.Post.URI, err)
-		}
-
-		var tokens []string
-		if err := json.Unmarshal([]byte(w.TokensJSON), &tokens); err != nil {
-			continue
-		}
-		for _, tok := range tokens {
-			if _, err := postingStmt.ExecContext(ctx, tok, w.Post.URI, w.CreatedAt); err != nil {
-				return fmt.Errorf("insert token_posting: %w", err)
-			}
 		}
 	}
 

@@ -399,7 +399,7 @@ func TestTopicIdentity_Purge(t *testing.T) {
 	}
 }
 
-func TestInsertTopicTokens_PopulatesTokenPostings(t *testing.T) {
+func TestInsertTopicTokens_OnlyWritesTopicTokens(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
@@ -408,24 +408,24 @@ func TestInsertTopicTokens_PopulatesTokenPostings(t *testing.T) {
 		t.Fatalf("InsertTopicTokens: %v", err)
 	}
 
-	var count int
-	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings WHERE post_uri='at://a/post/1'`).Scan(&count); err != nil {
-		t.Fatalf("count token_postings: %v", err)
+	var ttCount int
+	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM topic_tokens WHERE post_uri='at://a/post/1'`).Scan(&ttCount); err != nil {
+		t.Fatalf("count topic_tokens: %v", err)
 	}
-	if count != 3 {
-		t.Errorf("expected 3 token_postings rows, got %d", count)
+	if ttCount != 1 {
+		t.Errorf("expected 1 topic_tokens row, got %d", ttCount)
 	}
 
-	var token string
-	if err := s.readDB.QueryRowContext(ctx, `SELECT token FROM token_postings WHERE post_uri='at://a/post/1' AND token='beta'`).Scan(&token); err != nil {
-		t.Fatalf("query specific token: %v", err)
+	var tpCount int
+	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings`).Scan(&tpCount); err != nil {
+		t.Fatalf("count token_postings: %v", err)
 	}
-	if token != "beta" {
-		t.Errorf("expected token 'beta', got %q", token)
+	if tpCount != 0 {
+		t.Errorf("expected 0 token_postings rows (no longer written), got %d", tpCount)
 	}
 }
 
-func TestPurgeTopicTokens_AlsoPurgesTokenPostings(t *testing.T) {
+func TestPurgeTopicTokens_OnlyPurgesTopicTokens(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
@@ -436,23 +436,30 @@ func TestPurgeTopicTokens_AlsoPurgesTokenPostings(t *testing.T) {
 	s.InsertTopicTokens(ctx, "at://old/1", `["stale"]`, old)
 	s.InsertTopicTokens(ctx, "at://new/1", `["fresh"]`, recent)
 
-	insertPostWithEngagement(t, s, ctx, "at://old/1", "old post", old, 1)
-	insertPostWithEngagement(t, s, ctx, "at://new/1", "new post", recent, 1)
-
 	cutoff := now.Add(-26 * time.Hour).Format(time.RFC3339)
-	if _, err := s.PurgeTopicTokens(ctx, cutoff); err != nil {
+	deleted, err := s.PurgeTopicTokens(ctx, cutoff)
+	if err != nil {
 		t.Fatalf("PurgeTopicTokens: %v", err)
 	}
-
-	var remaining int
-	s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_postings`).Scan(&remaining)
-	if remaining != 1 {
-		t.Errorf("expected 1 token_postings row remaining, got %d", remaining)
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", deleted)
 	}
 
-	var token string
-	s.readDB.QueryRowContext(ctx, `SELECT token FROM token_postings`).Scan(&token)
-	if token != "fresh" {
-		t.Errorf("expected surviving token 'fresh', got %q", token)
+	// Query topic_tokens directly (GetTopicTokensSince JOINs post_buffer
+	// which we don't populate in this test — purge logic is table-only).
+	var remaining int
+	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM topic_tokens`).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 1 {
+		t.Errorf("expected 1 remaining topic_tokens, got %d", remaining)
+	}
+
+	var survivorURI string
+	if err := s.readDB.QueryRowContext(ctx, `SELECT post_uri FROM topic_tokens`).Scan(&survivorURI); err != nil {
+		t.Fatalf("scan survivor: %v", err)
+	}
+	if survivorURI != "at://new/1" {
+		t.Errorf("expected surviving row at://new/1, got %q", survivorURI)
 	}
 }

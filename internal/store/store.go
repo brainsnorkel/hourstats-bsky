@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -14,12 +15,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Store wraps separate read and write SQLite connection pools for hourstats.
+// Store wraps separate read, write, and maintenance SQLite connection pools for hourstats.
 // The write pool is limited to 1 connection to serialize writes at the Go level,
 // while the read pool allows up to 4 concurrent readers via WAL mode.
+// The maintenance pool has a short busy timeout for opportunistic WAL checkpoints.
 type Store struct {
 	readDB  *sql.DB
 	writeDB *sql.DB
+	maintDB *sql.DB // low-priority maintenance connection for WAL checkpoints
 	dbPath  string
 }
 
@@ -142,7 +145,21 @@ func New(dbPath string) (*Store, error) {
 	readDB.SetMaxOpenConns(4)
 	readDB.SetMaxIdleConns(4)
 
-	s := &Store{readDB: readDB, writeDB: writeDB, dbPath: dbPath}
+	maintParams := url.Values{}
+	maintParams.Add("_pragma", "busy_timeout(1000)")
+	maintParams.Add("_pragma", "journal_mode(WAL)")
+	maintDSN := fmt.Sprintf("file:%s?%s", dbPath, maintParams.Encode())
+
+	maintDB, err := sql.Open("sqlite", maintDSN)
+	if err != nil {
+		writeDB.Close()
+		readDB.Close()
+		return nil, fmt.Errorf("open maint db: %w", err)
+	}
+	maintDB.SetMaxOpenConns(1)
+	maintDB.SetMaxIdleConns(1)
+
+	s := &Store{readDB: readDB, writeDB: writeDB, maintDB: maintDB, dbPath: dbPath}
 	if err := s.migrate(); err != nil {
 		writeDB.Close()
 		readDB.Close()
@@ -153,12 +170,63 @@ func New(dbPath string) (*Store, error) {
 
 // Close closes both underlying database connections.
 func (s *Store) Close() error {
+	mErr := s.maintDB.Close()
 	wErr := s.writeDB.Close()
 	rErr := s.readDB.Close()
+	if mErr != nil {
+		return mErr
+	}
 	if wErr != nil {
 		return wErr
 	}
 	return rErr
+}
+
+func (s *Store) RunStartupMaintenance(ctx context.Context) error {
+	slog.Info("startup maintenance: cleaning derived tables")
+
+	if _, err := s.writeDB.ExecContext(ctx, "DROP TABLE IF EXISTS token_postings"); err != nil {
+		slog.Warn("drop token_postings failed", "error", err)
+	}
+	if _, err := s.writeDB.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS token_postings (
+		token TEXT NOT NULL,
+		post_uri TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (token, post_uri)
+	)`); err != nil {
+		return fmt.Errorf("recreate token_postings: %w", err)
+	}
+	s.writeDB.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_token_postings_token_created ON token_postings(token, created_at)")
+	s.writeDB.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_token_postings_created_at ON token_postings(created_at)")
+
+	cutoff := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
+	result, _ := s.writeDB.ExecContext(ctx, "DELETE FROM post_buffer WHERE inserted_at < ?", cutoff)
+	if result != nil {
+		if n, _ := result.RowsAffected(); n > 0 {
+			slog.Info("startup maintenance: purged stale posts", "count", n)
+		}
+	}
+
+	tokenCutoff := time.Now().UTC().Add(-26 * time.Hour).Format(time.RFC3339)
+	result, _ = s.writeDB.ExecContext(ctx, "DELETE FROM topic_tokens WHERE created_at < ?", tokenCutoff)
+	if result != nil {
+		if n, _ := result.RowsAffected(); n > 0 {
+			slog.Info("startup maintenance: purged stale topic_tokens", "count", n)
+		}
+	}
+
+	if _, err := s.writeDB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		slog.Warn("startup WAL checkpoint failed", "error", err)
+	} else {
+		slog.Info("startup maintenance: WAL checkpoint complete")
+	}
+
+	slog.Info("startup maintenance complete")
+	return nil
+}
+
+func (s *Store) RunWALCheckpoint(ctx context.Context) {
+	s.maintDB.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)")
 }
 
 // DB returns the read pool for external callers (e.g. statsapi).
