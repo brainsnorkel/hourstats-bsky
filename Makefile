@@ -1,7 +1,8 @@
 # HourStats Makefile
 
 .PHONY: build test test-unit test-lambdas clean deps fmt lint graph-lab help \
-	build-hourstats build-stats deploy-prod deploy-staging deploy-all fly-status fly-logs-prod fly-logs-staging
+	build-hourstats build-stats deploy-prod deploy-staging deploy-all \
+	fly-status fly-logs-prod fly-logs-staging sync-staging
 
 # Build the application
 build:
@@ -105,6 +106,9 @@ fly-logs-prod:
 fly-logs-staging:
 	fly logs -a hourstats-staging
 
+sync-staging:
+	@scripts/sync-prod-to-staging.sh
+
 help:
 	@echo "Available targets:"
 	@echo "  build              - Build all Lambda functions (linux/amd64)"
@@ -129,4 +133,5 @@ help:
 	@echo "  fly-status         - Show status of both Fly.io apps"
 	@echo "  fly-logs-prod      - Tail prod logs"
 	@echo "  fly-logs-staging   - Tail staging logs"
+	@echo "  sync-staging       - Sync prod data to staging (snapshot + restore)"
 	@echo "  help               - Show this help message"
