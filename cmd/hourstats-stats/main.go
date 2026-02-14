@@ -58,6 +58,23 @@ type PostingActivity struct {
 	TrendingTopics   *PostingEntry `json:"trending_topics"`
 }
 
+type DatabaseHealth struct {
+	DBSizeBytes   int64         `json:"db_size_bytes"`
+	WALSizeBytes  int64         `json:"wal_size_bytes"`
+	FreelistCount int64         `json:"freelist_count"`
+	PageSize      int64         `json:"page_size"`
+	PageCount     int64         `json:"page_count"`
+	Tables        []TableHealth `json:"tables"`
+	CheckedAt     string        `json:"checked_at"`
+}
+
+type TableHealth struct {
+	Name      string `json:"name"`
+	RowCount  int64  `json:"row_count"`
+	StaleRows int64  `json:"stale_rows,omitempty"`
+	Retention string `json:"retention,omitempty"`
+}
+
 type TopicSnapshot struct {
 	ID             int64    `json:"id"`
 	SnapshotTime   string   `json:"snapshot_time"`
@@ -89,7 +106,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  latest    Show the most recent stats snapshot\n")
 		fmt.Fprintf(os.Stderr, "  history   Show stats snapshot history\n")
 		fmt.Fprintf(os.Stderr, "  events    Show event log\n")
-		fmt.Fprintf(os.Stderr, "  topics    Show recent topic reasoning\n\n")
+		fmt.Fprintf(os.Stderr, "  topics    Show recent topic reasoning\n")
+		fmt.Fprintf(os.Stderr, "  health    Show database health diagnostics\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
@@ -111,6 +129,8 @@ func main() {
 		cmdEvents()
 	case "topics":
 		cmdTopics()
+	case "health":
+		cmdHealth()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
 		flag.Usage()
@@ -405,6 +425,71 @@ func cmdTopics() {
 			fmt.Println()
 		}
 	}
+}
+
+func cmdHealth() {
+	body, err := apiGet("/stats/health")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+
+	var h DatabaseHealth
+	if err := json.Unmarshal(body, &h); err != nil {
+		fmt.Fprintf(os.Stderr, "Parse error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("=== Database Health ===")
+	fmt.Printf("Checked: %s\n\n", formatTime(h.CheckedAt))
+
+	fmt.Println("--- Storage ---")
+	fmt.Printf("Database:    %s\n", formatBytes(h.DBSizeBytes))
+	fmt.Printf("WAL:         %s\n", formatBytes(h.WALSizeBytes))
+	fmt.Printf("Total:       %s\n", formatBytes(h.DBSizeBytes+h.WALSizeBytes))
+	fmt.Printf("Pages:       %s (@ %s each)\n", formatInt64(h.PageCount), formatBytes(h.PageSize))
+	freelistBytes := h.FreelistCount * h.PageSize
+	freelistPct := float64(0)
+	if h.PageCount > 0 {
+		freelistPct = float64(h.FreelistCount) / float64(h.PageCount) * 100
+	}
+	fmt.Printf("Freelist:    %s pages (%s, %.1f%%)\n\n", formatInt64(h.FreelistCount), formatBytes(freelistBytes), freelistPct)
+
+	if len(h.Tables) > 0 {
+		fmt.Println("--- Tables ---")
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "TABLE\tROWS\tSTALE\tRETENTION")
+		for _, t := range h.Tables {
+			stale := ""
+			if t.StaleRows > 0 {
+				stale = fmt.Sprintf("%s ⚠", formatInt64(t.StaleRows))
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Name, formatInt64(t.RowCount), stale, t.Retention)
+		}
+		w.Flush()
+	}
+}
+
+func formatBytes(b int64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
+func formatInt64(n int64) string {
+	return formatInt(int(n))
 }
 
 // Helper functions
