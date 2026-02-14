@@ -25,16 +25,22 @@ Bluesky Network (all posts)
         |
         | Wall-clock aligned tickers
         v
-  +---------+  every 30 min   +---------+  every 15 min   +----------+  every 6h
-  | Analysis|                 | Topic   |                 | Trending |
-  | Cycle   |                 | Analysis|                 | Post     |
-  +---------+                 +---------+                 +----------+
-  Read posts since cutoff     TF-IDF extraction           Hydrate exemplar posts
-  Hydrate engagement          Gemini Flash grouping       Generate bump chart
-  VADER sentiment analysis    Volume-based ranking        Format + post to Bluesky
-  Post summary to Bluesky     Identity tracking
-  Generate sparkline reply    Store snapshot
+  +---------+  every 30 min
+  | Analysis|
+  | Cycle   |
+  +---------+
+  Read posts since cutoff
+  Hydrate engagement
+  VADER sentiment analysis
+  Post summary to Bluesky
+  Generate sparkline reply
   Generate trendline reply
+  TF-IDF extraction (2h window)
+  Gemini Pro grouping
+  Volume-based ranking
+  Identity tracking
+  Hydrate exemplar posts
+  Format + post as reply to sparkline
 
   +----------+  daily midnight   +----------+  monthly 1st 01:00 UTC
   | Daily    |                   | Yearly   |
@@ -54,8 +60,7 @@ Everything runs inside a single Go binary (`cmd/hourstats/main.go`) on Fly.io:
 | **Jetstream Consumer** | Goroutine calling `internal/jetstream/consumer.go` | Always running (auto-restart on failure) |
 | **Analysis Cycle** | `runAnalysisCycle()` | Wall-clock ticker every 30 min |
 | **Sparkline + Trendline** | Called sequentially after analysis | Part of analysis cycle |
-| **Topic Analysis** | `topics.Analyzer.RunAnalysisCycle()` | Wall-clock ticker every 15 min |
-| **Trending Post** | `topics.Analyzer.RunTrendingPost()` | Wall-clock ticker every 6h |
+| **Topic Analysis + Post** | `topics.Analyzer.RunAnalysisCycle()` + `RunTrendingPost()` | After sparkline in analysis cycle |
 | **Daily Cycle** | `runBackup()` + `runDailyAggregation()` + `runDailyTopPostQuote()` | Wall-clock ticker daily midnight UTC |
 | **Yearly Posting** | `runYearlyPosting()` | Wall-clock ticker daily 01:00 UTC (posts on 1st) |
 | **Stall Detection** | Checks `lastPostReceived` atomic | Ticker every 5 min |
@@ -77,13 +82,13 @@ Tickers fire at clean UTC clock boundaries (e.g., :00 and :30 for the 30-minute 
 7. **Post** summary to Bluesky with mood hashtag, clickable handle facets, embed card
 8. **Generate** 7-day sparkline chart PNG → post as reply
 9. **Generate** sentiment trendline chart (root vs reply) → post as reply
-10. **Save** run state and sentiment data point to SQLite
+10. **Trending topics** TF-IDF (2h window) → Gemini Pro grouping → post as reply to sparkline
+11. **Save** run state and sentiment data point to SQLite
 
 ### Trending Topics Pipeline
 
 1. **On ingest**: Root posts (non-replies) are tokenized and stored in `topic_tokens`
-2. **Every 15 min**: TF-IDF extracts top 30 terms → Gemini Flash groups into 5 topics → rank by post volume → track identities via Jaccard similarity → store snapshot
-3. **Every 6h**: Hydrate exemplar posts → generate bump chart → format post text with movement indicators → post to Bluesky (standalone, not threaded)
+2. **Every 30 min** (after sparkline): TF-IDF extracts top terms from 2h window → Gemini Pro groups into 5 topics → rank by post volume → track identities via Jaccard similarity → store snapshot → hydrate exemplar posts → format and post as reply to sparkline
 
 ### Daily/Yearly Pipeline
 
@@ -116,7 +121,7 @@ On startup, `RunStartupMaintenance()` cleans derived tables, purges stale rows, 
 | `key_value` | Jetstream cursor, general settings | Permanent |
 | `topic_tokens` | Tokenized root posts for TF-IDF | 26 hours |
 | `token_postings` | Schema preserved but no longer written during ingest | Emptied on startup |
-| `topic_snapshots` | 15-min topic analysis results | 48 hours |
+| `topic_snapshots` | 30-min topic analysis results | 48 hours |
 | `topic_identity` | Persistent topic UUIDs and colours | 7 days |
 
 ## Environment Configuration
@@ -131,8 +136,7 @@ On startup, `RunStartupMaintenance()` cleans derived tables, purges stale rows, 
 | `ANALYSIS_INTERVAL_MINUTES` | `30` | Sentiment analysis window |
 | `TRENDING_ENABLED` | `false` | Enable trending topics feature |
 | `GOOGLE_AI_API_KEY` | (required if trending) | Gemini API key for topic grouping |
-| `TRENDING_INTERVAL` | `15` | Topic analysis frequency (minutes) |
-| `TRENDING_POST_HOURS` | `6` | Trending post frequency (hours) |
+| `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model for topic grouping |
 | `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily SQLite backups |
 | `S3_BACKUP_REGION` | `us-west-2` | AWS region for S3 backups |
 | `BACKUP_RETAIN_DAYS` | `1` | Local backup retention |

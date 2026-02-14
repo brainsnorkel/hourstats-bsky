@@ -1,10 +1,10 @@
 # Trending Topics
 
-HourStats extracts what Bluesky is talking about and posts a text summary of the top 5 trending topics every 6 hours.
+HourStats extracts what Bluesky is talking about and posts a text summary of the top 5 trending topics every 30 minutes as a reply to the sparkline chart.
 
 ## How It Works
 
-The trending topics feature runs as two independent cycles alongside the existing 30-minute sentiment analysis:
+The trending topics feature runs as part of the 30-minute sentiment analysis cycle, posting after the sparkline:
 
 ```
 Jetstream firehose
@@ -25,30 +25,47 @@ Jetstream firehose
   Tokenize (unigrams + bigrams) --> topic_tokens (SQLite, 26h retention)
 
 
-Every 15 minutes:                      Every 6 hours:
-  topic_tokens (24h window)              Latest snapshot
-  filtered: engagement > 0                    |
-        |                                     v
-        v                              Exemplar selection
-  TF-IDF (top 50 terms)                (post_buffer JOIN,
-        |                               ranked by engagement;
-        v                               meme topics skipped)
-  Gemini Flash (group + label,                |
-    temperature 0.2,                          v
-    aggressive merge,                  Format post text
-    meme detection)                     (numbered topics +
-        |                               exemplar mentions OR
-        v                               🔍 search links for memes +
-  Filter generic clusters               #hstrend facet)
-        |                                     |
-        v                                     v
-  Rank by post volume (top 5)          Post to Bluesky
-        |                              (standalone, not threaded)
-        v
+Every 30 minutes (after sparkline):
+  topic_tokens (2h window)
+  filtered: engagement > 0
+         |
+         v
+  TF-IDF (top 50 terms)
+         |
+         v
+  Gemini Pro (group + label,
+    temperature 0.2,
+    aggressive merge,
+    meme detection)
+         |
+         v
+  Filter generic clusters
+         |
+         v
+  Rank by post volume (top 5)
+         |
+         v
   Match identities (Jaccard)
-        |
-        v
+         |
+         v
   Store snapshot
+         |
+         v
+  Exemplar selection
+  (post_buffer JOIN,
+   ranked by engagement;
+   meme topics skipped)
+         |
+         v
+  Format post text
+  (numbered topics +
+   exemplar mentions OR
+   🔍 search links for memes +
+   #hstrend facet)
+         |
+         v
+  Post as reply to sparkline
+  (falls back to standalone on failure)
 ```
 
 ## The Pipeline
@@ -70,9 +87,9 @@ Tokenization steps:
 
 The cleaned token set (unigrams + bigrams) is stored as a JSON array in `topic_tokens` alongside the post URI. Replies are excluded because they tend to echo the root post's topic without adding signal. Tokens are retained for 26 hours (24-hour analysis window + 2-hour buffer) and then purged.
 
-### 2. TF-IDF Extraction (every 15 minutes)
+### 2. TF-IDF Extraction (every 30 minutes)
 
-TF-IDF (Term Frequency-Inverse Document Frequency) scores every token across the rolling 24-hour corpus:
+TF-IDF (Term Frequency-Inverse Document Frequency) scores every token across a rolling 2-hour corpus:
 
 - **Term Frequency**: How often a term appears in a single post
 - **Inverse Document Frequency**: Penalises terms that appear in many posts (common words score lower)
@@ -86,11 +103,11 @@ TF-IDF (Term Frequency-Inverse Document Frequency) scores every token across the
 - At most 20,000 rows (`maxTFIDFRows`) are sampled from `topic_tokens` to bound compute time
 - The top 50 terms (`MaxTFIDFTerms`) by TF-IDF score are passed to the next stage
 
-### 3. LLM-Powered Synonym Grouping (Gemini Flash)
+### 3. LLM-Powered Synonym Grouping (Gemini Pro)
 
 Short social media posts (typically under 300 characters) have weak co-occurrence signals. The word "trump" and "potus" rarely appear in the *same* post, so algorithmic clustering fails to group them. An LLM understands semantic relationships.
 
-A single Google Gemini Flash API call receives the top 50 TF-IDF terms and returns:
+A single Google Gemini Pro API call receives the top 50 TF-IDF terms and returns:
 
 - **Grouped clusters**: Related terms grouped together (e.g., ["trump", "potus", "maga"])
 - **Labels**: A 1-3 word subject-only name for each group (e.g., "Donald Trump"). Filler words (Posts, Mentions, Discussions, Event, Content, Media, etc.) are banned by the prompt
@@ -111,11 +128,11 @@ The synonym maps are the key innovation. They're used to recount post volume in 
 
 If Gemini is unavailable, the system falls back to using the top 5 TF-IDF terms as standalone topic labels.
 
-**Cost**: ~$0.04/day (96 calls at Gemini Flash pricing). Hard-capped at 100 calls/day.
+**Cost**: ~$0.60/day (48 calls at Gemini Pro pricing). Hard-capped at 100 calls/day. Model is configurable via `GEMINI_MODEL` env var (default: `gemini-2.5-pro`).
 
 ### 4. Volume-Based Ranking
 
-Each topic cluster is scored by counting how many posts in the 24-hour window contain ANY of its keywords or LLM-provided synonyms. The top 5 by post count are selected.
+Each topic cluster is scored by counting how many posts in the 2-hour window contain ANY of its keywords or LLM-provided synonyms. The top 5 by post count are selected.
 
 ### 5. Identity Tracking (Jaccard Similarity)
 
@@ -140,13 +157,13 @@ At posting time, the system identifies the highest-engagement post for each topi
 3. **Multi-hashtag filter**: Posts with more than one hashtag are excluded from exemplar candidates (`LENGTH(pb.text) - LENGTH(REPLACE(pb.text, '#', '')) <= 1`) to avoid promotional content
 4. **Engagement ranking**: Results are ordered by `(likes + reposts + replies) DESC`, then by keyword match count as tiebreaker
 5. **Handle deduplication**: Each topic gets a unique exemplar author — if the top candidate's handle was already used by a higher-ranked topic, the next candidate is selected
-6. **6-hour window**: Only posts from the last 6 hours are considered, ensuring fresh exemplars
+6. **2-hour window**: Only posts from the last 2 hours are considered, ensuring fresh exemplars
 
 This approach replaced the original `FeedGetPosts` API-based hydration. Since `post_buffer` already contains engagement data hydrated by the sentiment analysis cycle, we can read it directly — zero API calls, faster execution, and engagement scores that reflect the latest hydration (72-1,017 engagement scores observed vs 0-4 with the old approach).
 
 ### 7. Posting
 
-The trending post is published as a **standalone** post (not threaded to the sentiment analysis chain) with:
+The trending post is published as a **reply to the sparkline** chart (threaded under the sentiment summary) with:
 
 ```
 Topics
@@ -174,17 +191,16 @@ The `#hstrend` hashtag is a proper AT Protocol facet, allowing users to mute the
 |----------|---------|-------------|
 | `TRENDING_ENABLED` | `false` | Master switch for the entire feature |
 | `GOOGLE_AI_API_KEY` | (required) | Gemini API key; feature auto-disables if missing |
-| `TRENDING_INTERVAL` | `15` | Topic analysis frequency in minutes |
-| `TRENDING_POST_HOURS` | `6` | Trending post frequency in hours |
+| `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model for topic grouping |
 | `DRY_RUN` | `false` | When true, logs trending posts instead of publishing |
 
 ## Data Retention
 
 | Table | Retention | Purge Trigger |
 |-------|-----------|---------------|
-| `topic_tokens` | 26 hours | Each 15-minute analysis cycle |
-| `topic_snapshots` | 48 hours | Each 15-minute analysis cycle |
-| `topic_identity` | 7 days | Each 15-minute analysis cycle |
+| `topic_tokens` | 26 hours | Each 30-minute analysis cycle |
+| `topic_snapshots` | 48 hours | Each 30-minute analysis cycle |
+| `topic_identity` | 7 days | Each 30-minute analysis cycle |
 
 ## Why These Choices
 
@@ -202,7 +218,7 @@ The `#hstrend` hashtag is a proper AT Protocol facet, allowing users to mute the
 
 **Jaccard similarity instead of embeddings**: Topic identity only needs to answer "are these roughly the same keywords?" Jaccard on keyword sets is fast, deterministic, and requires no model inference. Embeddings would add latency, cost, and a model dependency for marginal benefit.
 
-**Standalone posts instead of threading**: The trending feature is conceptually separate from sentiment analysis. Threading it to the 30-minute chain would add noise. Standalone posts with a hashtag facet let users mute independently.
+**Threaded replies instead of standalone posts**: The trending post appears as a reply to the sparkline, keeping the thread structure clean (Summary → Sparkline → Topics). If reply posting fails, the system falls back to a standalone post. Users can still mute via `#hstrend`.
 
 **Text-only posts (no bump chart image)**: The bump chart image was removed from the posted content for a cleaner format. Topic names and exemplar links communicate the essential information more directly than a chart.
 

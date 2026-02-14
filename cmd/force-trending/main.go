@@ -33,6 +33,7 @@ func main() {
 	handle := os.Getenv("BLUESKY_HANDLE")
 	password := os.Getenv("BLUESKY_PASSWORD")
 	geminiKey := os.Getenv("GOOGLE_AI_API_KEY")
+	geminiModel := os.Getenv("GEMINI_MODEL")
 
 	if handle == "" || password == "" {
 		slog.Error("BLUESKY_HANDLE and BLUESKY_PASSWORD must be set")
@@ -61,7 +62,7 @@ func main() {
 	}
 	slog.Info("authenticated with bluesky", "handle", handle)
 
-	analyzer := topics.NewAnalyzer(db, geminiKey)
+	analyzer := topics.NewAnalyzer(db, geminiKey, geminiModel)
 
 	if !*postOnly {
 		slog.Info("running topic analysis cycle...")
@@ -75,7 +76,7 @@ func main() {
 	}
 
 	slog.Info("running trending post...", "dry_run", *dryRun)
-	if err := analyzer.RunTrendingPost(ctx, bskyClient, *dryRun); err != nil {
+	if err := analyzer.RunTrendingPost(ctx, bskyClient, *dryRun, "", "", "", ""); err != nil {
 		slog.Error("trending post failed", "error", err)
 		os.Exit(1)
 	}

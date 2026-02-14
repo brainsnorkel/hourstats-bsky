@@ -27,6 +27,7 @@ type AnalyzerStore interface {
 
 type TrendingPoster interface {
 	PostWithFacets(ctx context.Context, text string, facets []*bsky.RichtextFacet) error
+	PostWithFacetsAsReply(ctx context.Context, text string, facets []*bsky.RichtextFacet, rootURI, rootCID, parentURI, parentCID string) (string, string, error)
 }
 
 type Analyzer struct {
@@ -36,8 +37,8 @@ type Analyzer struct {
 	hydrator *ExemplarHydrator
 }
 
-func NewAnalyzer(s AnalyzerStore, geminiAPIKey string) *Analyzer {
-	grouper := NewGrouper(geminiAPIKey)
+func NewAnalyzer(s AnalyzerStore, geminiAPIKey, geminiModel string) *Analyzer {
+	grouper := NewGrouper(geminiAPIKey, geminiModel)
 	tracker := NewTracker(s)
 	exemplarHydrator := NewExemplarHydrator(s)
 
@@ -68,7 +69,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		return fmt.Errorf("purge snapshots: %w", err)
 	}
 
-	tokenCutoff := time.Now().UTC().Add(-6 * time.Hour).Format(time.RFC3339)
+	tokenCutoff := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
 	count, err := a.store.CountTopicTokensSince(ctx, tokenCutoff)
 	if err != nil {
 		return fmt.Errorf("count tokens: %w", err)
@@ -125,7 +126,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 	return nil
 }
 
-func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, dryRun bool) error {
+func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, dryRun bool, rootURI, rootCID, parentURI, parentCID string) error {
 	start := time.Now()
 
 	snapshotCutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
@@ -196,7 +197,7 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		slog.Warn("topics: exemplar hydration error", "error", err)
 	}
 
-	text, facets := FormatTrendingPost(latestTopics, previous, 6)
+	text, facets := FormatTrendingPost(latestTopics, previous, 2)
 
 	if dryRun {
 		slog.Info("topics: DRY RUN trending post", "text", text, "facets", len(facets))
@@ -208,15 +209,28 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	}
 
 	bskyFacets := convertFacets(facets)
-	if err := poster.PostWithFacets(ctx, text, bskyFacets); err != nil {
-		return fmt.Errorf("post trending: %w", err)
+
+	if rootURI != "" && rootCID != "" && parentURI != "" && parentCID != "" {
+		_, _, err := poster.PostWithFacetsAsReply(ctx, text, bskyFacets, rootURI, rootCID, parentURI, parentCID)
+		if err != nil {
+			slog.Warn("topics: reply post failed, falling back to standalone", "error", err)
+			if err2 := poster.PostWithFacets(ctx, text, bskyFacets); err2 != nil {
+				return fmt.Errorf("post trending (fallback): %w", err2)
+			}
+			slog.Info("topics: trending post published as standalone (fallback)")
+		} else {
+			slog.Info("topics: trending post published as reply", "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
+		}
+	} else {
+		if err := poster.PostWithFacets(ctx, text, bskyFacets); err != nil {
+			return fmt.Errorf("post trending: %w", err)
+		}
+		slog.Info("topics: trending post published as standalone", "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 	}
 
 	if err := a.store.SetKeyValue(ctx, "trending_post_last_time", time.Now().UTC().Format(time.RFC3339)); err != nil {
 		slog.Warn("topics: failed to record trending post time", "error", err)
 	}
-
-	slog.Info("topics: trending post published", "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 	return nil
 }
 
