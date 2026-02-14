@@ -20,6 +20,7 @@ type StatsStore interface {
 	GetEvents(ctx context.Context, since time.Time, eventType string, limit int) ([]store.StatsEvent, error)
 	GetRecentTopicSnapshots(ctx context.Context, since string, limit int) ([]store.TopicSnapshotRow, error)
 	GetPostingActivity(ctx context.Context) (*store.PostingActivity, error)
+	GetDatabaseHealth(ctx context.Context) (*store.DatabaseHealth, error)
 }
 
 // Server provides an HTTP API for querying stats.
@@ -38,6 +39,7 @@ func New(store StatsStore, port int) *Server {
 	mux.HandleFunc("GET /stats/events", s.handleEvents)
 	mux.HandleFunc("GET /stats/topics", s.handleTopics)
 	mux.HandleFunc("GET /stats/posting", s.handlePosting)
+	mux.HandleFunc("GET /stats/health", s.handleHealth)
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
@@ -265,6 +267,17 @@ func (s *Server) handlePosting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, activity)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	health, err := s.store.GetDatabaseHealth(ctx)
+	if err != nil {
+		slog.Error("failed to get database health", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
 }
 
 // writeError writes a JSON error response.
