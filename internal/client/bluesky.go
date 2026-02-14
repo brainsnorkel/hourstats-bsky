@@ -890,6 +890,47 @@ func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageDat
 	return postedURI, postedCID, nil
 }
 
+// PostWithFacetsAsReply posts a text with optional rich-text facets as a reply to another post.
+// rootURI/rootCID must always point to the thread's original (root) post.
+// parentURI/parentCID point to the immediate parent being replied to.
+// Returns the URI and CID of the newly created reply post.
+func (c *BlueskyClient) PostWithFacetsAsReply(ctx context.Context, text string, facets []*bsky.RichtextFacet, rootURI, rootCID, parentURI, parentCID string) (string, string, error) {
+	if c.client == nil {
+		return "", "", fmt.Errorf("client not authenticated")
+	}
+
+	postRecord := &bsky.FeedPost{
+		Text:      text,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Reply: &bsky.FeedPost_ReplyRef{
+			Root: &atproto.RepoStrongRef{
+				Uri: rootURI,
+				Cid: rootCID,
+			},
+			Parent: &atproto.RepoStrongRef{
+				Uri: parentURI,
+				Cid: parentCID,
+			},
+		},
+	}
+
+	if facets != nil {
+		postRecord.Facets = facets
+	}
+
+	resp, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+		Repo:       c.handle,
+		Collection: "app.bsky.feed.post",
+		Record:     &util.LexiconTypeDecoder{Val: postRecord},
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to post reply with facets: %w", err)
+	}
+
+	log.Printf("Successfully posted reply with facets: %s (root: %s, parent: %s)", text[:min(50, len(text))], rootURI, parentURI)
+	return resp.Uri, resp.Cid, nil
+}
+
 // PostWithImageAsReply posts a text with an embedded image as a reply to another post.
 // rootURI/rootCID must always point to the thread's original (root) post.
 // parentURI/parentCID point to the immediate parent being replied to.

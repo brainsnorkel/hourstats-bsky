@@ -145,7 +145,7 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 	ms := &mockAnalyzerStore{tokenCount: 50}
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test"),
+		grouper:  NewGrouper("test", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
@@ -169,12 +169,12 @@ func TestRunTrendingPost_DryRun(t *testing.T) {
 
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test"),
+		grouper:  NewGrouper("test", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), nil, true)
+	err := a.RunTrendingPost(context.Background(), nil, true, "", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -184,24 +184,34 @@ func TestRunTrendingPost_NoSnapshots(t *testing.T) {
 	ms := &mockAnalyzerStore{}
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test"),
+		grouper:  NewGrouper("test", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), nil, false)
+	err := a.RunTrendingPost(context.Background(), nil, false, "", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 type mockPoster struct {
-	posted bool
+	posted      bool
+	postedReply bool
+	replyErr    error
 }
 
 func (m *mockPoster) PostWithFacets(_ context.Context, _ string, _ []*bsky.RichtextFacet) error {
 	m.posted = true
 	return nil
+}
+
+func (m *mockPoster) PostWithFacetsAsReply(_ context.Context, _ string, _ []*bsky.RichtextFacet, _, _, _, _ string) (string, string, error) {
+	if m.replyErr != nil {
+		return "", "", m.replyErr
+	}
+	m.postedReply = true
+	return "at://reply/uri", "replycid", nil
 }
 
 func TestRunTrendingPost_Posts(t *testing.T) {
@@ -215,17 +225,73 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 	poster := &mockPoster{}
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test"),
+		grouper:  NewGrouper("test", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), poster, false)
+	err := a.RunTrendingPost(context.Background(), poster, false, "", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !poster.posted {
 		t.Error("expected post to be published")
+	}
+}
+
+func TestRunTrendingPost_AsReply(t *testing.T) {
+	ms := &mockAnalyzerStore{
+		snapshots: []store.TopicSnapshotRow{
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 15},
+		},
+	}
+
+	poster := &mockPoster{}
+	a := &Analyzer{
+		store:    ms,
+		grouper:  NewGrouper("test", ""),
+		tracker:  NewTracker(ms),
+		hydrator: NewExemplarHydrator(ms),
+	}
+
+	err := a.RunTrendingPost(context.Background(), poster, false, "at://root/uri", "rootcid", "at://spark/uri", "sparkcid")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !poster.postedReply {
+		t.Error("expected post as reply")
+	}
+	if poster.posted {
+		t.Error("expected reply path, not standalone")
+	}
+}
+
+func TestRunTrendingPost_ReplyFallback(t *testing.T) {
+	ms := &mockAnalyzerStore{
+		snapshots: []store.TopicSnapshotRow{
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 15},
+		},
+	}
+
+	poster := &mockPoster{replyErr: fmt.Errorf("reply failed")}
+	a := &Analyzer{
+		store:    ms,
+		grouper:  NewGrouper("test", ""),
+		tracker:  NewTracker(ms),
+		hydrator: NewExemplarHydrator(ms),
+	}
+
+	err := a.RunTrendingPost(context.Background(), poster, false, "at://root/uri", "rootcid", "at://spark/uri", "sparkcid")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if poster.postedReply {
+		t.Error("expected reply to fail")
+	}
+	if !poster.posted {
+		t.Error("expected fallback to standalone post")
 	}
 }
 

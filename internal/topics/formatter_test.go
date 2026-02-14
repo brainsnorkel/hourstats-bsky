@@ -11,10 +11,10 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather"}}, TopicID: "t2", Rank: 2},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 6)
+	text, facets := FormatTrendingPost(ranked, nil, 2)
 
-	if !strings.Contains(text, "Trending topics (6h)") {
-		t.Errorf("expected header 'Trending topics (6h)', text: %q", text)
+	if !strings.Contains(text, "Trending topics (2h)") {
+		t.Errorf("expected header 'Trending topics (2h)', text: %q", text)
 	}
 	if !strings.Contains(text, "1. Politics") {
 		t.Errorf("expected '1. Politics', text: %q", text)
@@ -58,7 +58,7 @@ func TestFormatTrendingPost_NoMovementIndicators(t *testing.T) {
 		{TopicID: "t2", Rank: 2},
 	}
 
-	text, _ := FormatTrendingPost(ranked, previous, 6)
+	text, _ := FormatTrendingPost(ranked, previous, 2)
 
 	if strings.Contains(text, "(+") || strings.Contains(text, "(-") || strings.Contains(text, "(->)") || strings.Contains(text, "(NEW)") {
 		t.Errorf("expected no movement indicators, text: %q", text)
@@ -76,7 +76,7 @@ func TestFormatTrendingPost_HashtagFacetByteOffsets(t *testing.T) {
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Test"}}, TopicID: "t1", Rank: 1},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 6)
+	text, facets := FormatTrendingPost(ranked, nil, 2)
 
 	for _, f := range facets {
 		if f.Type != FacetTag {
@@ -100,7 +100,7 @@ func TestFormatTrendingPost_ExemplarLinkFacetOffset(t *testing.T) {
 		},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 6)
+	text, facets := FormatTrendingPost(ranked, nil, 2)
 
 	var linkFacet *Facet
 	for i := range facets {
@@ -141,7 +141,7 @@ func TestFormatTrendingPost_NoExemplar(t *testing.T) {
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Test"}}, TopicID: "t1", Rank: 1},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 6)
+	text, facets := FormatTrendingPost(ranked, nil, 2)
 	if strings.Contains(text, "@") {
 		t.Errorf("expected no @ mention without exemplar, text: %q", text)
 	}
@@ -165,7 +165,7 @@ func TestFormatTrendingPost_MemeTopicSearchLink(t *testing.T) {
 		},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 6)
+	text, facets := FormatTrendingPost(ranked, nil, 2)
 
 	if !strings.Contains(text, "1. Post a Banger 🔍") {
 		t.Errorf("expected meme topic with 🔍, text: %q", text)
@@ -214,7 +214,7 @@ func TestFormatTrendingPost_MixedMemeAndExemplar(t *testing.T) {
 		},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 6)
+	text, facets := FormatTrendingPost(ranked, nil, 2)
 
 	if !strings.Contains(text, "1. Donald Trump @alice.bsky.social") {
 		t.Errorf("expected exemplar for non-meme topic, text: %q", text)

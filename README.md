@@ -16,7 +16,7 @@ Bluesky HourStats is an automated bot that:
 - Posts summaries with the top 5 posts and overall community sentiment
 - Generates 7-day sentiment sparklines
 - Creates yearly sentiment charts (monthly posts)
-- Tracks trending topics (TF-IDF + Gemini Flash)
+- Tracks trending topics (TF-IDF + Gemini Pro)
 - Posts daily top-post quote replies to the yearly thread
 
 ## Post Format
@@ -35,7 +35,7 @@ Bluesky is #satisfied
 - **Top 5 posts**: Ranked by engagement with clickable links
 - **Sentiment indicators**: + (positive), - (negative), x (neutral)
 - **7-day sparklines**: Visual sentiment trends posted with each summary
-- **Trending topics**: Top 5 topic list with exemplar post links, posted every 6 hours
+- **Trending topics**: Top 5 topic list with exemplar post links, posted every 30 minutes as reply to sparkline
 - **Sentiment trendlines**: Original posts vs reply sentiment comparison
 - **Yearly charts**: Monthly posts showing 365 days of sentiment data
 
@@ -47,7 +47,7 @@ The bot runs as a single Go binary on [Fly.io](https://fly.io) with the followin
 - **Analysis Cycle**: Every 30 minutes (wall-clock aligned), reads posts from the window, hydrates engagement via the Bluesky API, runs VADER sentiment analysis, and posts a summary with the top 5 most engaged posts.
 - **Sparkline Poster**: Generates and posts a 7-day sentiment sparkline chart as a reply to each summary.
 - **Sentiment Trendline**: Posts an original-vs-reply sentiment comparison chart.
-- **Trending Topics**: Every 6 hours, identifies top 5 topics using TF-IDF analysis grouped by Gemini Flash, posts a text summary with highest-engagement exemplar post links.
+- **Trending Topics**: Every 30 minutes (after sparkline), identifies top 5 topics using TF-IDF analysis (2-hour window) grouped by Gemini Pro, posts a text summary as a reply to the sparkline.
 - **Daily Cycle**: Aggregates daily sentiment averages, creates local + S3 backups, posts a daily top-post quote reply to the yearly thread.
 - **Yearly Poster**: On the 1st of each month at 01:00 UTC, generates and posts a yearly sentiment chart.
 
@@ -59,7 +59,7 @@ State is stored in a local SQLite database (WAL mode) on a persistent Fly.io vol
 - **AT Protocol**: [Bluesky indigo library](https://github.com/bluesky-social/indigo)
 - **Firehose**: Bluesky Jetstream (WebSocket)
 - **Sentiment Analysis**: [GoVader](https://github.com/jonreiter/govader)
-- **Topic Grouping**: Google Gemini Flash API
+- **Topic Grouping**: Google Gemini Pro API (configurable via GEMINI_MODEL)
 - **Image Generation**: Go graphics library (fogleman/gg)
 - **Database**: SQLite (WAL mode) via [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) (pure Go, no CGO)
 - **Deployment**: [Fly.io](https://fly.io) (single VM + persistent volume)
@@ -107,6 +107,7 @@ For trending topics, also set:
 ```bash
 export TRENDING_ENABLED=true
 export GOOGLE_AI_API_KEY="your-gemini-api-key"
+export GEMINI_MODEL="gemini-2.5-pro"  # optional, defaults to gemini-2.5-pro
 ```
 
 ## How It Works
@@ -117,7 +118,7 @@ export GOOGLE_AI_API_KEY="your-gemini-api-key"
 4. **Engagement Ranking**: Ranks posts by total engagement (replies + likes + reposts)
 5. **Posting**: Publishes top 5 posts with sentiment indicators and mood hashtag
 6. **Visualizations**: Generates sparklines, sentiment trendlines, and yearly charts
-7. **Trending Topics**: TF-IDF extraction + Gemini Flash grouping → text post with exemplar links
+7. **Trending Topics**: TF-IDF extraction + Gemini Pro grouping → text reply to sparkline with exemplar links
 
 ## Features
 
@@ -130,7 +131,7 @@ export GOOGLE_AI_API_KEY="your-gemini-api-key"
 - ✅ Original vs reply sentiment trendlines
 - ✅ Yearly sentiment charts with month markers
 - ✅ Daily sentiment aggregation
-- ✅ Trending topics with exemplar links (TF-IDF + Gemini Flash, posted every 6h)
+- ✅ Trending topics with exemplar links (TF-IDF + Gemini Pro, posted every 30 min as reply to sparkline)
 - ✅ Daily top-post quote reply to yearly thread
 - ✅ SQLite with WAL mode on persistent Fly.io volume
 - ✅ Daily SQLite → S3 backups (essential tables only)
@@ -140,7 +141,7 @@ export GOOGLE_AI_API_KEY="your-gemini-api-key"
 
 ### Trending Topics
 
-Every 6 hours, the bot identifies the top 5 trending topics on Bluesky and posts a standalone text update. Topics are extracted using TF-IDF analysis of root posts (filtered for spam and adult content), grouped by Google Gemini Flash for semantic understanding, and tracked with persistent identities across ranking cycles.
+Every 30 minutes, the bot identifies the top 5 trending topics on Bluesky and posts them as a reply to the sparkline chart (threaded under the sentiment summary). Topics are extracted using TF-IDF analysis (2-hour window) of root posts (filtered for spam and adult content), grouped by Google Gemini Pro for semantic understanding, and tracked with persistent identities across ranking cycles.
 
 Each topic includes a link to the highest-engagement exemplar post. Spam is filtered at three layers: adult content labels at ingestion, multi-hashtag posts at ingestion, and zero-engagement posts at TF-IDF query time. Users can mute trending posts via `#hstrend` without affecting the sentiment feed.
 

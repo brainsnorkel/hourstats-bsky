@@ -43,8 +43,7 @@ func main() {
 
 	trendingEnabled := envBool("TRENDING_ENABLED", false)
 	geminiAPIKey := os.Getenv("GOOGLE_AI_API_KEY")
-	trendingInterval := envInt("TRENDING_INTERVAL", 15)
-	trendingPostHours := envInt("TRENDING_POST_HOURS", 6)
+	geminiModel := envOr("GEMINI_MODEL", "gemini-2.5-pro")
 
 	if trendingEnabled && geminiAPIKey == "" {
 		slog.Error("TRENDING_ENABLED=true but GOOGLE_AI_API_KEY is empty, disabling trending")
@@ -91,7 +90,7 @@ func main() {
 	_ = db.SetKeyValue(context.Background(), "schedule_daily_quote_hour", "0")
 	_ = db.SetKeyValue(context.Background(), "schedule_yearly_hour", "1")
 	if trendingEnabled {
-		_ = db.SetKeyValue(context.Background(), "schedule_trending_post_hours", strconv.Itoa(trendingPostHours))
+		_ = db.SetKeyValue(context.Background(), "schedule_trending_with_sentiment", "true")
 	}
 
 	// Start stats HTTP API
@@ -123,14 +122,9 @@ func main() {
 	yearlyPostCh := newDailyTickerAtHour(1)
 
 	var topicAnalyzer *topics.Analyzer
-	var topicAnalysisCh, trendingPostCh <-chan time.Time
 	if trendingEnabled {
-		slog.Info("trending topics enabled",
-			"analysis_interval", fmt.Sprintf("%dm", trendingInterval),
-			"post_interval", fmt.Sprintf("%dh", trendingPostHours),
-		)
-		topicAnalysisCh = newWallClockTicker(time.Duration(trendingInterval) * time.Minute)
-		trendingPostCh = newWallClockTicker(time.Duration(trendingPostHours) * time.Hour)
+		topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey, geminiModel)
+		slog.Info("trending topics enabled (runs with sentiment cycle)")
 	}
 
 	var s3Cfg *store.S3BackupConfig
@@ -177,7 +171,7 @@ func main() {
 			return
 
 		case <-analysisCh:
-			runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes, collector)
+			runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes, collector, topicAnalyzer)
 
 		case <-backupCh:
 			runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
@@ -191,27 +185,6 @@ func main() {
 
 		case <-yearlyPostCh:
 			runYearlyPosting(ctx, db, handle, password, dryRun)
-
-		case <-topicAnalysisCh:
-			if topicAnalyzer == nil {
-				topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey)
-			}
-			if err := topicAnalyzer.RunAnalysisCycle(ctx); err != nil {
-				slog.Error("topic analysis cycle failed", "error", err)
-			}
-
-		case <-trendingPostCh:
-			bskyClient := client.New(handle, password)
-			if err := bskyClient.Authenticate(); err != nil {
-				slog.Error("trending post auth failed", "error", err)
-				continue
-			}
-			if topicAnalyzer == nil {
-				topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey)
-			}
-			if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun); err != nil {
-				slog.Error("trending post failed", "error", err)
-			}
 
 		case <-statsSnapshotCh:
 			if err := collector.TakeSnapshot(ctx); err != nil {
@@ -395,7 +368,7 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 // 30-minute analysis cycle
 // ---------------------------------------------------------------------------
 
-func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password string, dryRun bool, analysisMinutes int, collector *stats.Collector) {
+func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password string, dryRun bool, analysisMinutes int, collector *stats.Collector, topicAnalyzer *topics.Analyzer) {
 	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102-150405"))
 	slog.Info("analysis cycle starting", "run_id", runID)
 
@@ -572,7 +545,23 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		}
 
 		rootURI, rootCID := postedURI, postedCID
-		postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
+		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
+
+		// Run trending topics as reply to sparkline (topics failure must not block the cycle)
+		if topicAnalyzer != nil {
+			if err := topicAnalyzer.RunAnalysisCycle(ctx); err != nil {
+				slog.Error("topic analysis cycle failed", "error", err)
+			} else if sparkURI != "" && sparkCID != "" {
+				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, rootURI, rootCID, sparkURI, sparkCID); err != nil {
+					slog.Error("trending post failed", "error", err)
+				}
+			} else {
+				// Sparkline didn't post (dry run or error) — post topics standalone
+				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, "", "", "", ""); err != nil {
+					slog.Error("trending post failed", "error", err)
+				}
+			}
+		}
 	}
 
 	purged, _ := db.PurgeExpiredPosts(ctx, 7*time.Hour)

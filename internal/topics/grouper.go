@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	defaultGeminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-	maxDailyCalls         = 100
+	geminiBaseURL      = "https://generativelanguage.googleapis.com/v1beta/models/"
+	DefaultGeminiModel = "gemini-2.5-pro"
+	maxDailyCalls      = 100
 )
 
 // Grouper calls Google Gemini Flash to group TF-IDF terms into topic clusters.
@@ -27,11 +28,13 @@ type Grouper struct {
 	lastReset  time.Time
 }
 
-// NewGrouper creates a Grouper using the default Gemini endpoint.
-func NewGrouper(apiKey string) *Grouper {
+func NewGrouper(apiKey, model string) *Grouper {
+	if model == "" {
+		model = DefaultGeminiModel
+	}
 	return &Grouper{
 		apiKey:   apiKey,
-		endpoint: defaultGeminiEndpoint,
+		endpoint: geminiBaseURL + model + ":generateContent",
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},

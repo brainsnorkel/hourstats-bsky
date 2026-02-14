@@ -69,7 +69,7 @@ func TestGroupAndLabel_Success(t *testing.T) {
 }
 
 func TestGroupAndLabel_EmptyTerms(t *testing.T) {
-	g := NewGrouper("test-key")
+	g := NewGrouper("test-key", "")
 	clusters, err := g.GroupAndLabel(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
