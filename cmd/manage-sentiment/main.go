@@ -65,7 +65,7 @@ func listObservations(ctx context.Context, manager *state.SentimentHistoryManage
 			duration = hours
 		}
 	}
-	
+
 	fmt.Printf("📋 Listing sentiment observations from the last %.0f hours:\n\n", duration.Hours())
 
 	// Get observations from specified duration
@@ -84,7 +84,7 @@ func listObservations(ctx context.Context, manager *state.SentimentHistoryManage
 	for i, obs := range observations {
 		// Create composite key for easy copy-paste
 		compositeKey := fmt.Sprintf("%s#%s", obs.RunID, obs.Timestamp.Format(time.RFC3339))
-		
+
 		// Format timestamp for display
 		timestampDisplay := obs.Timestamp.Format("2006-01-02 15:04:05 MST")
 
@@ -116,7 +116,7 @@ func deleteObservation(ctx context.Context, manager *state.SentimentHistoryManag
 	fmt.Println()
 	fmt.Println("📋 Deleted observation (save this JSON to restore if needed):")
 	fmt.Println(strings.Repeat("=", 60))
-	
+
 	// Output as JSON for easy restore
 	jsonData, err := json.MarshalIndent(dataPoint, "", "  ")
 	if err != nil {

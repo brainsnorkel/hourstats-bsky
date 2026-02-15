@@ -14,12 +14,12 @@ import (
 
 func main() {
 	var (
-		tablesStr  = flag.String("tables", "", "Comma-separated list of table names to backup (required)")
-		outputDir  = flag.String("output", "./backups", "Output directory for backups")
-		s3Bucket   = flag.String("s3-bucket", "", "S3 bucket name (optional, if provided backup will be uploaded)")
-		s3Prefix   = flag.String("s3-prefix", "hourstats-backup", "S3 prefix for backup files")
-		compress   = flag.Bool("compress", false, "Compress backup files with gzip")
-		verbose    = flag.Bool("verbose", false, "Enable verbose logging")
+		tablesStr = flag.String("tables", "", "Comma-separated list of table names to backup (required)")
+		outputDir = flag.String("output", "./backups", "Output directory for backups")
+		s3Bucket  = flag.String("s3-bucket", "", "S3 bucket name (optional, if provided backup will be uploaded)")
+		s3Prefix  = flag.String("s3-prefix", "hourstats-backup", "S3 prefix for backup files")
+		compress  = flag.Bool("compress", false, "Compress backup files with gzip")
+		verbose   = flag.Bool("verbose", false, "Enable verbose logging")
 	)
 	flag.Parse()
 
@@ -100,4 +100,3 @@ func formatBytes(bytes int64) string {
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
-

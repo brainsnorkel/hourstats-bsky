@@ -272,5 +272,3 @@ func fetchBatchInParallel(ctx context.Context, client *bskyclient.BlueskyClient,
 
 	return allPosts, shouldStop, nil
 }
-
-

@@ -11,21 +11,21 @@ import (
 
 // Manifest represents backup metadata
 type Manifest struct {
-	BackupTimestamp string                `json:"backupTimestamp"`
-	BackupVersion   string                `json:"backupVersion"`
-	Tables          []TableManifest       `json:"tables"`
-	TotalItems      int                   `json:"totalItems"`
-	Checksum        string                `json:"checksum"`
+	BackupTimestamp string          `json:"backupTimestamp"`
+	BackupVersion   string          `json:"backupVersion"`
+	Tables          []TableManifest `json:"tables"`
+	TotalItems      int             `json:"totalItems"`
+	Checksum        string          `json:"checksum"`
 }
 
 // TableManifest contains metadata for a single table backup
 type TableManifest struct {
-	TableName      string   `json:"tableName"`
-	ItemCount      int      `json:"itemCount"`
-	FileSize       int64    `json:"fileSize"`
-	FileName       string   `json:"fileName"`
-	Checksum       string   `json:"checksum"`
-	BackupDuration string   `json:"backupDuration"`
+	TableName      string `json:"tableName"`
+	ItemCount      int    `json:"itemCount"`
+	FileSize       int64  `json:"fileSize"`
+	FileName       string `json:"fileName"`
+	Checksum       string `json:"checksum"`
+	BackupDuration string `json:"backupDuration"`
 }
 
 // WriteManifest writes the manifest to a file
@@ -77,4 +77,3 @@ func GenerateBackupTimestamp() string {
 func ParseBackupTimestamp(ts string) (time.Time, error) {
 	return time.Parse("2006-01-02T15-04-05Z", ts)
 }
-

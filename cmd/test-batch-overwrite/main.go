@@ -73,4 +73,3 @@ func main() {
 	fmt.Println("   - So batch0 gets overwritten repeatedly")
 	fmt.Println("   - Only the last batch survives!")
 }
-

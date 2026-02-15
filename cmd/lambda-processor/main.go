@@ -548,8 +548,8 @@ func (h *ProcessorHandler) triggerSparklinePoster(runID string) error {
 
 	// Invoke the sparkline poster Lambda asynchronously
 	_, err = h.lambdaClient.Invoke(context.Background(), &awslambda.InvokeInput{
-		FunctionName:  aws.String("hourstats-sparkline-poster"),
-		Payload:       payloadBytes,
+		FunctionName:   aws.String("hourstats-sparkline-poster"),
+		Payload:        payloadBytes,
 		InvocationType: types.InvocationTypeEvent, // Asynchronous invocation
 	})
 
