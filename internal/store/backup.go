@@ -164,12 +164,12 @@ func (s *Store) backupEssentialTables(ctx context.Context, destPath string) erro
 	}
 
 	for _, table := range essentialTables {
-		createSQL := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS main.%s AS SELECT * FROM src.%s WHERE 0`, table, table)
+		createSQL := `CREATE TABLE IF NOT EXISTS main.` + table + ` AS SELECT * FROM src.` + table + ` WHERE 0`
 		if _, err := destDB.ExecContext(ctx, createSQL); err != nil {
 			return fmt.Errorf("create table %s: %w", table, err)
 		}
 
-		insertSQL := fmt.Sprintf(`INSERT INTO main.%s SELECT * FROM src.%s`, table, table)
+		insertSQL := `INSERT INTO main.` + table + ` SELECT * FROM src.` + table
 		if _, err := destDB.ExecContext(ctx, insertSQL); err != nil {
 			return fmt.Errorf("copy table %s: %w", table, err)
 		}
