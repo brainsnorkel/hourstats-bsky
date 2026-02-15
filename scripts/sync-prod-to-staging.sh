@@ -95,9 +95,9 @@ echo -e "${YELLOW}This will:${NC}"
 echo "  1. Snapshot the prod volume ($PROD_VOL)"
 echo "  2. Stop the staging machine (if running)"
 echo "  3. Destroy the staging volume and create a new one from the snapshot"
-echo "  4. Rename hourstats-prod.db → hourstats-staging.db"
-echo "  5. Clean prod-specific state (yearly_post_uri, daily_quote_last_date)"
-echo "  6. Restart staging"
+echo "  4. Deploy staging (creates machine + mounts volume)"
+echo "  5. Rename hourstats-prod.db → hourstats-staging.db"
+echo "  6. Clean prod-specific KV entries using cleanup-kv"
 echo ""
 echo -e "${YELLOW}Staging will have a copy of prod data but post to @hourstats-staging.bsky.social${NC}"
 echo ""
@@ -212,55 +212,53 @@ for m in machines:
 [ -z "$STAGING_MACHINE" ] && fail "Could not find staging machine after deploy"
 ok "Staging machine: $STAGING_MACHINE"
 
-# ─── Step 5: Rename DB and clean prod state ─────────────────────────
+# ─── Step 5: Rename DB file on the volume ──────────────────────────
+#
+# The volume has hourstats-prod.db from the snapshot. The deploy
+# started the bot which created a fresh hourstats-staging.db.
+# On Linux, renaming files under an open process is safe — the bot
+# keeps its open file descriptors to the old inode. On restart it
+# will open the renamed file containing the prod data.
 
 echo ""
-info "Waiting for machine to be ready..."
-sleep 10
-
-info "Renaming database and cleaning prod-specific state..."
+info "Swapping database files on volume..."
 fly ssh console -a "$STAGING_APP" -C "/bin/sh -c '
-    # The volume has hourstats-prod.db from the snapshot.
-    # The bot auto-created a fresh hourstats-staging.db on startup.
-    # Replace the fresh one with the prod data.
+    set -e
     if [ -f /data/hourstats-prod.db ]; then
         rm -f /data/hourstats-staging.db /data/hourstats-staging.db-wal /data/hourstats-staging.db-shm
         mv /data/hourstats-prod.db /data/hourstats-staging.db
-        mv /data/hourstats-prod.db-wal /data/hourstats-staging.db-wal 2>/dev/null
-        mv /data/hourstats-prod.db-shm /data/hourstats-staging.db-shm 2>/dev/null
+        mv /data/hourstats-prod.db-wal /data/hourstats-staging.db-wal 2>/dev/null || true
+        mv /data/hourstats-prod.db-shm /data/hourstats-staging.db-shm 2>/dev/null || true
         echo \"Renamed hourstats-prod.db -> hourstats-staging.db\"
     else
         echo \"No hourstats-prod.db found — volume may already be staging format\"
     fi
-
-    # Clean prod-specific key-value entries that would confuse the staging bot.
-    # yearly_post_uri points to a prod thread — staging cannot reply to it.
-    # daily_quote_last_date prevents daily quotes until the date rolls over.
-    sqlite3 /data/hourstats-staging.db \"
-        DELETE FROM key_value WHERE key IN (
-            \\\"yearly_post_uri\\\",
-            \\\"daily_quote_last_date\\\",
-            \\\"daily_quote_post_uri\\\"
-        );
-    \" 2>/dev/null && echo \"Cleaned prod-specific KV entries\" || echo \"No KV cleanup needed\"
-
-    # Remove old backups from snapshot
     rm -rf /data/backups /data/seed 2>/dev/null
-
-    echo \"=== Volume contents ===\"
     ls -lh /data/
-'" 2>/dev/null
+'" || fail "Database rename failed"
 
-ok "Database renamed and cleaned"
+ok "Database renamed"
 
-# ─── Step 6: Restart staging to pick up renamed DB ──────────────────
+# ─── Step 6: Restart and clean prod KV entries ──────────────────────
+#
+# Restart the bot so it opens the renamed DB with prod data, then
+# use cleanup-kv to remove prod-specific KV entries. cleanup-kv
+# uses the same Go SQLite driver as the bot (WAL + busy_timeout),
+# so it safely coexists with the running bot — no need to kill it.
 
 echo ""
-info "Restarting staging to load renamed database..."
-fly machine restart "$STAGING_MACHINE" -a "$STAGING_APP" 2>/dev/null
+info "Restarting staging with prod data..."
+fly machine stop "$STAGING_MACHINE" -a "$STAGING_APP" 2>/dev/null
+sleep 3
+fly machine start "$STAGING_MACHINE" -a "$STAGING_APP" 2>/dev/null
+sleep 10
 ok "Staging restarted"
 
-sleep 5
+info "Cleaning prod-specific KV entries..."
+fly ssh console -a "$STAGING_APP" -C "cleanup-kv --db /data/hourstats-staging.db" \
+    || fail "KV cleanup failed — run 'cleanup-kv --db /data/hourstats-staging.db' manually via SSH"
+ok "Prod KV entries cleaned"
+
 info "Verifying startup..."
 fly logs -a "$STAGING_APP" --no-tail 2>/dev/null | grep -E "hourstats starting|database opened|connected to jetstream" | tail -3
 

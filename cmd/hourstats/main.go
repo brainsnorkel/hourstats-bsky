@@ -34,6 +34,7 @@ func main() {
 	password := os.Getenv("BLUESKY_PASSWORD")
 	dryRun := envBool("DRY_RUN", false)
 	analysisMinutes := envInt("ANALYSIS_INTERVAL_MINUTES", 30)
+	analysisOffsetMinutes := envInt("ANALYSIS_OFFSET_MINUTES", 0)
 	backupRetainDays := envInt("BACKUP_RETAIN_DAYS", 1)
 
 	s3BackupBucket := os.Getenv("S3_BACKUP_BUCKET")
@@ -117,8 +118,8 @@ func main() {
 
 	// Wall-clock aligned tickers: fire at clean UTC clock boundaries
 	// so that deploys/restarts don't shift the schedule.
-	analysisCh := newWallClockTicker(time.Duration(analysisMinutes) * time.Minute)
-	backupCh := newWallClockTicker(24 * time.Hour)
+	analysisCh := newWallClockTicker(time.Duration(analysisMinutes)*time.Minute, time.Duration(analysisOffsetMinutes)*time.Minute)
+	backupCh := newWallClockTicker(24*time.Hour, 0)
 	yearlyPostCh := newDailyTickerAtHour(1)
 
 	var topicAnalyzer *topics.Analyzer
@@ -139,7 +140,7 @@ func main() {
 		slog.Info("s3 backup enabled", "bucket", s3BackupBucket, "region", s3BackupRegion)
 	}
 
-	statsSnapshotCh := newWallClockTicker(30 * time.Minute)
+	statsSnapshotCh := newWallClockTicker(30*time.Minute, 0)
 
 	stallCheckTicker := time.NewTicker(5 * time.Minute)
 	defer stallCheckTicker.Stop()
@@ -1214,15 +1215,19 @@ func newDailyTickerAtHour(hour int) <-chan time.Time {
 	return ch
 }
 
-func newWallClockTicker(interval time.Duration) <-chan time.Time {
+func newWallClockTicker(interval, offset time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
 	go func() {
 		for {
 			now := time.Now().UTC()
-			next := now.Truncate(interval).Add(interval)
+			next := now.Truncate(interval).Add(offset)
+			if !next.After(now) {
+				next = next.Add(interval)
+			}
 			delay := next.Sub(now)
 			slog.Info("wall-clock ticker scheduled",
 				"interval", interval,
+				"offset", offset,
 				"next_fire", next.Format(time.RFC3339),
 				"delay", delay.Round(time.Second),
 			)

@@ -57,6 +57,7 @@ cmd/*/main
 /hourstats
 /import-dynamodb
 /force-trending
+/cleanup-kv
 
 # Backup data
 backups/
