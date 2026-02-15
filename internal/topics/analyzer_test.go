@@ -38,11 +38,11 @@ func (m *mockAnalyzerStore) PurgeTopicTokens(_ context.Context, _ string) (int64
 	m.purgedTokens = true
 	return 0, nil
 }
-func (m *mockAnalyzerStore) InsertTopicSnapshot(_ context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string, isMeme bool, justification string) error {
+func (m *mockAnalyzerStore) InsertTopicSnapshot(_ context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, synonymsJSON, exemplarURI, exemplarHandle string, isMeme bool, justification string) error {
 	m.insertedSnapshots = append(m.insertedSnapshots, store.TopicSnapshotRow{
 		SnapshotTime: snapshotTime, Rank: rank, TopicID: topicID,
 		Label: label, Description: description, PostCount: postCount,
-		Keywords: keywordsJSON, ExemplarURI: exemplarURI, ExemplarHandle: exemplarHandle,
+		Keywords: keywordsJSON, Synonyms: synonymsJSON, ExemplarURI: exemplarURI, ExemplarHandle: exemplarHandle,
 		IsMeme: isMeme, Justification: justification,
 	})
 	return nil
@@ -162,8 +162,8 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 func TestRunTrendingPost_DryRun(t *testing.T) {
 	ms := &mockAnalyzerStore{
 		snapshots: []store.TopicSnapshotRow{
-			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 10},
-			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 15},
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 15},
 		},
 	}
 
@@ -217,8 +217,8 @@ func (m *mockPoster) PostWithFacetsAsReply(_ context.Context, _ string, _ []*bsk
 func TestRunTrendingPost_Posts(t *testing.T) {
 	ms := &mockAnalyzerStore{
 		snapshots: []store.TopicSnapshotRow{
-			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 10},
-			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 15},
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 15},
 		},
 	}
 
@@ -242,8 +242,8 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 func TestRunTrendingPost_AsReply(t *testing.T) {
 	ms := &mockAnalyzerStore{
 		snapshots: []store.TopicSnapshotRow{
-			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 10},
-			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 15},
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 15},
 		},
 	}
 
@@ -270,8 +270,8 @@ func TestRunTrendingPost_AsReply(t *testing.T) {
 func TestRunTrendingPost_ReplyFallback(t *testing.T) {
 	ms := &mockAnalyzerStore{
 		snapshots: []store.TopicSnapshotRow{
-			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 10},
-			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", PostCount: 15},
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 15},
 		},
 	}
 

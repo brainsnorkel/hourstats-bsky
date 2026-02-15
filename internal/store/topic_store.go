@@ -23,6 +23,7 @@ type TopicSnapshotRow struct {
 	Description    string `json:"description"`
 	PostCount      int    `json:"post_count"`
 	Keywords       string `json:"keywords"`
+	Synonyms       string `json:"synonyms"`
 	ExemplarURI    string `json:"exemplar_uri"`
 	ExemplarHandle string `json:"exemplar_handle"`
 	IsMeme         bool   `json:"is_meme"`
@@ -118,7 +119,9 @@ func (s *Store) PurgeTopicTokens(ctx context.Context, cutoff string) (int64, err
 type ExemplarCandidate struct {
 	URI        string
 	Handle     string
+	Text       string
 	Engagement int
+	MatchScore int
 }
 
 func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cutoff string, limit int) ([]ExemplarCandidate, error) {
@@ -126,25 +129,42 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 		return nil, nil
 	}
 
+	// Build CASE expression: compound keywords (containing '_') get weight 3, simple keywords get 1.
+	// This ensures "jordan_binnington" counts 3x more than "canada" in match ranking.
+	var caseParts []string
+	args := make([]any, 0, len(keywords)*2+2)
 	placeholders := make([]string, len(keywords))
-	args := make([]any, 0, len(keywords)+2)
 	for i, kw := range keywords {
 		placeholders[i] = "?"
 		args = append(args, kw)
 	}
+	for _, kw := range keywords {
+		if strings.Contains(kw, "_") {
+			caseParts = append(caseParts, fmt.Sprintf("WHEN je.value = ? THEN 3"))
+			args = append(args, kw)
+		}
+	}
+
+	weightExpr := "1"
+	if len(caseParts) > 0 {
+		weightExpr = "CASE " + strings.Join(caseParts, " ") + " ELSE 1 END"
+	}
+
 	args = append(args, cutoff)
 	args = append(args, limit)
 
 	q := fmt.Sprintf(
-		`SELECT pb.uri, pb.author_handle, (pb.likes + pb.reposts + pb.replies) AS eng
+		`SELECT pb.uri, pb.author_handle, pb.text, (pb.likes + pb.reposts + pb.replies) AS eng,
+		        SUM(%s) AS match_score
 		 FROM topic_tokens tt, json_each(tt.tokens) je
 		 JOIN post_buffer pb ON tt.post_uri = pb.uri
 		 WHERE je.value IN (%s)
 		   AND tt.created_at >= ?
 		   AND pb.author_handle != ''
 		 GROUP BY pb.uri
-		 ORDER BY COUNT(DISTINCT je.value) DESC, eng DESC
+		 ORDER BY match_score DESC, eng DESC
 		 LIMIT ?`,
+		weightExpr,
 		strings.Join(placeholders, ","),
 	)
 
@@ -157,7 +177,7 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 	var result []ExemplarCandidate
 	for rows.Next() {
 		var c ExemplarCandidate
-		if err := rows.Scan(&c.URI, &c.Handle, &c.Engagement); err != nil {
+		if err := rows.Scan(&c.URI, &c.Handle, &c.Text, &c.Engagement, &c.MatchScore); err != nil {
 			return nil, fmt.Errorf("scan exemplar candidate: %w", err)
 		}
 		result = append(result, c)
@@ -165,15 +185,18 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 	return result, rows.Err()
 }
 
-func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string, isMeme bool, justification string) error {
+func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, synonymsJSON, exemplarURI, exemplarHandle string, isMeme bool, justification string) error {
 	isMemeInt := 0
 	if isMeme {
 		isMemeInt = 1
 	}
+	if synonymsJSON == "" {
+		synonymsJSON = "[]"
+	}
 	_, err := s.writeDB.ExecContext(ctx,
-		`INSERT INTO topic_snapshots (snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle, is_meme, justification)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		snapshotTime, rank, topicID, label, description, postCount, keywordsJSON, exemplarURI, exemplarHandle, isMemeInt, justification,
+		`INSERT INTO topic_snapshots (snapshot_time, rank, topic_id, label, description, post_count, keywords, synonyms, exemplar_uri, exemplar_handle, is_meme, justification)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		snapshotTime, rank, topicID, label, description, postCount, keywordsJSON, synonymsJSON, exemplarURI, exemplarHandle, isMemeInt, justification,
 	)
 	if err != nil {
 		return fmt.Errorf("insert topic_snapshot: %w", err)
@@ -183,7 +206,7 @@ func (s *Store) InsertTopicSnapshot(ctx context.Context, snapshotTime string, ra
 
 func (s *Store) GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]TopicSnapshotRow, error) {
 	rows, err := s.readDB.QueryContext(ctx,
-		`SELECT id, snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle, is_meme, COALESCE(justification, '') as justification
+		`SELECT id, snapshot_time, rank, topic_id, label, description, post_count, keywords, COALESCE(synonyms, '[]') as synonyms, exemplar_uri, exemplar_handle, is_meme, COALESCE(justification, '') as justification
 		 FROM topic_snapshots WHERE snapshot_time >= ? ORDER BY snapshot_time ASC, rank ASC`,
 		cutoff,
 	)
@@ -196,7 +219,7 @@ func (s *Store) GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]To
 	for rows.Next() {
 		var r TopicSnapshotRow
 		var isMeme int
-		if err := rows.Scan(&r.ID, &r.SnapshotTime, &r.Rank, &r.TopicID, &r.Label, &r.Description, &r.PostCount, &r.Keywords, &r.ExemplarURI, &r.ExemplarHandle, &isMeme, &r.Justification); err != nil {
+		if err := rows.Scan(&r.ID, &r.SnapshotTime, &r.Rank, &r.TopicID, &r.Label, &r.Description, &r.PostCount, &r.Keywords, &r.Synonyms, &r.ExemplarURI, &r.ExemplarHandle, &isMeme, &r.Justification); err != nil {
 			return nil, fmt.Errorf("scan topic_snapshot: %w", err)
 		}
 		r.IsMeme = isMeme != 0
@@ -207,7 +230,7 @@ func (s *Store) GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]To
 
 func (s *Store) GetRecentTopicSnapshots(ctx context.Context, since string, limit int) ([]TopicSnapshotRow, error) {
 	rows, err := s.readDB.QueryContext(ctx,
-		`SELECT id, snapshot_time, rank, topic_id, label, description, post_count, keywords, exemplar_uri, exemplar_handle, is_meme, COALESCE(justification, '') as justification
+		`SELECT id, snapshot_time, rank, topic_id, label, description, post_count, keywords, COALESCE(synonyms, '[]') as synonyms, exemplar_uri, exemplar_handle, is_meme, COALESCE(justification, '') as justification
 		 FROM topic_snapshots WHERE snapshot_time >= ? ORDER BY snapshot_time DESC, rank ASC LIMIT ?`,
 		since, limit,
 	)
@@ -220,7 +243,7 @@ func (s *Store) GetRecentTopicSnapshots(ctx context.Context, since string, limit
 	for rows.Next() {
 		var r TopicSnapshotRow
 		var isMeme int
-		if err := rows.Scan(&r.ID, &r.SnapshotTime, &r.Rank, &r.TopicID, &r.Label, &r.Description, &r.PostCount, &r.Keywords, &r.ExemplarURI, &r.ExemplarHandle, &isMeme, &r.Justification); err != nil {
+		if err := rows.Scan(&r.ID, &r.SnapshotTime, &r.Rank, &r.TopicID, &r.Label, &r.Description, &r.PostCount, &r.Keywords, &r.Synonyms, &r.ExemplarURI, &r.ExemplarHandle, &isMeme, &r.Justification); err != nil {
 			return nil, fmt.Errorf("scan recent topic_snapshot: %w", err)
 		}
 		r.IsMeme = isMeme != 0

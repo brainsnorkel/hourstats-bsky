@@ -134,15 +134,12 @@ func TestGetExemplarCandidates_RelevanceBeatsEngagement(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	// Post 1: matches 3 keywords (highly relevant to "Winter Olympics") but moderate engagement
 	s.InsertTopicTokens(ctx, "at://a/1", `["winter","olympics","skiing","medal"]`, now)
-	// Post 2: matches only 1 keyword ("winter") but has massive engagement — off-topic post
 	s.InsertTopicTokens(ctx, "at://a/2", `["winter","senate","dhs","funding","ice"]`, now)
 
 	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "Winter Olympics skiing medal", AuthorDID: "did:plc:1", AuthorHandle: "olympicsfan.bsky.social", CreatedAt: now})
 	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Senate winter DHS funding fight", AuthorDID: "did:plc:2", AuthorHandle: "politico.bsky.social", CreatedAt: now})
 
-	// Post 2 has way more engagement but is only tangentially related
 	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=50, reposts=20, replies=10 WHERE uri='at://a/1'`)
 	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=5000, reposts=2000, replies=500 WHERE uri='at://a/2'`)
 
@@ -153,15 +150,42 @@ func TestGetExemplarCandidates_RelevanceBeatsEngagement(t *testing.T) {
 	if len(candidates) != 2 {
 		t.Fatalf("expected 2 candidates, got %d", len(candidates))
 	}
-	// Post 1 matches 3 keywords (winter, olympics, skiing, medal → 4 matches).
-	// Post 2 matches only 1 keyword (winter).
-	// Even though Post 2 has 7500 engagement vs Post 1's 80, Post 1 should win
-	// because keyword relevance is prioritized over raw engagement.
 	if candidates[0].Handle != "olympicsfan.bsky.social" {
 		t.Errorf("expected most keyword-relevant post first (olympicsfan), got %q with engagement %d", candidates[0].Handle, candidates[0].Engagement)
 	}
 	if candidates[1].Handle != "politico.bsky.social" {
 		t.Errorf("expected less relevant viral post second (politico), got %q", candidates[1].Handle)
+	}
+}
+
+func TestGetExemplarCandidates_CompoundKeywordsWeightedHigher(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	// Post 1: matches compound keyword "jordan_binnington" + generic "canada" → score = 3 + 1 = 4
+	s.InsertTopicTokens(ctx, "at://a/1", `["jordan_binnington","canada","hockey"]`, now)
+	// Post 2: matches 2 generic keywords "canada" + "hockey" → score = 1 + 1 = 2
+	s.InsertTopicTokens(ctx, "at://a/2", `["canada","hockey","curling","ice"]`, now)
+
+	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "Jordan Binnington saves Canada hockey", AuthorDID: "did:plc:1", AuthorHandle: "hockeyfan.bsky.social", CreatedAt: now})
+	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Canada curling hockey ice", AuthorDID: "did:plc:2", AuthorHandle: "curlingfan.bsky.social", CreatedAt: now})
+
+	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=10, reposts=5, replies=2 WHERE uri='at://a/1'`)
+	s.writeDB.ExecContext(ctx, `UPDATE post_buffer SET likes=500, reposts=200, replies=100 WHERE uri='at://a/2'`)
+
+	candidates, err := s.GetExemplarCandidates(ctx, []string{"jordan_binnington", "canada", "hockey"}, "2000-01-01T00:00:00Z", 50)
+	if err != nil {
+		t.Fatalf("GetExemplarCandidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0].Handle != "hockeyfan.bsky.social" {
+		t.Errorf("expected compound-keyword match first (hockeyfan), got %q", candidates[0].Handle)
+	}
+	if candidates[0].MatchScore <= candidates[1].MatchScore {
+		t.Errorf("expected higher match score for compound keyword match: got %d vs %d", candidates[0].MatchScore, candidates[1].MatchScore)
 	}
 }
 
@@ -203,9 +227,9 @@ func TestTopicSnapshots_InsertAndGetSince(t *testing.T) {
 	t1 := now.Add(-2 * time.Hour).Format(time.RFC3339)
 	t2 := now.Add(-1 * time.Hour).Format(time.RFC3339)
 
-	s.InsertTopicSnapshot(ctx, t1, 1, "topic-a", "AI", "Artificial intelligence", 500, `["ai","llm"]`, "", "", false, "")
-	s.InsertTopicSnapshot(ctx, t1, 2, "topic-b", "Sports", "Sports talk", 300, `["sports"]`, "", "", false, "")
-	s.InsertTopicSnapshot(ctx, t2, 1, "topic-a", "AI", "Artificial intelligence", 550, `["ai","llm"]`, "at://ex/1", "researcher.bsky.social", false, "")
+	s.InsertTopicSnapshot(ctx, t1, 1, "topic-a", "AI", "Artificial intelligence", 500, `["ai","llm"]`, `["artificial_intelligence"]`, "", "", false, "")
+	s.InsertTopicSnapshot(ctx, t1, 2, "topic-b", "Sports", "Sports talk", 300, `["sports"]`, `[]`, "", "", false, "")
+	s.InsertTopicSnapshot(ctx, t2, 1, "topic-a", "AI", "Artificial intelligence", 550, `["ai","llm"]`, `["artificial_intelligence"]`, "at://ex/1", "researcher.bsky.social", false, "")
 
 	cutoff := now.Add(-3 * time.Hour).Format(time.RFC3339)
 	rows, err := s.GetTopicSnapshotsSince(ctx, cutoff)
@@ -231,8 +255,8 @@ func TestTopicSnapshots_Purge(t *testing.T) {
 	old := now.Add(-50 * time.Hour).Format(time.RFC3339)
 	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
 
-	s.InsertTopicSnapshot(ctx, old, 1, "t1", "Old", "old", 100, `[]`, "", "", false, "")
-	s.InsertTopicSnapshot(ctx, recent, 1, "t2", "New", "new", 200, `[]`, "", "", false, "")
+	s.InsertTopicSnapshot(ctx, old, 1, "t1", "Old", "old", 100, `[]`, `[]`, "", "", false, "")
+	s.InsertTopicSnapshot(ctx, recent, 1, "t2", "New", "new", 200, `[]`, `[]`, "", "", false, "")
 
 	cutoff := now.Add(-48 * time.Hour).Format(time.RFC3339)
 	deleted, err := s.PurgeTopicSnapshots(ctx, cutoff)
@@ -249,7 +273,7 @@ func TestTopicSnapshots_UpdateExemplar(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.InsertTopicSnapshot(ctx, now, 1, "topic-x", "Test", "desc", 100, `[]`, "", "", false, "")
+	s.InsertTopicSnapshot(ctx, now, 1, "topic-x", "Test", "desc", 100, `[]`, `[]`, "", "", false, "")
 
 	rows, _ := s.GetTopicSnapshotsSince(ctx, "2000-01-01T00:00:00Z")
 	if len(rows) != 1 {
@@ -274,8 +298,8 @@ func TestTopicSnapshots_IsMeme(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.InsertTopicSnapshot(ctx, now, 1, "topic-meme", "Post a Banger", "viral phrase", 500, `["post","banger"]`, "", "", true, "")
-	s.InsertTopicSnapshot(ctx, now, 2, "topic-normal", "Politics", "political discussion", 300, `["politics"]`, "", "", false, "")
+	s.InsertTopicSnapshot(ctx, now, 1, "topic-meme", "Post a Banger", "viral phrase", 500, `["post","banger"]`, `[]`, "", "", true, "")
+	s.InsertTopicSnapshot(ctx, now, 2, "topic-normal", "Politics", "political discussion", 300, `["politics"]`, `[]`, "", "", false, "")
 
 	rows, err := s.GetTopicSnapshotsSince(ctx, "2000-01-01T00:00:00Z")
 	if err != nil {
@@ -297,7 +321,7 @@ func TestTopicSnapshots_IsMemeDefaultsFalse(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.InsertTopicSnapshot(ctx, now, 1, "topic-a", "Test", "desc", 100, `[]`, "", "", false, "")
+	s.InsertTopicSnapshot(ctx, now, 1, "topic-a", "Test", "desc", 100, `[]`, `[]`, "", "", false, "")
 
 	rows, err := s.GetTopicSnapshotsSince(ctx, "2000-01-01T00:00:00Z")
 	if err != nil {
