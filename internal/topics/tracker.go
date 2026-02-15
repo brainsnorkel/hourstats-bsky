@@ -53,7 +53,9 @@ func (t *Tracker) AssignIdentities(ctx context.Context, ranked []RankedTopic) ([
 
 	result := make([]IdentifiedTopic, len(ranked))
 	for i, rt := range ranked {
-		allTerms := append(rt.Cluster.Keywords, rt.Cluster.Synonyms...)
+		allTerms := make([]string, 0, len(rt.Cluster.Keywords)+len(rt.Cluster.Synonyms))
+		allTerms = append(allTerms, rt.Cluster.Keywords...)
+		allTerms = append(allTerms, rt.Cluster.Synonyms...)
 
 		bestIdx := -1
 		bestSim := 0.0
