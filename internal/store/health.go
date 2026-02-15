@@ -109,7 +109,7 @@ func (s *Store) GetDatabaseHealth(ctx context.Context) (*DatabaseHealth, error) 
 			Retention: spec.retention,
 		}
 
-		query := fmt.Sprintf("SELECT COUNT(*) FROM %s", spec.name)
+		query := "SELECT COUNT(*) FROM " + spec.name
 		if err := s.readDB.QueryRowContext(ctx, query).Scan(&th.RowCount); err != nil {
 			continue
 		}
