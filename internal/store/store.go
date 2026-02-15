@@ -343,7 +343,7 @@ func (s *Store) migrate() error {
 			topic_id TEXT NOT NULL,
 			label TEXT NOT NULL,
 			description TEXT NOT NULL,
-			post_count INTEGER NOT NULL,
+			unique_author_count INTEGER NOT NULL,
 			keywords TEXT NOT NULL,
 			exemplar_uri TEXT NOT NULL DEFAULT '',
 			exemplar_handle TEXT NOT NULL DEFAULT ''
@@ -353,6 +353,7 @@ func (s *Store) migrate() error {
 		`ALTER TABLE topic_snapshots ADD COLUMN is_meme INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE topic_snapshots ADD COLUMN justification TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE topic_snapshots ADD COLUMN synonyms TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE topic_snapshots RENAME COLUMN post_count TO unique_author_count`,
 
 		`CREATE TABLE IF NOT EXISTS topic_identity (
 			topic_id TEXT PRIMARY KEY,
@@ -411,8 +412,8 @@ func (s *Store) migrate() error {
 
 	for _, stmt := range stmts {
 		if _, err := s.writeDB.Exec(stmt); err != nil {
-			// ALTER TABLE fails with "duplicate column" on repeat runs — safe to ignore.
-			if strings.Contains(err.Error(), "duplicate column") {
+			// Idempotent migrations: "duplicate column" (re-add) and "no such column" (re-rename) are safe to skip.
+			if strings.Contains(err.Error(), "duplicate column") || strings.Contains(err.Error(), "no such column") {
 				continue
 			}
 			return fmt.Errorf("exec %q: %w", stmt[:60], err)

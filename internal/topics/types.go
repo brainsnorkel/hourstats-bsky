@@ -25,8 +25,8 @@ type TopicCluster struct {
 }
 
 type RankedTopic struct {
-	Cluster   TopicCluster
-	PostCount int
+	Cluster           TopicCluster
+	UniqueAuthorCount int
 }
 
 type IdentifiedTopic struct {

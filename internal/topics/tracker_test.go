@@ -38,7 +38,7 @@ func TestAssignIdentities_NewTopics(t *testing.T) {
 	tracker := NewTracker(ms)
 
 	ranked := []RankedTopic{
-		{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"trump"}, Synonyms: []string{}}, PostCount: 10},
+		{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"trump"}, Synonyms: []string{}}, UniqueAuthorCount: 10},
 	}
 
 	result, err := tracker.AssignIdentities(context.Background(), ranked)
@@ -66,7 +66,7 @@ func TestAssignIdentities_MatchExisting(t *testing.T) {
 	tracker := NewTracker(ms)
 
 	ranked := []RankedTopic{
-		{Cluster: TopicCluster{Label: "US Politics", Keywords: []string{"trump", "election", "congress"}, Synonyms: []string{}}, PostCount: 20},
+		{Cluster: TopicCluster{Label: "US Politics", Keywords: []string{"trump", "election", "congress"}, Synonyms: []string{}}, UniqueAuthorCount: 20},
 	}
 
 	result, err := tracker.AssignIdentities(context.Background(), ranked)
@@ -88,7 +88,7 @@ func TestAssignIdentities_NoMatch(t *testing.T) {
 	tracker := NewTracker(ms)
 
 	ranked := []RankedTopic{
-		{Cluster: TopicCluster{Label: "Sports", Keywords: []string{"football", "soccer"}, Synonyms: []string{}}, PostCount: 10},
+		{Cluster: TopicCluster{Label: "Sports", Keywords: []string{"football", "soccer"}, Synonyms: []string{}}, UniqueAuthorCount: 10},
 	}
 
 	result, err := tracker.AssignIdentities(context.Background(), ranked)
@@ -123,8 +123,8 @@ func TestAssignIdentities_OneToOneMapping(t *testing.T) {
 	tracker := NewTracker(ms)
 
 	ranked := []RankedTopic{
-		{Cluster: TopicCluster{Label: "A", Keywords: []string{"shared", "term"}, Synonyms: []string{}}, PostCount: 20},
-		{Cluster: TopicCluster{Label: "B", Keywords: []string{"shared", "term"}, Synonyms: []string{}}, PostCount: 10},
+		{Cluster: TopicCluster{Label: "A", Keywords: []string{"shared", "term"}, Synonyms: []string{}}, UniqueAuthorCount: 20},
+		{Cluster: TopicCluster{Label: "B", Keywords: []string{"shared", "term"}, Synonyms: []string{}}, UniqueAuthorCount: 10},
 	}
 
 	result, err := tracker.AssignIdentities(context.Background(), ranked)
