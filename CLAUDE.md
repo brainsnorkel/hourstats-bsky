@@ -4,121 +4,160 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-TrendJournal is a Go-based bot for Bluesky/AT Protocol that analyzes trending posts, performs sentiment analysis, and posts summaries of the top 5 most popular posts at configurable intervals.
+HourStats is a Go-based Bluesky bot that monitors the firehose in real time via Jetstream, performs VADER sentiment analysis on English posts, and publishes 30-minute summaries with the top 5 most engaged posts, sparkline charts, trending topics, and yearly sentiment visualizations.
+
+**Live bot:** [@hourstats.bsky.social](https://bsky.app/profile/hourstats.bsky.social)
 
 ## Key Commands
 
 ### Build and Run
 ```bash
-make setup      # First time setup - creates config.yaml
-make build      # Build binary to bin/trendjournal
-make run        # Run the application
-make dry-run    # Test mode without posting to Bluesky
+go run ./cmd/hourstats                  # Run locally (set env vars first)
+make build-hourstats                    # Build binary (CGO_ENABLED=0)
+make deploy-prod                        # Deploy to Fly.io production
+make deploy-staging                     # Deploy to Fly.io staging
+make deploy-all                         # Deploy both
 ```
 
 ### Testing and Development
 ```bash
-make test       # Run test suite
-make fmt        # Format code
-make lint       # Lint code (requires golangci-lint)
-make deps       # Install/update dependencies
+make test                               # Run all tests (go test ./...)
+make fmt                                # Format code (go fmt ./...)
+make lint                               # Lint (requires golangci-lint)
+make deps                               # go mod download && go mod tidy
+make graph-lab                          # Generate chart experiments (no API needed)
 ```
 
-### Configuration
-- Copy `config.example.yaml` to `config.yaml` and add Bluesky credentials
-- Or use environment variables: `BLUESKY_HANDLE` and `BLUESKY_PASSWORD`
-- Key settings in config.yaml:
-  - `analysis_interval_minutes`: How often to analyze (default: 5)
-  - `top_posts_count`: Number of top posts (default: 5)
-  - `min_engagement_score`: Minimum engagement to consider (default: 10)
-  - `dry_run`: Test mode flag (default: true)
+### Operations
+```bash
+make fly-status                         # Check both app statuses
+make fly-logs-prod                      # Tail production logs
+make fly-logs-staging                   # Tail staging logs
+make sync-staging                       # Sync prod data to staging
+fly ssh console -a hourstats-prod       # SSH into production
+```
+
+### Configuration (Environment Variables)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BLUESKY_HANDLE` | (required) | Bluesky account handle |
+| `BLUESKY_PASSWORD` | (required) | Bluesky app password |
+| `HOURSTATS_PROFILE` | `staging` | Profile name (used in DB filename) |
+| `DATA_DIR` | `/data` | Directory for SQLite database |
+| `DRY_RUN` | `false` | Prevents all posting to Bluesky |
+| `ANALYSIS_INTERVAL_MINUTES` | `30` | Sentiment analysis window |
+| `TRENDING_ENABLED` | `false` | Enable trending topics |
+| `GOOGLE_AI_API_KEY` | (required if trending) | Gemini API key |
+| `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model for topic grouping |
+| `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily backups |
 
 ## Architecture
 
-### Core Components
+### Single Binary, Multiple Goroutines
 
-**Main Entry Point**
-- `cmd/trendjournal/main.go`: Application entry, loads config, starts scheduler
+Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 
-**Internal Packages**
-- `internal/client/bluesky.go`: Bluesky API client using indigo library
-  - `Authenticate()`: Login to Bluesky
-  - `GetTrendingPosts()`: Fetch public posts via search API with pagination
-  - `PostTrendingSummary()`: Post formatted summary with sentiment and rich text facets
-  
-- `internal/scheduler/scheduler.go`: Orchestrates hourly analysis cycle
-  - Runs analysis immediately on startup, then hourly (hardcoded 1-hour ticker)
-  - Fetches posts, analyzes sentiment, ranks by engagement, posts summary
-  - Converts between client and analyzer post types
+| Component | Trigger | What It Does |
+|-----------|---------|-------------|
+| **Jetstream Consumer** | Always running | WebSocket firehose, filter English posts, write to SQLite |
+| **Write Flusher** | 2s ticker / 1500 batch | Batches pending writes to reduce SQLite contention |
+| **Analysis Cycle** | Wall-clock every 30m | Hydrate engagement, VADER sentiment, post summary |
+| **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
+| **Trending Topics** | After sparkline | TF-IDF + Gemini Pro grouping, reply to sparkline |
+| **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply |
+| **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile |
+| **Stall Detection** | 5m ticker | Warns if no posts received recently |
+| **WAL Checkpoint** | 5m ticker | Passive SQLite WAL checkpoint |
 
-- `internal/analyzer/sentiment.go`: Sentiment analysis using GoVader
-  - Analyzes post sentiment (positive/negative/neutral)
-  - Extracts topics from hashtags and keywords
-  - Calculates engagement score (replies + likes + reposts with sentiment boost)
-
-- `internal/config/config.go`: Configuration management
-  - Loads from config.yaml or environment variables
-  - Validates required settings
-
-### Key Implementation Details
-
-**Post Fetching**
-- Uses `FeedSearchPosts` API to search ALL public posts (not just followed)
-- Implements pagination to retrieve comprehensive results (up to 10,000 posts safety limit)
-- Performs client-side time filtering based on `analysis_interval_minutes`
-- Extracts actual post text from record structure (`bsky.FeedPost`)
-- Continues pagination until posts fall outside time window
-
-**Rich Text Support**
-- Creates clickable link facets using Bluesky's rich text format
-- Uses regex to find `https://bsky.app/` URLs in text
-- Generates `RichtextFacet` with byte positions for each link
-
-**Post Format**
-Generated posts follow this structure:
-```
-Top five posts in the last [1 hour/X minutes]
-
-https://bsky.app/profile/[did]/post/[id]
-@author [total_engagement]
-[2-5 similar...]
-Bluesky is [emotion]
-```
-
-**AT URI to Web URL Conversion**
-- Converts `at://did:plc:xxx/app.bsky.feed.post/yyy` 
-- To `https://bsky.app/profile/did:plc:xxx/post/yyy`
+Wall-clock aligned scheduling: tickers fire at UTC clock boundaries (:00, :30) so deploys don't shift the schedule.
 
 ### Data Flow
 
-1. Scheduler triggers analysis every hour (fixed ticker)
-2. Client searches public posts via paginated `FeedSearchPosts` API
-3. Posts filtered by time (only last `analysis_interval_minutes`)
-4. Text extracted from post records
-5. Analyzer processes posts for sentiment and engagement
-6. Top 5 posts ranked by total engagement (replies + likes + reposts)
-7. Overall sentiment determined from top posts majority
-8. Summary posted with rich text facets for clickable links
+```
+Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
+                                                       |
+30-min ticker -> Read posts -> Hydrate engagement (25 URIs/batch, 10 concurrent)
+                                    |
+                            VADER sentiment -> Top 5 by engagement -> Post summary
+                                    |
+                            Sparkline reply -> Trendline reply -> Trending topics reply
+```
 
-### Sentiment Emotions
+### Internal Packages
 
-- **Positive**: passionate, enthusiastic, optimistic, confident, inspired
-- **Negative**: anxious, pessimistic, uncertain, confused, overwhelmed  
-- **Neutral**: contemplative, analytical, curious, observant, reflective
+| Package | Purpose |
+|---------|---------|
+| `internal/store` | SQLite storage layer (schema, queries, backup, WAL management) |
+| `internal/jetstream` | Jetstream WebSocket consumer (event parsing, cursor management) |
+| `internal/hydrator` | Engagement hydration via `app.bsky.feed.getPosts` (batch, rate-limited) |
+| `internal/topics` | Trending topics (TF-IDF extraction, Gemini grouping, identity tracking) |
+| `internal/analyzer` | VADER sentiment analysis (govader) |
+| `internal/client` | Bluesky AT Protocol client (posting, image upload, facets, pinning) |
+| `internal/formatter` | Post content formatting (character counting, Bluesky limits) |
+| `internal/sparkline` | Chart generation (sparkline, trendline, volume, yearly, bump charts) |
+| `internal/stats` | Runtime statistics collector |
+| `internal/statsapi` | HTTP stats API server (port 9111) |
+| `internal/state` | Type definitions for sentiment data points |
+| `internal/config` | Configuration types |
+
+**Legacy packages** (AWS Lambda era, still in repo): `internal/backup`, `internal/awsutil`, `internal/lambda`, `internal/scheduler`
+
+### SQLite Database
+
+Single file on Fly.io persistent volume: `/data/hourstats-{profile}.db` (WAL mode).
+
+Three connection pools: `writeDB` (1 conn, 30s timeout), `readDB` (4 conns, read-only), `maintDB` (1 conn, 1s timeout for WAL checkpoints).
+
+Key tables: `post_buffer` (2h retention), `runs` (48h), `sentiment_history` (8 days), `daily_sentiment` (3 years), `topic_tokens` (26h), `topic_snapshots` (48h), `key_value` (permanent).
+
+## Coding Conventions
+
+### Logging
+- **Use `log/slog`** with structured key-value pairs: `slog.Info("message", "key", value)`
+- JSON handler configured in main.go: `slog.NewJSONHandler(os.Stdout, ...)`
+- Do NOT use `log.Printf` -- the codebase is migrating away from it
+
+### Error Handling
+- Wrap errors with context: `fmt.Errorf("failed to X: %w", err)`
+- Log and return early on error -- no deep nesting
+- Use `context.WithTimeout` for all external API calls
+
+### Bluesky API Patterns
+- Posts limited to 300 graphemes (use `[]rune` for length checks, not `len(string)`)
+- Rich text facets use byte offsets (not rune offsets) for `ByteStart`/`ByteEnd`
+- AT URIs: `at://did:plc:xxx/app.bsky.feed.post/yyy`
+- Image upload: blob reference then embed in post record
+
+### Testing
+- Standard `go test ./...`
+- Hydrator uses interfaces (`PostFetcher`, `PostUpdater`) for testability
+- No external test framework -- stdlib `testing` package only
+
+## Tech Stack
+
+- **Go 1.24** (CGO_ENABLED=0 for Alpine)
+- **AT Protocol**: `github.com/bluesky-social/indigo`
+- **Firehose**: Bluesky Jetstream (WebSocket via `gorilla/websocket`)
+- **Sentiment**: `github.com/jonreiter/govader`
+- **Charts**: `github.com/fogleman/gg`
+- **Database**: `modernc.org/sqlite` (pure Go, no CGO)
+- **Topic Grouping**: Google Gemini Pro API
+- **Deployment**: Fly.io (Docker, Alpine 3.21, persistent volume)
+- **Backups**: AWS S3
+
+## Deployment
+
+- **Production**: `hourstats-prod` -- shared-cpu-1x, 256MB RAM, SJC region
+- **Staging**: `hourstats-staging` -- shared-cpu-1x, 512MB RAM, SJC region
+- **Container**: Multi-stage Docker build (golang:1.24-alpine to alpine:3.21)
+- **Secrets**: `fly secrets set KEY=value -a hourstats-prod`
+- **Config files**: `fly.prod.toml`, `fly.staging.toml`
 
 ## Important Notes
 
-- Scheduler runs on fixed 1-hour intervals regardless of config setting
-- Search uses wildcard query `"*"` with language filter `"en"`
-- Pagination continues until posts fall outside time window
-- Post text properly extracted from record structure
-- Rich text facets enable clickable links in posts
-- Engagement score = replies + likes + reposts (with 10% boost for positive sentiment)
-- Posts truncated to 300 graphemes (Bluesky limit)
-
-## Dependencies
-
-Main Go dependencies:
-- `github.com/bluesky-social/indigo`: Official AT Protocol/Bluesky Go library
-- `github.com/jonreiter/govader`: Sentiment analysis library
-- Go 1.25+ required
+- Bluesky post limit is 300 **graphemes** (runes), not bytes
+- Facet byte positions must be calculated on the UTF-8 byte string
+- The Jetstream consumer auto-restarts with exponential backoff (1s to 60s)
+- Cursor is persisted in SQLite `key_value` table for resume-on-restart
+- `DRY_RUN=true` prevents all posting but still runs analysis and stores data
+- Legacy AWS Lambda code remains in repo but is not used by the Fly.io binary

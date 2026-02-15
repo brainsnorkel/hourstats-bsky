@@ -716,6 +716,9 @@ func runYearlyPosting(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 
+	apiCtx, apiCancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer apiCancel()
+
 	bskyClient := client.New(handle, password)
 	if err := bskyClient.Authenticate(); err != nil {
 		slog.Error("bluesky auth for yearly post failed", "error", err)
@@ -727,9 +730,9 @@ func runYearlyPosting(ctx context.Context, db *store.Store, handle, password str
 
 	var sentimentURI, sentimentCID string
 	if len(facets) > 0 {
-		sentimentURI, sentimentCID, err = bskyClient.PostWithImage(ctx, postText, imgData, altText, facets)
+		sentimentURI, sentimentCID, err = bskyClient.PostWithImage(apiCtx, postText, imgData, altText, facets)
 	} else {
-		sentimentURI, sentimentCID, err = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+		sentimentURI, sentimentCID, err = bskyClient.PostWithImage(apiCtx, postText, imgData, altText)
 	}
 	if err != nil {
 		slog.Error("post yearly sentiment chart failed", "error", err)
@@ -744,7 +747,7 @@ func runYearlyPosting(ctx context.Context, db *store.Store, handle, password str
 		slog.Warn("persist yearly post CID failed", "error", err)
 	}
 
-	if err := bskyClient.PinPost(ctx, sentimentURI, sentimentCID); err != nil {
+	if err := bskyClient.PinPost(apiCtx, sentimentURI, sentimentCID); err != nil {
 		slog.Warn("pin yearly post failed", "error", err)
 	}
 }
@@ -967,13 +970,16 @@ func runDailyTopPostQuote(ctx context.Context, db *store.Store, handle, password
 		return
 	}
 
+	apiCtx, apiCancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer apiCancel()
+
 	bskyClient := client.New(handle, password)
 	if err := bskyClient.Authenticate(); err != nil {
 		slog.Error("bluesky auth for daily quote failed", "error", err)
 		return
 	}
 
-	_, _, err = bskyClient.PostReplyWithQuote(ctx, text,
+	_, _, err = bskyClient.PostReplyWithQuote(apiCtx, text,
 		yearlyURI, yearlyCID, yearlyURI, yearlyCID,
 		topPost.URI, topPost.CID,
 	)
