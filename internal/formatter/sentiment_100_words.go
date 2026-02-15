@@ -3,12 +3,12 @@ package formatter
 // Sentiment thresholds based on historical Bluesky data analysis (Sep 2025 - Jan 2026)
 // See docs/SENTIMENT_CALIBRATION_ANALYSIS.md for full analysis
 const (
-	ThresholdExtremeNegative = 0.0   // Below: Extreme Negative (Tier 1)
-	ThresholdUnusuallyLow    = 9.5   // Below: Unusually Low (Tier 2)
-	ThresholdBelowAverage    = 10.5  // Below: Below Average (Tier 3)
-	ThresholdTypical         = 12.5  // Below: Typical (Tier 4)
-	ThresholdAboveAverage    = 14.0  // Below: Above Average (Tier 5)
-	ThresholdUnusuallyHigh   = 18.0  // Below: Unusually High (Tier 6)
+	ThresholdExtremeNegative = 0.0  // Below: Extreme Negative (Tier 1)
+	ThresholdUnusuallyLow    = 9.5  // Below: Unusually Low (Tier 2)
+	ThresholdBelowAverage    = 10.5 // Below: Below Average (Tier 3)
+	ThresholdTypical         = 12.5 // Below: Typical (Tier 4)
+	ThresholdAboveAverage    = 14.0 // Below: Above Average (Tier 5)
+	ThresholdUnusuallyHigh   = 18.0 // Below: Unusually High (Tier 6)
 	// >= 18.0: Extreme Positive (Tier 7)
 )
 
@@ -25,13 +25,13 @@ var tierRanges = map[int][2]int{
 
 // Tier sentiment boundaries (min, max) for interpolation within tier
 var tierBounds = map[int][2]float64{
-	1: {-10.0, 0.0},  // Extreme Negative: clamp at -10 for interpolation
-	2: {0.0, 9.5},    // Unusually Low
-	3: {9.5, 10.5},   // Below Average
-	4: {10.5, 12.5},  // Typical
-	5: {12.5, 14.0},  // Above Average
-	6: {14.0, 18.0},  // Unusually High
-	7: {18.0, 30.0},  // Extreme Positive: clamp at 30 for interpolation
+	1: {-10.0, 0.0}, // Extreme Negative: clamp at -10 for interpolation
+	2: {0.0, 9.5},   // Unusually Low
+	3: {9.5, 10.5},  // Below Average
+	4: {10.5, 12.5}, // Typical
+	5: {12.5, 14.0}, // Above Average
+	6: {14.0, 18.0}, // Unusually High
+	7: {18.0, 30.0}, // Extreme Positive: clamp at 30 for interpolation
 }
 
 // getMoodWord100 maps sentiment percentage to one of 100 descriptive words
@@ -118,21 +118,21 @@ var calibratedWords = []string{
 
 	// Tier 2: Unusually Low (0% to < 9.5%) - 15 words
 	// Vibe: Strong pessimism, unhappiness, or tension. Distinctly negative atmosphere.
-	"anxious",    // 5
-	"agitated",   // 6
-	"irritable",  // 7
-	"tense",      // 8
+	"anxious",     // 5
+	"agitated",    // 6
+	"irritable",   // 7
+	"tense",       // 8
 	"pessimistic", // 9
-	"cynical",    // 10
-	"uneasy",     // 11
-	"restless",   // 12
-	"glum",       // 13
-	"sullen",     // 14
-	"somber",     // 15
-	"weary",      // 16
-	"subdued",    // 17
-	"melancholy", // 18
-	"despondent", // 19
+	"cynical",     // 10
+	"uneasy",      // 11
+	"restless",    // 12
+	"glum",        // 13
+	"sullen",      // 14
+	"somber",      // 15
+	"weary",       // 16
+	"subdued",     // 17
+	"melancholy",  // 18
+	"despondent",  // 19
 
 	// Tier 3: Below Average (9.5% to < 10.5%) - 15 words
 	// Vibe: Lacking energy, muted, slightly downbeat. The "meh" zone.
@@ -164,22 +164,22 @@ var calibratedWords = []string{
 	"grounded", // 41
 	"steady",   // 42
 	// Sub-group: Curious & Thoughtful
-	"curious",      // 43
-	"inquisitive",  // 44
-	"thoughtful",   // 45
+	"curious",       // 43
+	"inquisitive",   // 44
+	"thoughtful",    // 45
 	"introspective", // 46
-	"speculative",  // 47
-	"sentimental",  // 48
-	"nostalgic",    // 49
+	"speculative",   // 47
+	"sentimental",   // 48
+	"nostalgic",     // 49
 	// Sub-group: Expressive & Social
-	"playful",    // 50
+	"playful",     // 50
 	"mischievous", // 51
-	"cheeky",     // 52
-	"ironic",     // 53
-	"witty",      // 54
-	"candid",     // 55
-	"sincere",    // 56
-	"earnest",    // 57
+	"cheeky",      // 52
+	"ironic",      // 53
+	"witty",       // 54
+	"candid",      // 55
+	"sincere",     // 56
+	"earnest",     // 57
 	// Sub-group: Engaged & Balanced
 	"easygoing", // 58
 	"sociable",  // 59
@@ -209,27 +209,27 @@ var calibratedWords = []string{
 
 	// Tier 6: Unusually High (14% to < 18%) - 15 words
 	// Vibe: High-energy positivity, creativity, and excitement.
-	"excited",     // 80
-	"vibrant",     // 81
-	"energetic",   // 82
+	"excited",      // 80
+	"vibrant",      // 81
+	"energetic",    // 82
 	"enthusiastic", // 83
-	"inspired",    // 84
-	"creative",    // 85
-	"joyful",      // 86
-	"delighted",   // 87
-	"thrilled",    // 88
-	"invigorated", // 89
-	"passionate",  // 90
-	"spirited",    // 91
-	"exuberant",   // 92
-	"buoyant",     // 93
-	"buzzing",     // 94
+	"inspired",     // 84
+	"creative",     // 85
+	"joyful",       // 86
+	"delighted",    // 87
+	"thrilled",     // 88
+	"invigorated",  // 89
+	"passionate",   // 90
+	"spirited",     // 91
+	"exuberant",    // 92
+	"buoyant",      // 93
+	"buzzing",      // 94
 
 	// Tier 7: Extreme Positive (>= 18%) - 5 words
 	// Vibe: Peak collective experience; overwhelming joy. Holidays and milestones.
-	"euphoric",     // 95
-	"ecstatic",     // 96
-	"elated",       // 97
-	"jubilant",     // 98
-	"celebratory",  // 99
+	"euphoric",    // 95
+	"ecstatic",    // 96
+	"elated",      // 97
+	"jubilant",    // 98
+	"celebratory", // 99
 }

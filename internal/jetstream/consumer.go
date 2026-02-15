@@ -86,10 +86,10 @@ type Consumer struct {
 	stats  Stats
 
 	// Endpoint rotation state.
-	endpointIdx        int         // index into cfg.Endpoints
-	endpointRotations  atomic.Int64 // count of endpoint rotations
-	dropTimes          []time.Time // timestamps of recent drops
-	connectedAt        time.Time   // when current connection was established (protected by mu)
+	endpointIdx       int          // index into cfg.Endpoints
+	endpointRotations atomic.Int64 // count of endpoint rotations
+	dropTimes         []time.Time  // timestamps of recent drops
+	connectedAt       time.Time    // when current connection was established (protected by mu)
 }
 
 // Stats tracks consumer metrics.

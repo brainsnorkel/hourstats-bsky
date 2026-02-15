@@ -17,48 +17,48 @@ import (
 )
 
 type AnalysisResult struct {
-	RunID                     string                    `json:"runId"`
-	Timestamp                 string                    `json:"timestamp"`
-	AnalysisIntervalMinutes   int                       `json:"analysisIntervalMinutes"`
-	CutoffTime                string                    `json:"cutoffTime"`
-	CurrentTime               string                    `json:"currentTime"`
-	FetchStats                FetchStats                `json:"fetchStats"`
-	ProcessingStats           ProcessingStats           `json:"processingStats"`
-	SentimentAnalysis         SentimentAnalysis         `json:"sentimentAnalysis"`
-	GeneratedPost             string                    `json:"generatedPost"`
-	PostStatistics            PostStatistics            `json:"postStatistics"`
-	SamplePosts               []SamplePost              `json:"samplePosts"`
+	RunID                   string            `json:"runId"`
+	Timestamp               string            `json:"timestamp"`
+	AnalysisIntervalMinutes int               `json:"analysisIntervalMinutes"`
+	CutoffTime              string            `json:"cutoffTime"`
+	CurrentTime             string            `json:"currentTime"`
+	FetchStats              FetchStats        `json:"fetchStats"`
+	ProcessingStats         ProcessingStats   `json:"processingStats"`
+	SentimentAnalysis       SentimentAnalysis `json:"sentimentAnalysis"`
+	GeneratedPost           string            `json:"generatedPost"`
+	PostStatistics          PostStatistics    `json:"postStatistics"`
+	SamplePosts             []SamplePost      `json:"samplePosts"`
 }
 
 type FetchStats struct {
-	TotalAPICalls          int                    `json:"totalApiCalls"`
-	TotalPostsFromAPI      int                    `json:"totalPostsFromApi"`
-	PostsAfterTimeFilter   int                    `json:"postsAfterTimeFilter"`
-	PostsAfterAdultFilter  int                    `json:"postsAfterAdultFilter"`
-	PostsAfterDeduplication int                   `json:"postsAfterDeduplication"`
-	TimeDistribution       []TimeDistributionBucket `json:"timeDistribution"`
+	TotalAPICalls           int                      `json:"totalApiCalls"`
+	TotalPostsFromAPI       int                      `json:"totalPostsFromApi"`
+	PostsAfterTimeFilter    int                      `json:"postsAfterTimeFilter"`
+	PostsAfterAdultFilter   int                      `json:"postsAfterAdultFilter"`
+	PostsAfterDeduplication int                      `json:"postsAfterDeduplication"`
+	TimeDistribution        []TimeDistributionBucket `json:"timeDistribution"`
 }
 
 type TimeDistributionBucket struct {
-	BucketStart    string `json:"bucketStart"`
-	BucketEnd      string `json:"bucketEnd"`
-	PostCount      int    `json:"postCount"`
-	SamplePosts    []string `json:"samplePosts"`
+	BucketStart string   `json:"bucketStart"`
+	BucketEnd   string   `json:"bucketEnd"`
+	PostCount   int      `json:"postCount"`
+	SamplePosts []string `json:"samplePosts"`
 }
 
 type ProcessingStats struct {
-	PostsAnalyzed          int     `json:"postsAnalyzed"`
-	TopPostsSelected       int     `json:"topPostsSelected"`
-	DuplicatesRemoved      int     `json:"duplicatesRemoved"`
+	PostsAnalyzed     int `json:"postsAnalyzed"`
+	TopPostsSelected  int `json:"topPostsSelected"`
+	DuplicatesRemoved int `json:"duplicatesRemoved"`
 }
 
 type SentimentAnalysis struct {
-	OverallSentiment      string  `json:"overallSentiment"`
-	NetSentimentPercent   float64 `json:"netSentimentPercent"`
-	AverageCompoundScore  float64 `json:"averageCompoundScore"`
-	PositiveCount         int     `json:"positiveCount"`
-	NeutralCount          int     `json:"neutralCount"`
-	NegativeCount         int     `json:"negativeCount"`
+	OverallSentiment     string  `json:"overallSentiment"`
+	NetSentimentPercent  float64 `json:"netSentimentPercent"`
+	AverageCompoundScore float64 `json:"averageCompoundScore"`
+	PositiveCount        int     `json:"positiveCount"`
+	NeutralCount         int     `json:"neutralCount"`
+	NegativeCount        int     `json:"negativeCount"`
 }
 
 type PostStatistics struct {
@@ -417,15 +417,15 @@ func analyzeSentiment(posts []bskyclient.Post) SentimentAnalysis {
 }
 
 type PostGenerationResult struct {
-	PostText   string
-	Stats      PostStatistics
+	PostText    string
+	Stats       PostStatistics
 	SamplePosts []SamplePost
 }
 
 func generatePostContent(posts []bskyclient.Post, sentiment SentimentAnalysis, intervalMinutes int) PostGenerationResult {
 	// Calculate engagement scores
 	type PostWithEngagement struct {
-		Post           bskyclient.Post
+		Post            bskyclient.Post
 		EngagementScore float64
 	}
 
@@ -508,8 +508,8 @@ func generatePostContent(posts []bskyclient.Post, sentiment SentimentAnalysis, i
 	}
 
 	return PostGenerationResult{
-		PostText:    postText,
-		Stats:       PostStatistics{
+		PostText: postText,
+		Stats: PostStatistics{
 			CharacterCount: charCount,
 			BlueskyLimit:   blueskyLimit,
 			Remaining:      remaining,

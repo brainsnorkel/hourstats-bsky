@@ -208,4 +208,3 @@ func readItemsJSONL(filePath string, fileName string) ([]map[string]types.Attrib
 
 	return items, nil
 }
-

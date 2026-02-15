@@ -17,12 +17,12 @@ import (
 
 // BackupOptions configures backup behavior
 type BackupOptions struct {
-	Tables         []string
-	OutputDir      string
-	S3Bucket       string
-	S3Prefix       string
-	Compress       bool
-	ProgressFunc   func(tableName string, itemsBackedUp int)
+	Tables       []string
+	OutputDir    string
+	S3Bucket     string
+	S3Prefix     string
+	Compress     bool
+	ProgressFunc func(tableName string, itemsBackedUp int)
 }
 
 // BackupResult contains information about a completed backup
@@ -308,4 +308,3 @@ func writeTableMetadata(filePath string, tableDesc *types.TableDescription) erro
 
 	return nil
 }
-

@@ -77,4 +77,3 @@ func main() {
 
 	fmt.Printf("\n✅ HEURISTIC PASSED: API returned %d posts\n", len(posts))
 }
-

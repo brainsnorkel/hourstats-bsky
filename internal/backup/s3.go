@@ -253,4 +253,3 @@ func (s *S3Client) DownloadDirectory(ctx context.Context, s3Prefix string, local
 
 	return nil
 }
-

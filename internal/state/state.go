@@ -77,12 +77,12 @@ type PostItem struct {
 
 // PostBatch represents a batch of posts stored together in DynamoDB for cost efficiency
 type PostBatch struct {
-	RunID     string    `json:"runId" dynamodbav:"runId"`
-	Step      string    `json:"step" dynamodbav:"step"`     // Required for DynamoDB composite key
-	PostID    string    `json:"postId" dynamodbav:"postId"` // runId#batchIndex
-	Posts     []Post    `json:"posts" dynamodbav:"posts"`
-	CreatedAt string    `json:"createdAt" dynamodbav:"createdAt"`
-	TTL       int64     `json:"ttl" dynamodbav:"ttl"`
+	RunID     string `json:"runId" dynamodbav:"runId"`
+	Step      string `json:"step" dynamodbav:"step"`     // Required for DynamoDB composite key
+	PostID    string `json:"postId" dynamodbav:"postId"` // runId#batchIndex
+	Posts     []Post `json:"posts" dynamodbav:"posts"`
+	CreatedAt string `json:"createdAt" dynamodbav:"createdAt"`
+	TTL       int64  `json:"ttl" dynamodbav:"ttl"`
 }
 
 // StateManager handles DynamoDB state operations
@@ -108,7 +108,7 @@ func NewStateManager(ctx context.Context, tableName string) (*StateManager, erro
 // cutoffTime should be the cutoff time calculated at the start of the workflow
 // If cutoffTime is zero, it will be calculated from analysisIntervalMinutes
 func (sm *StateManager) CreateRun(ctx context.Context, runID string, analysisIntervalMinutes int, cutoffTime time.Time) (*RunState, error) {
-	now := time.Now().UTC() // Use UTC to match API timestamps
+	now := time.Now().UTC()                   // Use UTC to match API timestamps
 	ttl := now.Add(2 * 24 * time.Hour).Unix() // 2 days TTL
 
 	// Use provided cutoffTime, or calculate it if not provided (for backward compatibility)
@@ -213,12 +213,12 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 	// Store posts in batches of 100 for cost efficiency
 	// This reduces the number of DynamoDB items by 99% (100 posts per item vs 1 post per item)
 	const postsPerBatch = 100
-	
+
 	// CRITICAL FIX: Calculate starting batchIndex from existing batches to avoid overwriting
 	// Query existing batches to find the highest batch index (handle pagination)
 	maxBatchIndex := -1
 	var lastEvaluatedKey map[string]types.AttributeValue
-	
+
 	for {
 		existingBatchesQuery := &dynamodb.QueryInput{
 			TableName:              aws.String(sm.tableName),
@@ -230,17 +230,17 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 			},
 			ProjectionExpression: aws.String("postId"),
 		}
-		
+
 		if lastEvaluatedKey != nil {
 			existingBatchesQuery.ExclusiveStartKey = lastEvaluatedKey
 		}
-		
+
 		result, err := sm.client.Query(ctx, existingBatchesQuery)
 		if err != nil {
 			log.Printf("Warning: Failed to query existing batches: %v, starting from batch 0", err)
 			break
 		}
-		
+
 		// Parse batch indices from existing PostIDs
 		for _, item := range result.Items {
 			var batch PostBatch
@@ -254,14 +254,14 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 				}
 			}
 		}
-		
+
 		// Check if there are more pages
 		if len(result.LastEvaluatedKey) == 0 {
 			break
 		}
 		lastEvaluatedKey = result.LastEvaluatedKey
 	}
-	
+
 	// Start from the next batch index after the highest existing one
 	batchIndex := maxBatchIndex + 1
 	if maxBatchIndex >= 0 {
@@ -269,7 +269,7 @@ func (sm *StateManager) AddPosts(ctx context.Context, runID string, posts []Post
 	} else {
 		log.Printf("AddPosts: No existing batches found, starting from batch 0")
 	}
-	
+
 	for i := 0; i < len(posts); i += postsPerBatch {
 		end := i + postsPerBatch
 		if end > len(posts) {
