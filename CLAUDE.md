@@ -46,6 +46,7 @@ fly ssh console -a hourstats-prod       # SSH into production
 | `DATA_DIR` | `/data` | Directory for SQLite database |
 | `DRY_RUN` | `false` | Prevents all posting to Bluesky |
 | `ANALYSIS_INTERVAL_MINUTES` | `30` | Sentiment analysis window |
+| `ANALYSIS_OFFSET_MINUTES` | `0` | Wall-clock offset within interval (minutes) |
 | `TRENDING_ENABLED` | `false` | Enable trending topics |
 | `GOOGLE_AI_API_KEY` | (required if trending) | Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model for topic grouping |
@@ -61,15 +62,15 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 |-----------|---------|-------------|
 | **Jetstream Consumer** | Always running | WebSocket firehose, filter English posts, write to SQLite |
 | **Write Flusher** | 2s ticker / 1500 batch | Batches pending writes to reduce SQLite contention |
-| **Analysis Cycle** | Wall-clock every 30m | Hydrate engagement, VADER sentiment, post summary |
+| **Analysis Cycle** | Wall-clock ticker (default 30m, configurable) | Hydrate engagement, VADER sentiment, post summary |
 | **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
-| **Trending Topics** | After sparkline | TF-IDF + Gemini Pro grouping, reply to sparkline |
+| **Trending Topics** | After sparkline | TF-IDF + Gemini Pro grouping, reply to sparkline (if enabled) |
 | **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply |
 | **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile |
 | **Stall Detection** | 5m ticker | Warns if no posts received recently |
 | **WAL Checkpoint** | 5m ticker | Passive SQLite WAL checkpoint |
 
-Wall-clock aligned scheduling: tickers fire at UTC clock boundaries (:00, :30) so deploys don't shift the schedule.
+Wall-clock aligned scheduling: tickers fire at UTC clock boundaries so deploys don't shift the schedule. An optional offset (`ANALYSIS_OFFSET_MINUTES`) shifts the fire point within each interval.
 
 ### Data Flow
 
@@ -80,7 +81,7 @@ Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
                                     |
                             VADER sentiment -> Top 5 by engagement -> Post summary
                                     |
-                            Sparkline reply -> Trendline reply -> Trending topics reply
+                            Sparkline reply -> Trending topics reply
 ```
 
 ### Internal Packages
@@ -147,7 +148,7 @@ Key tables: `post_buffer` (2h retention), `runs` (48h), `sentiment_history` (8 d
 
 ## Deployment
 
-- **Production**: `hourstats-prod` -- shared-cpu-1x, 256MB RAM, SJC region
+- **Production**: `hourstats-prod` -- shared-cpu-1x, 512MB RAM, SJC region
 - **Staging**: `hourstats-staging` -- shared-cpu-1x, 512MB RAM, SJC region
 - **Container**: Multi-stage Docker build (golang:1.24-alpine to alpine:3.21)
 - **Secrets**: `fly secrets set KEY=value -a hourstats-prod`
