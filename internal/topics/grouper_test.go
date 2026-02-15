@@ -173,8 +173,8 @@ func TestGenerateAltText_Success(t *testing.T) {
 
 	g := NewGrouperWithEndpoint("test-key", srv.URL)
 	ranked := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "US Politics", Description: "American politics"}, PostCount: 500}, TopicID: "t1", Rank: 1},
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather", Description: "Weather discussion"}, PostCount: 300}, TopicID: "t2", Rank: 2},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "US Politics", Description: "American politics"}, UniqueAuthorCount: 500}, TopicID: "t1", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather", Description: "Weather discussion"}, UniqueAuthorCount: 300}, TopicID: "t2", Rank: 2},
 	}
 	trajectories := map[string][]int{"t1": {1, 1, 1}, "t2": {3, 2, 2}}
 

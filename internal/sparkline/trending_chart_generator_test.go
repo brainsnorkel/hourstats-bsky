@@ -9,12 +9,12 @@ import (
 
 func makeSnapshot(t string, rank int, topicID, label string) store.TopicSnapshotRow {
 	return store.TopicSnapshotRow{
-		SnapshotTime: t,
-		Rank:         rank,
-		TopicID:      topicID,
-		Label:        label,
-		PostCount:    100,
-		Keywords:     "[]",
+		SnapshotTime:      t,
+		Rank:              rank,
+		TopicID:           topicID,
+		Label:             label,
+		UniqueAuthorCount: 100,
+		Keywords:          "[]",
 	}
 }
 

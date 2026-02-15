@@ -38,11 +38,11 @@ func TestRankTopics_BasicRanking(t *testing.T) {
 	if ranked[0].Cluster.Label != "Politics" {
 		t.Errorf("expected 'Politics' first, got %q", ranked[0].Cluster.Label)
 	}
-	if ranked[0].PostCount != 20 {
-		t.Errorf("expected count 20, got %d", ranked[0].PostCount)
+	if ranked[0].UniqueAuthorCount != 20 {
+		t.Errorf("expected count 20, got %d", ranked[0].UniqueAuthorCount)
 	}
-	if ranked[1].PostCount != 10 {
-		t.Errorf("expected count 10, got %d", ranked[1].PostCount)
+	if ranked[1].UniqueAuthorCount != 10 {
+		t.Errorf("expected count 10, got %d", ranked[1].UniqueAuthorCount)
 	}
 }
 
@@ -60,8 +60,8 @@ func TestRankTopics_SynonymMatching(t *testing.T) {
 	if len(ranked) != 1 {
 		t.Fatalf("expected 1 ranked, got %d", len(ranked))
 	}
-	if ranked[0].PostCount != 3 {
-		t.Errorf("expected count 3 (keyword + synonyms), got %d", ranked[0].PostCount)
+	if ranked[0].UniqueAuthorCount != 3 {
+		t.Errorf("expected count 3 (keyword + synonyms), got %d", ranked[0].UniqueAuthorCount)
 	}
 }
 
@@ -111,8 +111,8 @@ func TestRankTopics_PostMatchesMultipleClusters(t *testing.T) {
 	if len(ranked) != 2 {
 		t.Fatalf("expected 2 ranked, got %d", len(ranked))
 	}
-	if ranked[0].PostCount != 1 || ranked[1].PostCount != 1 {
-		t.Errorf("expected both counts=1, got %d and %d", ranked[0].PostCount, ranked[1].PostCount)
+	if ranked[0].UniqueAuthorCount != 1 || ranked[1].UniqueAuthorCount != 1 {
+		t.Errorf("expected both counts=1, got %d and %d", ranked[0].UniqueAuthorCount, ranked[1].UniqueAuthorCount)
 	}
 }
 
@@ -137,11 +137,11 @@ func TestRankTopics_AuthorDeduplication(t *testing.T) {
 	if ranked[0].Cluster.Label != "Real Topic" {
 		t.Errorf("expected 'Real Topic' (10 unique authors) to rank above 'Spam Topic' (1 author), got %q first", ranked[0].Cluster.Label)
 	}
-	if ranked[0].PostCount != 10 {
-		t.Errorf("expected 10 unique authors for Real Topic, got %d", ranked[0].PostCount)
+	if ranked[0].UniqueAuthorCount != 10 {
+		t.Errorf("expected 10 unique authors for Real Topic, got %d", ranked[0].UniqueAuthorCount)
 	}
-	if ranked[1].PostCount != 1 {
-		t.Errorf("expected 1 unique author for Spam Topic, got %d", ranked[1].PostCount)
+	if ranked[1].UniqueAuthorCount != 1 {
+		t.Errorf("expected 1 unique author for Spam Topic, got %d", ranked[1].UniqueAuthorCount)
 	}
 }
 

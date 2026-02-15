@@ -226,18 +226,18 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 	// Convert TopicSnapshotRow to response format where Keywords is a proper
 	// JSON array rather than a double-encoded string.
 	type topicResponse struct {
-		ID             int64           `json:"id"`
-		SnapshotTime   string          `json:"snapshot_time"`
-		Rank           int             `json:"rank"`
-		TopicID        string          `json:"topic_id"`
-		Label          string          `json:"label"`
-		Description    string          `json:"description"`
-		PostCount      int             `json:"post_count"`
-		Keywords       json.RawMessage `json:"keywords"`
-		ExemplarURI    string          `json:"exemplar_uri"`
-		ExemplarHandle string          `json:"exemplar_handle"`
-		IsMeme         bool            `json:"is_meme"`
-		Justification  string          `json:"justification"`
+		ID                int64           `json:"id"`
+		SnapshotTime      string          `json:"snapshot_time"`
+		Rank              int             `json:"rank"`
+		TopicID           string          `json:"topic_id"`
+		Label             string          `json:"label"`
+		Description       string          `json:"description"`
+		UniqueAuthorCount int             `json:"unique_author_count"`
+		Keywords          json.RawMessage `json:"keywords"`
+		ExemplarURI       string          `json:"exemplar_uri"`
+		ExemplarHandle    string          `json:"exemplar_handle"`
+		IsMeme            bool            `json:"is_meme"`
+		Justification     string          `json:"justification"`
 	}
 	resp := make([]topicResponse, len(topics))
 	for i, t := range topics {
@@ -248,7 +248,7 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 		resp[i] = topicResponse{
 			ID: t.ID, SnapshotTime: t.SnapshotTime, Rank: t.Rank,
 			TopicID: t.TopicID, Label: t.Label, Description: t.Description,
-			PostCount: t.PostCount, Keywords: kw,
+			UniqueAuthorCount: t.UniqueAuthorCount, Keywords: kw,
 			ExemplarURI: t.ExemplarURI, ExemplarHandle: t.ExemplarHandle,
 			IsMeme: t.IsMeme, Justification: t.Justification,
 		}

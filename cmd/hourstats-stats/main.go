@@ -76,18 +76,18 @@ type TableHealth struct {
 }
 
 type TopicSnapshot struct {
-	ID             int64    `json:"id"`
-	SnapshotTime   string   `json:"snapshot_time"`
-	Rank           int      `json:"rank"`
-	TopicID        string   `json:"topic_id"`
-	Label          string   `json:"label"`
-	Description    string   `json:"description"`
-	PostCount      int      `json:"post_count"`
-	Keywords       []string `json:"keywords"`
-	ExemplarURI    string   `json:"exemplar_uri"`
-	ExemplarHandle string   `json:"exemplar_handle"`
-	IsMeme         bool     `json:"is_meme"`
-	Justification  string   `json:"justification"`
+	ID                int64    `json:"id"`
+	SnapshotTime      string   `json:"snapshot_time"`
+	Rank              int      `json:"rank"`
+	TopicID           string   `json:"topic_id"`
+	Label             string   `json:"label"`
+	Description       string   `json:"description"`
+	UniqueAuthorCount int      `json:"unique_author_count"`
+	Keywords          []string `json:"keywords"`
+	ExemplarURI       string   `json:"exemplar_uri"`
+	ExemplarHandle    string   `json:"exemplar_handle"`
+	IsMeme            bool     `json:"is_meme"`
+	Justification     string   `json:"justification"`
 }
 
 var (
@@ -409,7 +409,7 @@ func cmdTopics() {
 			if t.IsMeme {
 				memeTag = " [meme]"
 			}
-			fmt.Printf("#%d  %s (%s posts)%s\n", t.Rank, t.Label, formatInt(t.PostCount), memeTag)
+			fmt.Printf("#%d  %s (%s authors)%s\n", t.Rank, t.Label, formatInt(t.UniqueAuthorCount), memeTag)
 			if t.Description != "" {
 				fmt.Printf("    %q\n", t.Description)
 			}
