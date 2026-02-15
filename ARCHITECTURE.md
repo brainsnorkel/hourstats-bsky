@@ -25,8 +25,8 @@ Bluesky Network (all posts)
         |
         | Wall-clock aligned tickers
         v
-  +---------+  every 30 min
-  | Analysis|
+  +---------+  analysis ticker
+  | Analysis|  (configurable)
   | Cycle   |
   +---------+
   Read posts since cutoff
@@ -34,7 +34,6 @@ Bluesky Network (all posts)
   VADER sentiment analysis
   Post summary to Bluesky
   Generate sparkline reply
-  Generate trendline reply
   TF-IDF extraction (2h window)
   Gemini Pro grouping
   Volume-based ranking
@@ -58,8 +57,8 @@ Everything runs inside a single Go binary (`cmd/hourstats/main.go`) on Fly.io:
 | Component | Implementation | Trigger |
 |-----------|---------------|---------|
 | **Jetstream Consumer** | Goroutine calling `internal/jetstream/consumer.go` | Always running (auto-restart on failure) |
-| **Analysis Cycle** | `runAnalysisCycle()` | Wall-clock ticker every 30 min |
-| **Sparkline + Trendline** | Called sequentially after analysis | Part of analysis cycle |
+| **Analysis Cycle** | `runAnalysisCycle()` | Wall-clock ticker (default 30 min, configurable) |
+| **Sparkline** | `postSparkline()` after analysis | Part of analysis cycle |
 | **Topic Analysis + Post** | `topics.Analyzer.RunAnalysisCycle()` + `RunTrendingPost()` | After sparkline in analysis cycle |
 | **Daily Cycle** | `runBackup()` + `runDailyAggregation()` + `runDailyTopPostQuote()` | Wall-clock ticker daily midnight UTC |
 | **Yearly Posting** | `runYearlyPosting()` | Wall-clock ticker daily 01:00 UTC (posts on 1st) |
@@ -67,7 +66,7 @@ Everything runs inside a single Go binary (`cmd/hourstats/main.go`) on Fly.io:
 
 ### Wall-Clock Aligned Scheduling
 
-Tickers fire at clean UTC clock boundaries (e.g., :00 and :30 for the 30-minute cycle) rather than at fixed intervals from process start. This means deploys and restarts don't shift the schedule.
+Tickers fire at clean UTC clock boundaries rather than at fixed intervals from process start. For a 30-minute interval this would be :00 and :30; for a 60-minute interval with a 55-minute offset (production), it fires at :55 past each hour. This means deploys and restarts don't shift the schedule.
 
 ## Data Flow
 
@@ -75,20 +74,19 @@ Tickers fire at clean UTC clock boundaries (e.g., :00 and :30 for the 30-minute 
 
 1. **Jetstream** → Consumer goroutine receives ~1,500–3,000 posts/min via WebSocket
 2. **Consumer** → Filters for English (`lang=en`), post creates only → inserts to SQLite `post_buffer`
-3. **Ticker** fires at :00 or :30 UTC → `runAnalysisCycle()`
-4. **Read** posts from SQLite since cutoff (30 min ago)
+3. **Ticker** fires at wall-clock boundary → `runAnalysisCycle()`
+4. **Read** posts from SQLite since cutoff (analysis interval ago)
 5. **Hydrate** engagement via `app.bsky.feed.getPosts` (25 URIs/batch, concurrent) — resolves handles from DIDs
 6. **Analyze** sentiment using VADER, categorize posts (+/-/x), select top 5 by engagement
 7. **Post** summary to Bluesky with mood hashtag, clickable handle facets, embed card
 8. **Generate** 7-day sparkline chart PNG → post as reply
-9. **Generate** sentiment trendline chart (root vs reply) → post as reply
-10. **Trending topics** TF-IDF (2h window) → Gemini Pro grouping → post as reply to sparkline
-11. **Save** run state and sentiment data point to SQLite
+9. **Trending topics** TF-IDF (2h window) → Gemini Pro grouping → post as reply to sparkline
+10. **Save** run state and sentiment data point to SQLite
 
 ### Trending Topics Pipeline
 
 1. **On ingest**: Root posts (non-replies) are tokenized and stored in `topic_tokens`
-2. **Every 30 min** (after sparkline): TF-IDF extracts top terms from 2h window → Gemini Pro groups into 5 topics → rank by post volume → track identities via Jaccard similarity → store snapshot → hydrate exemplar posts → format and post as reply to sparkline
+2. **Each analysis cycle** (after sparkline): TF-IDF extracts top terms from 2h window → Gemini Pro groups into 5 topics → rank by post volume → track identities via Jaccard similarity → store snapshot → hydrate exemplar posts → format and post as reply to sparkline
 
 ### Daily/Yearly Pipeline
 
@@ -134,6 +132,7 @@ On startup, `RunStartupMaintenance()` cleans derived tables, purges stale rows, 
 | `BLUESKY_PASSWORD` | (required) | Bluesky app password |
 | `DRY_RUN` | `false` | Prevents all posting to Bluesky |
 | `ANALYSIS_INTERVAL_MINUTES` | `30` | Sentiment analysis window |
+| `ANALYSIS_OFFSET_MINUTES` | `0` | Wall-clock offset within interval (minutes) |
 | `TRENDING_ENABLED` | `false` | Enable trending topics feature |
 | `GOOGLE_AI_API_KEY` | (required if trending) | Gemini API key for topic grouping |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model for topic grouping |
@@ -167,13 +166,15 @@ hourstats-bsky/
 │   ├── analyzer/              # VADER sentiment analysis (govader)
 │   ├── client/                # Bluesky AT Protocol client (posting, image upload, facets)
 │   ├── formatter/             # Post content formatting (character counting, Bluesky limits)
-│   ├── sparkline/             # Chart generation (sparkline, trendline, volume, yearly, trending)
+│   ├── sparkline/             # Chart generation (sparkline, volume, yearly, trending)
+│   ├── stats/                 # Runtime statistics collector
+│   ├── statsapi/              # HTTP stats API server (port 9111)
 │   ├── state/                 # [Legacy] DynamoDB state management
 │   ├── lambda/                # [Legacy] SSM config loader for Lambda
 │   ├── awsutil/               # [Legacy] AWS utilities
 │   ├── backup/                # [Legacy] DynamoDB backup/restore
 │   └── config/                # Configuration types
-├── fly.prod.toml              # Fly.io production config (sjc, shared-cpu-1x, 256MB)
+├── fly.prod.toml              # Fly.io production config (sjc, shared-cpu-1x, 512MB)
 ├── fly.staging.toml           # Fly.io staging config (sjc, shared-cpu-1x, 512MB)
 ├── Dockerfile                 # Multi-stage build (golang:1.24-alpine → alpine:3.21)
 ├── Makefile                   # Build, test, deploy targets
@@ -196,7 +197,7 @@ hourstats-bsky/
 
 5. **Embedded images**: All charts are uploaded directly to Bluesky's blob service as image embeds, eliminating the need for external image hosting.
 
-6. **Wall-clock aligned scheduling**: Tickers fire at UTC clock boundaries (:00, :30) rather than at intervals from process start. This ensures consistent posting times regardless of deploys or restarts.
+6. **Wall-clock aligned scheduling**: Tickers fire at UTC clock boundaries rather than at intervals from process start. An optional offset (`ANALYSIS_OFFSET_MINUTES`) shifts the fire point within each interval. This ensures consistent posting times regardless of deploys or restarts.
 
 7. **English-only filter**: The Jetstream consumer requires explicit `lang=en` tags on posts for sentiment analysis parity with the production Lambda system.
 

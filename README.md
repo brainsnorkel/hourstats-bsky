@@ -2,9 +2,9 @@
 
 **Live Bot:** [@hourstats.bsky.social](https://bsky.app/profile/hourstats.bsky.social)
 
-> **Note:** This project is an experiment in using [Claude](https://claude.ai) and [Cursor](https://cursor.sh) for AI-assisted software development. The bot monitors the Bluesky firehose in real time via Jetstream and posts sentiment summaries every 30 minutes.
+> **Note:** This project is an experiment in using [Claude](https://claude.ai) and [Cursor](https://cursor.sh) for AI-assisted software development. The bot monitors the Bluesky firehose in real time via Jetstream and posts sentiment summaries at configurable intervals (default 30 minutes).
 
-A Go-based AT Protocol/Bluesky client that analyzes trending posts and sentiment to provide hourly statistics about the Bluesky community.
+A Go-based AT Protocol/Bluesky client that analyzes trending posts and sentiment to provide regular statistics about the Bluesky community.
 
 ## What It Does
 
@@ -35,8 +35,7 @@ Bluesky is #satisfied
 - **Top 5 posts**: Ranked by engagement with clickable links
 - **Sentiment indicators**: + (positive), - (negative), x (neutral)
 - **7-day sparklines**: Visual sentiment trends posted with each summary
-- **Trending topics**: Top 5 topic list with exemplar post links, posted every 30 minutes as reply to sparkline
-- **Sentiment trendlines**: Original posts vs reply sentiment comparison
+- **Trending topics**: Top 5 topic list with exemplar post links, posted each analysis cycle as reply to sparkline
 - **Yearly charts**: Monthly posts showing 365 days of sentiment data
 
 ## Architecture
@@ -44,10 +43,9 @@ Bluesky is #satisfied
 The bot runs as a single Go binary on [Fly.io](https://fly.io) with the following goroutines:
 
 - **Jetstream Consumer**: Connects to the Bluesky Jetstream WebSocket firehose, filters English posts, and writes them to a local SQLite database. Auto-restarts with exponential backoff (1s → 60s) on disconnect.
-- **Analysis Cycle**: Every 30 minutes (wall-clock aligned), reads posts from the window, hydrates engagement via the Bluesky API, runs VADER sentiment analysis, and posts a summary with the top 5 most engaged posts.
+- **Analysis Cycle**: At each wall-clock-aligned interval (configurable, default 30 minutes), reads posts from the window, hydrates engagement via the Bluesky API, runs VADER sentiment analysis, and posts a summary with the top 5 most engaged posts.
 - **Sparkline Poster**: Generates and posts a 7-day sentiment sparkline chart as a reply to each summary.
-- **Sentiment Trendline**: Posts an original-vs-reply sentiment comparison chart.
-- **Trending Topics**: Every 30 minutes (after sparkline), identifies top 5 topics using TF-IDF analysis (2-hour window) grouped by Gemini Pro, posts a text summary as a reply to the sparkline.
+- **Trending Topics**: After the sparkline (same analysis cycle), identifies top 5 topics using TF-IDF analysis (2-hour window) grouped by Gemini Pro, posts a text summary as a reply to the sparkline.
 - **Daily Cycle**: Aggregates daily sentiment averages, creates local + S3 backups, posts a daily top-post quote reply to the yearly thread.
 - **Yearly Poster**: On the 1st of each month at 01:00 UTC, generates and posts a yearly sentiment chart.
 
@@ -117,7 +115,7 @@ export GEMINI_MODEL="gemini-2.5-pro"  # optional, defaults to gemini-2.5-pro
 3. **Sentiment Analysis**: Uses VADER sentiment analysis on post text
 4. **Engagement Ranking**: Ranks posts by total engagement (replies + likes + reposts)
 5. **Posting**: Publishes top 5 posts with sentiment indicators and mood hashtag
-6. **Visualizations**: Generates sparklines, sentiment trendlines, and yearly charts
+6. **Visualizations**: Generates sparklines and yearly charts
 7. **Trending Topics**: TF-IDF extraction + Gemini Pro grouping → text reply to sparkline with exemplar links
 
 ## Features
@@ -128,10 +126,9 @@ export GEMINI_MODEL="gemini-2.5-pro"  # optional, defaults to gemini-2.5-pro
 - ✅ Engagement-based ranking with API hydration
 - ✅ Post deduplication
 - ✅ 7-day sentiment sparklines
-- ✅ Original vs reply sentiment trendlines
 - ✅ Yearly sentiment charts with month markers
 - ✅ Daily sentiment aggregation
-- ✅ Trending topics with exemplar links (TF-IDF + Gemini Pro, posted every 30 min as reply to sparkline)
+- ✅ Trending topics with exemplar links (TF-IDF + Gemini Pro, posted each analysis cycle as reply to sparkline)
 - ✅ Daily top-post quote reply to yearly thread
 - ✅ SQLite with WAL mode on persistent Fly.io volume
 - ✅ Daily SQLite → S3 backups (essential tables only)
@@ -141,7 +138,7 @@ export GEMINI_MODEL="gemini-2.5-pro"  # optional, defaults to gemini-2.5-pro
 
 ### Trending Topics
 
-Every 30 minutes, the bot identifies the top 5 trending topics on Bluesky and posts them as a reply to the sparkline chart (threaded under the sentiment summary). Topics are extracted using TF-IDF analysis (2-hour window) of root posts (filtered for spam and adult content), grouped by Google Gemini Pro for semantic understanding, and tracked with persistent identities across ranking cycles.
+Each analysis cycle, the bot identifies the top 5 trending topics on Bluesky and posts them as a reply to the sparkline chart (threaded under the sentiment summary). Topics are extracted using TF-IDF analysis (2-hour window) of root posts (filtered for spam and adult content), grouped by Google Gemini Pro for semantic understanding, and tracked with persistent identities across ranking cycles.
 
 Each topic includes a link to the highest-engagement exemplar post. Spam is filtered at three layers: adult content labels at ingestion, multi-hashtag posts at ingestion, and zero-engagement posts at TF-IDF query time. Users can mute trending posts via `#hstrend` without affecting the sentiment feed.
 
@@ -192,7 +189,7 @@ make deploy-all
 
 ### Fly.io Resources
 
-- **Production**: `hourstats-prod` — shared-cpu-1x, 256MB RAM, persistent volume at `/data` (SJC region)
+- **Production**: `hourstats-prod` — shared-cpu-1x, 512MB RAM, persistent volume at `/data` (SJC region)
 - **Staging**: `hourstats-staging` — shared-cpu-1x, 512MB RAM, persistent volume at `/data` (SJC region)
 
 ### Operational Commands
@@ -233,7 +230,9 @@ hourstats-bsky/
 │   ├── client/                   # Bluesky API client
 │   ├── analyzer/                 # Sentiment analysis (VADER)
 │   ├── formatter/                # Post formatting
-│   ├── sparkline/                # Chart generation (sparkline, trendline, yearly, bump)
+│   ├── sparkline/                # Chart generation (sparkline, yearly, volume, trending)
+│   ├── stats/                    # Runtime statistics collector
+│   ├── statsapi/                 # HTTP stats API server (port 9111)
 │   ├── state/                    # [Legacy] DynamoDB state management
 │   ├── awsutil/                  # [Legacy] AWS utilities
 │   └── backup/                   # [Legacy] DynamoDB backup logic

@@ -63,7 +63,8 @@ Backups:   AWS S3 (daily)
 
 ## 30-Minute Analysis Pipeline
 
-Every 30 minutes at `:00` and `:30` UTC, this pipeline runs end-to-end:
+At each wall-clock-aligned analysis interval (default 30 min, configurable via
+`ANALYSIS_INTERVAL_MINUTES`), this pipeline runs end-to-end:
 
 ```
  ┌─────────┐   ┌───────────┐   ┌─────────┐   ┌──────────┐   ┌──────────────┐
@@ -74,25 +75,24 @@ Every 30 minutes at `:00` and `:30` UTC, this pipeline runs end-to-end:
  │(30-min  │   └───────────┘   └─────────┘   └──────────┘   │  + mood tag  │
  │ window) │                                                  └──────┬───────┘
  └─────────┘                                                         │
-                          ┌──────────────────────────────────────────┤
-                          │                                          │
-                          ▼                                          ▼
-                 ┌─────────────────┐                      ┌──────────────────┐
-                 │  Sparkline      │                      │  Trendline       │
-                 │  (7-day chart)  │                      │  (root vs reply) │
-                 │  reply to       │                      │  reply to        │
-                 │  summary        │                      │  summary         │
-                 └────────┬────────┘                      └──────────────────┘
-                          │
-                          ▼
-                 ┌─────────────────┐
-                 │ Trending Topics │
-                 │ TF-IDF (2h win) │
-                 │ → Gemini group  │
-                 │ → rank + track  │
-                 │ reply to        │
-                 │ sparkline       │
-                 └─────────────────┘
+                                                                     │
+                                                                     ▼
+                                                            ┌─────────────────┐
+                                                            │  Sparkline      │
+                                                            │  (7-day chart)  │
+                                                            │  reply to       │
+                                                            │  summary        │
+                                                            └────────┬────────┘
+                                                                     │
+                                                                     ▼
+                                                            ┌─────────────────┐
+                                                            │ Trending Topics │
+                                                            │ TF-IDF (2h win) │
+                                                            │ → Gemini group  │
+                                                            │ → rank + track  │
+                                                            │ reply to        │
+                                                            │ sparkline       │
+                                                            └─────────────────┘
 ```
 
 **Bluesky post threading:**
@@ -100,7 +100,6 @@ Every 30 minutes at `:00` and `:30` UTC, this pipeline runs end-to-end:
 ```
   Sentiment Summary (root post)
    └── Sparkline chart (reply)
-        ├── Trendline chart (reply)
         └── Trending topics (reply)
 ```
 
