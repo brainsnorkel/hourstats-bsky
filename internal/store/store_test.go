@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -587,5 +588,501 @@ func TestBackup_PrunesOldFiles(t *testing.T) {
 
 	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
 		t.Errorf("old backup should have been pruned")
+	}
+}
+
+func TestGetKeyValueWithTimestamp(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SetKeyValue(ctx, "ts_key", "ts_val"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+
+	entry, err := s.GetKeyValueWithTimestamp(ctx, "ts_key")
+	if err != nil {
+		t.Fatalf("GetKeyValueWithTimestamp: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+	if entry.Key != "ts_key" {
+		t.Errorf("Key = %q, want %q", entry.Key, "ts_key")
+	}
+	if entry.Value != "ts_val" {
+		t.Errorf("Value = %q, want %q", entry.Value, "ts_val")
+	}
+	if entry.UpdatedAt == "" {
+		t.Error("expected non-empty UpdatedAt")
+	}
+}
+
+func TestGetKeyValueWithTimestamp_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	entry, err := s.GetKeyValueWithTimestamp(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("GetKeyValueWithTimestamp: %v", err)
+	}
+	if entry != nil {
+		t.Errorf("expected nil for nonexistent key, got %+v", entry)
+	}
+}
+
+func TestDeleteKeyValues(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, kv := range []struct{ k, v string }{
+		{"del1", "v1"}, {"del2", "v2"}, {"keep", "v3"},
+	} {
+		if err := s.SetKeyValue(ctx, kv.k, kv.v); err != nil {
+			t.Fatalf("SetKeyValue(%q): %v", kv.k, err)
+		}
+	}
+
+	deleted, err := s.DeleteKeyValues(ctx, []string{"del1", "del2"})
+	if err != nil {
+		t.Fatalf("DeleteKeyValues: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("deleted = %d, want 2", deleted)
+	}
+
+	val, err := s.GetKeyValue(ctx, "keep")
+	if err != nil {
+		t.Fatalf("GetKeyValue(keep): %v", err)
+	}
+	if val != "v3" {
+		t.Errorf("keep value = %q, want %q", val, "v3")
+	}
+
+	_, err = s.GetKeyValue(ctx, "del1")
+	if err == nil {
+		t.Error("expected error for deleted key")
+	}
+}
+
+func TestDeleteKeyValues_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	deleted, err := s.DeleteKeyValues(ctx, nil)
+	if err != nil {
+		t.Fatalf("DeleteKeyValues(nil): %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("deleted = %d, want 0", deleted)
+	}
+}
+
+func TestGetLatestCompletedRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+
+	if err := s.CreateRun(ctx, RunState{
+		RunID: "run-incomplete", Status: "running",
+		AnalysisIntervalMinutes: 30, CutoffTime: now,
+	}); err != nil {
+		t.Fatalf("CreateRun(run-incomplete): %v", err)
+	}
+
+	if err := s.CreateRun(ctx, RunState{
+		RunID: "run-old", Status: "complete",
+		AnalysisIntervalMinutes: 30, CutoffTime: now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateRun(run-old): %v", err)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	if err := s.CreateRun(ctx, RunState{
+		RunID: "run-latest", Status: "complete",
+		AnalysisIntervalMinutes: 30, CutoffTime: now.Add(-1 * time.Hour),
+		OverallSentiment: "positive", NetSentimentPercentage: 42.5, TotalPostsRetrieved: 200,
+	}); err != nil {
+		t.Fatalf("CreateRun(run-latest): %v", err)
+	}
+
+	latest, err := s.GetLatestCompletedRun(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestCompletedRun: %v", err)
+	}
+	if latest == nil {
+		t.Fatal("expected non-nil completed run")
+	}
+	if latest.RunID != "run-latest" {
+		t.Errorf("RunID = %q, want %q", latest.RunID, "run-latest")
+	}
+	if latest.OverallSentiment != "positive" {
+		t.Errorf("OverallSentiment = %q, want %q", latest.OverallSentiment, "positive")
+	}
+}
+
+func TestGetLatestCompletedRun_None(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	run, err := s.GetLatestCompletedRun(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestCompletedRun: %v", err)
+	}
+	if run != nil {
+		t.Errorf("expected nil on empty DB, got %+v", run)
+	}
+}
+
+func TestPurgeExpiredRuns(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	if err := s.CreateRun(ctx, RunState{RunID: "old-run", Status: "complete", AnalysisIntervalMinutes: 30, CutoffTime: now}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	_, err := s.writeDB.ExecContext(ctx,
+		`UPDATE runs SET created_at = ? WHERE run_id = ?`,
+		timeToStr(now.Add(-72*time.Hour)), "old-run")
+	if err != nil {
+		t.Fatalf("update created_at: %v", err)
+	}
+
+	if err := s.CreateRun(ctx, RunState{RunID: "new-run", Status: "complete", AnalysisIntervalMinutes: 30, CutoffTime: now}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	deleted, err := s.PurgeExpiredRuns(ctx, 48*time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeExpiredRuns: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted = %d, want 1", deleted)
+	}
+
+	run, err := s.GetRun(ctx, "new-run")
+	if err != nil {
+		t.Fatalf("GetRun(new-run): %v", err)
+	}
+	if run == nil {
+		t.Error("new-run should survive purge")
+	}
+}
+
+func TestUpdatePostEngagement(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	post := Post{
+		URI:       "at://did:plc:abc/app.bsky.feed.post/eng1",
+		CID:       "cid-eng",
+		Text:      "engagement test",
+		AuthorDID: "did:plc:abc",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := s.InsertPost(ctx, post); err != nil {
+		t.Fatalf("InsertPost: %v", err)
+	}
+
+	if err := s.UpdatePostEngagement(ctx, post.URI, 10, 5, 3, "alice.bsky.social", "positive", 42.5); err != nil {
+		t.Fatalf("UpdatePostEngagement: %v", err)
+	}
+
+	posts, err := s.GetPostsSince(ctx, time.Now().UTC().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("GetPostsSince: %v", err)
+	}
+	if len(posts) != 1 {
+		t.Fatalf("expected 1 post, got %d", len(posts))
+	}
+	if posts[0].Likes != 10 {
+		t.Errorf("Likes = %d, want 10", posts[0].Likes)
+	}
+	if posts[0].Reposts != 5 {
+		t.Errorf("Reposts = %d, want 5", posts[0].Reposts)
+	}
+	if posts[0].AuthorHandle != "alice.bsky.social" {
+		t.Errorf("AuthorHandle = %q, want %q", posts[0].AuthorHandle, "alice.bsky.social")
+	}
+	if posts[0].Sentiment != "positive" {
+		t.Errorf("Sentiment = %q, want %q", posts[0].Sentiment, "positive")
+	}
+}
+
+func TestPurgeExpiredSentimentHistory(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	old := SentimentDataPoint{
+		RunID:               "old-sdp",
+		Timestamp:           now.Add(-72 * time.Hour),
+		NetSentimentPercent: 50,
+		SentimentCategory:   "positive",
+		TotalPosts:          100,
+		CreatedAt:           now.Add(-72 * time.Hour),
+	}
+	recent := SentimentDataPoint{
+		RunID:               "recent-sdp",
+		Timestamp:           now.Add(-1 * time.Hour),
+		NetSentimentPercent: 30,
+		SentimentCategory:   "neutral",
+		TotalPosts:          200,
+		CreatedAt:           now.Add(-1 * time.Hour),
+	}
+
+	if err := s.StoreSentimentDataPoint(ctx, old); err != nil {
+		t.Fatalf("StoreSentimentDataPoint (old): %v", err)
+	}
+	if err := s.StoreSentimentDataPoint(ctx, recent); err != nil {
+		t.Fatalf("StoreSentimentDataPoint (recent): %v", err)
+	}
+
+	deleted, err := s.PurgeExpiredSentimentHistory(ctx, 48*time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeExpiredSentimentHistory: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted = %d, want 1", deleted)
+	}
+
+	remaining, err := s.GetSentimentHistory(ctx, 96*time.Hour)
+	if err != nil {
+		t.Fatalf("GetSentimentHistory: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Errorf("expected 1 remaining, got %d", len(remaining))
+	}
+}
+
+func TestBackupToWriter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SetKeyValue(ctx, "bw_key", "bw_val"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := s.BackupToWriter(ctx, &buf); err != nil {
+		t.Fatalf("BackupToWriter: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error("expected non-empty backup output")
+	}
+}
+
+func TestRunWALCheckpoint(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SetKeyValue(ctx, "wal_test", "data"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+
+	// RunWALCheckpoint has no return value; just verify it doesn't panic.
+	s.RunWALCheckpoint(ctx)
+}
+
+func TestRunStartupMaintenance(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.RunStartupMaintenance(ctx); err != nil {
+		t.Fatalf("RunStartupMaintenance: %v", err)
+	}
+}
+
+func TestRunVacuum(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.RunVacuum(ctx); err != nil {
+		t.Fatalf("RunVacuum: %v", err)
+	}
+}
+
+func TestDB(t *testing.T) {
+	s := newTestStore(t)
+	db := s.DB()
+	if db == nil {
+		t.Fatal("DB() returned nil")
+	}
+	if err := db.Ping(); err != nil {
+		t.Fatalf("DB().Ping(): %v", err)
+	}
+}
+
+func TestGetDailyPostCounts_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	counts, err := s.GetDailyPostCounts(ctx, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("GetDailyPostCounts: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Errorf("expected 0 counts, got %d", len(counts))
+	}
+}
+
+func TestGetDailyPostCounts_WithData(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	yesterday := time.Now().UTC().Add(-36 * time.Hour).Truncate(24 * time.Hour).Add(12 * time.Hour)
+	dp := SentimentDataPoint{
+		RunID:                "run-daily-1",
+		Timestamp:            yesterday,
+		AverageCompoundScore: 0.5,
+		NetSentimentPercent:  60.0,
+		SentimentCategory:    "positive",
+		TotalPosts:           100,
+		TotalFirehosePosts:   5000,
+	}
+	if err := s.StoreSentimentDataPoint(ctx, dp); err != nil {
+		t.Fatalf("StoreSentimentDataPoint: %v", err)
+	}
+
+	counts, err := s.GetDailyPostCounts(ctx, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("GetDailyPostCounts: %v", err)
+	}
+	if len(counts) == 0 {
+		t.Fatal("expected at least 1 daily count")
+	}
+	if counts[0].Count != 100 {
+		t.Errorf("Count = %d, want 100", counts[0].Count)
+	}
+}
+
+func TestGetPostingActivity_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	pa, err := s.GetPostingActivity(ctx)
+	if err != nil {
+		t.Fatalf("GetPostingActivity: %v", err)
+	}
+	if pa == nil {
+		t.Fatal("expected non-nil PostingActivity")
+	}
+	if pa.SentimentSummary != nil {
+		t.Error("expected nil SentimentSummary for empty DB")
+	}
+}
+
+func TestGetPostingActivity_WithRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	if err := s.CreateRun(ctx, RunState{
+		RunID: "pa-run", Status: "complete",
+		AnalysisIntervalMinutes: 30, CutoffTime: now,
+		OverallSentiment: "happy", NetSentimentPercentage: 75.0, TotalPostsRetrieved: 300,
+	}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	pa, err := s.GetPostingActivity(ctx)
+	if err != nil {
+		t.Fatalf("GetPostingActivity: %v", err)
+	}
+	if pa.SentimentSummary == nil {
+		t.Fatal("expected non-nil SentimentSummary")
+	}
+	if pa.SentimentSummary.Summary == "" {
+		t.Error("expected non-empty Summary")
+	}
+}
+
+func TestGetWeeklyPostTotals_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	totals, err := s.GetWeeklyPostTotals(ctx)
+	if err != nil {
+		t.Fatalf("GetWeeklyPostTotals: %v", err)
+	}
+	if len(totals) != 0 {
+		t.Errorf("expected 0 totals, got %d", len(totals))
+	}
+}
+
+func TestGetLatestTopicSnapshotTime_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	snapTime, count, err := s.GetLatestTopicSnapshotTime(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestTopicSnapshotTime: %v", err)
+	}
+	if snapTime != "" {
+		t.Errorf("expected empty snapshot time, got %q", snapTime)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 count, got %d", count)
+	}
+}
+
+func TestGetLatestTopicSnapshotTime_WithData(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	snapTime := "2025-06-15T12:00:00Z"
+	if err := s.InsertTopicSnapshot(ctx, snapTime, 1, "topic-1", "Go", "Go language", 10, `["go"]`, `[]`, "at://uri", "handle", false, ""); err != nil {
+		t.Fatalf("InsertTopicSnapshot: %v", err)
+	}
+
+	got, count, err := s.GetLatestTopicSnapshotTime(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestTopicSnapshotTime: %v", err)
+	}
+	if got != snapTime {
+		t.Errorf("snapshot time = %q, want %q", got, snapTime)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+}
+
+func TestGetRecentTopicSnapshots(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	snapTime := "2025-06-15T12:00:00Z"
+	if err := s.InsertTopicSnapshot(ctx, snapTime, 1, "topic-1", "Rust", "Rust lang", 5, `["rust"]`, `["rs"]`, "at://uri", "handle", true, "popular"); err != nil {
+		t.Fatalf("InsertTopicSnapshot: %v", err)
+	}
+
+	rows, err := s.GetRecentTopicSnapshots(ctx, "2025-06-01T00:00:00Z", 10)
+	if err != nil {
+		t.Fatalf("GetRecentTopicSnapshots: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Label != "Rust" {
+		t.Errorf("Label = %q, want %q", rows[0].Label, "Rust")
+	}
+	if !rows[0].IsMeme {
+		t.Error("expected IsMeme=true")
+	}
+}
+
+func TestGetRecentTopicSnapshots_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rows, err := s.GetRecentTopicSnapshots(ctx, "2025-06-01T00:00:00Z", 10)
+	if err != nil {
+		t.Fatalf("GetRecentTopicSnapshots: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 rows, got %d", len(rows))
 	}
 }

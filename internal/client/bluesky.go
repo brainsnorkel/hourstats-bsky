@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -71,7 +71,7 @@ func (c *BlueskyClient) Authenticate() error {
 // GetTrendingPostsBatch fetches a single batch of posts using cursor-based pagination
 // Returns: filtered posts, next cursor, has more pages, API batch stats (raw counts before filtering), error
 func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string, cutoffTime time.Time) ([]Post, string, bool, APIBatchStats, error) {
-	log.Printf("Fetching posts batch with cursor: %s", cursor)
+	slog.Debug("fetching posts batch", "cursor", cursor)
 
 	// Initialize stats
 	stats := APIBatchStats{}
@@ -82,8 +82,8 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 
 	for retries := 0; retries < 3; retries++ {
 		// Search for all public posts - using since filter to avoid old "top" posts
-		sinceTime := cutoffTime.Format(time.RFC3339)
-		log.Printf("Making API request with cursor: '%s', since: '%s'", cursor, sinceTime)
+		sinceTime := cutoffTime.UTC().Format(time.RFC3339)
+		slog.Debug("making API request", "cursor", cursor, "since", sinceTime)
 		searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 100, "", "*", sinceTime, "", nil, "", "")
 		if err == nil {
 			break
@@ -91,18 +91,18 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 
 		// If it's a rate limit error, wait and retry
 		if strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "rate") {
-			log.Printf("API rate limit hit, waiting 5 seconds before retry %d/3", retries+1)
+			slog.Warn("API rate limit hit, waiting 5 seconds before retry", "attempt", retries+1)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
 		// Check for timeout errors - these are retriable
 		if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "timeout") {
-			log.Printf("⚠️ API timeout detected (attempt %d/3): %v", retries+1, err)
+			slog.Warn("API timeout detected", "attempt", retries+1, "error", err)
 			if retries < 2 {
 				// Wait longer before retrying timeout errors
 				waitTime := time.Duration(retries+1) * 10 * time.Second
-				log.Printf("⏳ Waiting %v before retry...", waitTime)
+				slog.Warn("waiting before retry", "duration", waitTime)
 				time.Sleep(waitTime)
 				continue
 			}
@@ -111,7 +111,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 				var cursorNum int
 				if _, parseErr := fmt.Sscanf(cursor, "%d", &cursorNum); parseErr == nil {
 					if cursorNum > 8000 {
-						log.Printf("⚠️ Timeout at high cursor %d, skipping this cursor and continuing", cursorNum)
+						slog.Warn("timeout at high cursor, skipping", "cursor", cursorNum)
 						// Return empty result but indicate we should continue with next cursor
 						return nil, "", true, stats, nil
 					}
@@ -123,10 +123,10 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 
 		// Check for cursor pagination limits (HTTP 400 InvalidRequest)
 		if strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "InvalidRequest") {
-			log.Printf("HTTP 400 InvalidRequest error details: %+v", err)
+			slog.Error("HTTP 400 InvalidRequest error", "error", err)
 			// Try to extract more details from the error
 			if httpErr, ok := err.(interface{ Response() interface{} }); ok {
-				log.Printf("HTTP Response details: %+v", httpErr.Response())
+				slog.Error("HTTP Response details", "response", httpErr.Response())
 			}
 
 			// Check if this might be a cursor pagination limit
@@ -136,7 +136,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 				if _, parseErr := fmt.Sscanf(cursor, "%d", &cursorNum); parseErr == nil {
 					// If cursor is very high (>10000), likely hit pagination limit
 					if cursorNum > 10000 {
-						log.Printf("Likely hit cursor pagination limit at cursor %d, stopping gracefully", cursorNum)
+						slog.Warn("likely hit cursor pagination limit, stopping gracefully", "cursor", cursorNum)
 						return nil, "", false, stats, fmt.Errorf("cursor pagination limit reached at %d", cursorNum)
 					}
 				}
@@ -147,7 +147,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		}
 
 		// Log detailed error information for debugging
-		log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
+		slog.Error("API request failed", "attempt", retries+1, "error", err)
 
 		// For other errors, fail immediately
 		return nil, "", false, stats, fmt.Errorf("failed to search public posts: %w", err)
@@ -158,7 +158,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 	}
 
 	// DEBUG: Log API response details
-	log.Printf("📊 API Response: Received %d posts from API (cursor: %s)", len(searchResult.Posts), cursor)
+	slog.Debug("API response received", "post_count", len(searchResult.Posts), "cursor", cursor)
 
 	// Collect raw API stats BEFORE filtering
 	stats.RawPostCount = len(searchResult.Posts)
@@ -179,27 +179,25 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 	if len(searchResult.Posts) > 0 {
 		firstPost := searchResult.Posts[0]
 		lastPost := searchResult.Posts[len(searchResult.Posts)-1]
-		log.Printf("📊 First post IndexedAt: %s", firstPost.IndexedAt)
-		log.Printf("📊 Last post IndexedAt: %s", lastPost.IndexedAt)
-		log.Printf("📊 Cutoff time: %s", cutoffTime.Format(time.RFC3339))
+		slog.Debug("first post indexed at", "indexedAt", firstPost.IndexedAt)
+		slog.Debug("last post indexed at", "indexedAt", lastPost.IndexedAt)
+		slog.Debug("cutoff time", "time", cutoffTime.Format(time.RFC3339))
 
 		// Parse and compare timestamps
 		if firstPost.IndexedAt != "" {
 			firstTime, err := time.Parse(time.RFC3339, firstPost.IndexedAt)
 			if err == nil {
 				diff := firstTime.Sub(cutoffTime)
-				log.Printf("📊 First post is %s %s the cutoff",
-					diff.Abs().Round(time.Second),
-					map[bool]string{true: "after", false: "before"}[diff >= 0])
+				direction := map[bool]string{true: "after", false: "before"}[diff >= 0]
+				slog.Debug("first post time comparison", "diff", diff.Abs().Round(time.Second), "direction", direction)
 			}
 		}
 		if lastPost.IndexedAt != "" {
 			lastTime, err := time.Parse(time.RFC3339, lastPost.IndexedAt)
 			if err == nil {
 				diff := lastTime.Sub(cutoffTime)
-				log.Printf("📊 Last post is %s %s the cutoff",
-					diff.Abs().Round(time.Second),
-					map[bool]string{true: "after", false: "before"}[diff >= 0])
+				direction := map[bool]string{true: "after", false: "before"}[diff >= 0]
+				slog.Debug("last post time comparison", "diff", diff.Abs().Round(time.Second), "direction", direction)
 			}
 		}
 	}
@@ -223,7 +221,7 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 
 		// Filter out adult content based on moderation labels
 		if c.hasAdultContentLabel(postView.Labels) {
-			log.Printf("Filtering out post with adult content: %s", postView.Uri)
+			slog.Info("filtering out post with adult content", "uri", postView.Uri)
 			continue
 		}
 
@@ -303,14 +301,14 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		if err == nil {
 			// If the oldest post is before our cutoff time, we've gone past the time period
 			if oldestPostTime.Before(cutoffTime) {
-				log.Printf("Reached time period boundary - oldest post (%s) is before cutoff (%s), stopping pagination",
-					oldestPostTime.Format("2006-01-02 15:04:05"), cutoffTime.Format("2006-01-02 15:04:05"))
+				slog.Info("reached time period boundary, stopping pagination",
+					"oldest_post_time", oldestPostTime.Format("2006-01-02 15:04:05"), "cutoff_time", cutoffTime.Format("2006-01-02 15:04:05"))
 				hasMorePosts = false
 			}
 		}
 	}
 
-	log.Printf("Retrieved %d posts from batch (cursor: %s, nextCursor: %s, hasMore: %v)", len(posts), cursor, nextCursor, hasMorePosts)
+	slog.Info("retrieved posts from batch", "count", len(posts), "cursor", cursor, "next_cursor", nextCursor, "has_more", hasMorePosts)
 	return posts, nextCursor, hasMorePosts, stats, nil
 }
 
@@ -320,7 +318,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 	// Calculate the cutoff time for posts to consider
 	cutoffTime := time.Now().Add(-time.Duration(analysisIntervalMinutes) * time.Minute)
 	sinceTime := cutoffTime.UTC().Format(time.RFC3339)
-	log.Printf("Searching all public posts from the last %d minutes (since %s, UTC: %s)", analysisIntervalMinutes, cutoffTime.Format("2006-01-02 15:04:05"), sinceTime)
+	slog.Info("searching all public posts", "interval_minutes", analysisIntervalMinutes, "since_time", sinceTime)
 
 	// Search for all public posts - we'll do client-side time filtering
 	// Using search API to get all public posts, not just followed accounts
@@ -338,7 +336,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		for retries := 0; retries < 3; retries++ {
 			// Search for all public posts - using since filter to avoid old "top" posts
 			sinceTime := cutoffTime.UTC().Format(time.RFC3339)
-			log.Printf("Making API request with cursor: '%s', since: '%s'", cursor, sinceTime)
+			slog.Debug("making API request", "cursor", cursor, "since", sinceTime)
 			searchResult, err = bsky.FeedSearchPosts(ctx, c.client, "", cursor, "", "en", 200, "", "*", sinceTime, "", nil, "", "")
 			if err == nil {
 				break
@@ -346,17 +344,17 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 
 			// If it's a rate limit error, wait and retry
 			if strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "rate") {
-				log.Printf("API rate limit hit, waiting 5 seconds before retry %d/3", retries+1)
+				slog.Warn("API rate limit hit, waiting 5 seconds before retry", "attempt", retries+1)
 				time.Sleep(5 * time.Second)
 				continue
 			}
 
 			// Check for cursor pagination limits (HTTP 400 InvalidRequest)
 			if strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "InvalidRequest") {
-				log.Printf("HTTP 400 InvalidRequest error details: %+v", err)
+				slog.Error("HTTP 400 InvalidRequest error", "error", err)
 				// Try to extract more details from the error
 				if httpErr, ok := err.(interface{ Response() interface{} }); ok {
-					log.Printf("HTTP Response details: %+v", httpErr.Response())
+					slog.Error("HTTP Response details", "response", httpErr.Response())
 				}
 
 				// Check if this might be a cursor pagination limit
@@ -366,7 +364,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 					if _, parseErr := fmt.Sscanf(cursor, "%d", &cursorNum); parseErr == nil {
 						// If cursor is very high (>10000), likely hit pagination limit
 						if cursorNum > 10000 {
-							log.Printf("Likely hit cursor pagination limit at cursor %d, stopping gracefully", cursorNum)
+							slog.Warn("likely hit cursor pagination limit, stopping gracefully", "cursor", cursorNum)
 							return nil, fmt.Errorf("cursor pagination limit reached at %d", cursorNum)
 						}
 					}
@@ -377,7 +375,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 			}
 
 			// Log detailed error information for debugging
-			log.Printf("API request failed (attempt %d/3): %v", retries+1, err)
+			slog.Error("API request failed", "attempt", retries+1, "error", err)
 
 			// For other errors, fail immediately
 			return nil, fmt.Errorf("failed to search public posts: %w", err)
@@ -399,7 +397,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 				postTimeUTC := postTime.UTC()
 				cutoffTimeUTC := cutoffTime.UTC()
 				// Log the timestamp of the oldest post in this batch
-				log.Printf("Oldest post in batch: %s UTC (cutoff: %s UTC)", postTimeUTC.Format("2006-01-02 15:04:05"), cutoffTimeUTC.Format("2006-01-02 15:04:05"))
+				slog.Debug("oldest post in batch", "post_time", postTimeUTC.Format("2006-01-02 15:04:05"), "cutoff_time", cutoffTimeUTC.Format("2006-01-02 15:04:05"))
 				if !postTimeUTC.Before(cutoffTimeUTC) {
 					hasRecentPosts = true
 				}
@@ -411,14 +409,14 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 
 		// Log progress
 		if searchResult.HitsTotal != nil {
-			log.Printf("Retrieved %d/%d posts from Bluesky search", totalRetrieved, *searchResult.HitsTotal)
+			slog.Info("retrieved posts from Bluesky search", "count", totalRetrieved, "total", *searchResult.HitsTotal)
 		} else {
-			log.Printf("Retrieved %d posts from Bluesky search", totalRetrieved)
+			slog.Info("retrieved posts from Bluesky search", "count", totalRetrieved)
 		}
 
 		// Stop if no recent posts in this batch (posts are getting too old)
 		if !hasRecentPosts {
-			log.Printf("No recent posts found in this batch, stopping pagination")
+			slog.Info("no recent posts found in this batch, stopping pagination")
 			break
 		}
 
@@ -432,7 +430,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		// The time-based cutoff and cursor pagination will naturally limit collection
 	}
 
-	log.Printf("Retrieved %d total public posts from Bluesky search", len(allPosts))
+	slog.Info("retrieved total public posts from Bluesky search", "count", len(allPosts))
 
 	// Deduplicate posts by URI, keeping the one with higher engagement score
 	uriToPost := make(map[string]Post)
@@ -478,7 +476,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		// Check for adult content labels
 		hasAdultLabel := c.hasAdultContentLabel(postView.Labels)
 		if hasAdultLabel {
-			log.Printf("Filtering out adult content post by @%s (labels: %v)", postView.Author.Handle, postView.Labels)
+			slog.Info("filtering out adult content post", "author", postView.Author.Handle, "labels", postView.Labels)
 			continue // Skip this post
 		}
 
@@ -511,7 +509,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 
 		// Debug: Log URI format to understand what we're getting
 		if !strings.HasPrefix(uri, "at://") {
-			log.Printf("DEBUG: Non-standard URI format: %s for post by @%s (original: %s)", uri, postView.Author.Handle, postView.Uri)
+			slog.Debug("non-standard URI format", "uri", uri, "author", postView.Author.Handle, "original_uri", postView.Uri)
 		}
 
 		// Check if we've seen this URI before (use the properly formatted URI)
@@ -536,7 +534,7 @@ func (c *BlueskyClient) GetTrendingPosts(analysisIntervalMinutes int) ([]Post, e
 		posts = append(posts, post)
 	}
 
-	log.Printf("Found %d public posts from the last %d minutes", len(posts), analysisIntervalMinutes)
+	slog.Info("found public posts from analysis interval", "count", len(posts), "interval_minutes", analysisIntervalMinutes)
 	return posts, nil
 }
 
@@ -570,7 +568,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	}
 
 	// Post to Bluesky
-	log.Printf("Posting to Bluesky: %s", summaryText)
+	slog.Info("posting to Bluesky", "summary", summaryText)
 
 	// Create facets for clickable links (user handles to posts)
 	facets := createUserHandleFacets(summaryText, posts)
@@ -580,7 +578,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	if len(posts) > 0 {
 		for _, post := range posts {
 			if post.URI != "" && post.CID != "" && !strings.HasPrefix(post.URI, "at://post-") {
-				log.Printf("Creating embed card for post: %s", post.URI)
+				slog.Debug("creating embed card for post", "uri", post.URI)
 				embed = c.createEmbedCard(ctx, post)
 				if embed != nil {
 					break
@@ -612,18 +610,18 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	postedURI := result.Uri
 	postedCID := result.Cid
 
-	log.Printf("Successfully posted to Bluesky! URI: %s, CID: %s", postedURI, postedCID)
+	slog.Info("successfully posted to Bluesky", "uri", postedURI, "cid", postedCID)
 	return postedURI, postedCID, nil
 }
 
 // createEmbedCard creates an embed card for a post
 func (c *BlueskyClient) createEmbedCard(ctx context.Context, post Post) *bsky.FeedPost_Embed {
 	if post.URI == "" || post.CID == "" {
-		log.Printf("Cannot create embed card: missing URI (%s) or CID (%s)", post.URI, post.CID)
+		slog.Warn("cannot create embed card: missing URI or CID", "uri", post.URI, "cid", post.CID)
 		return nil
 	}
 
-	log.Printf("Creating embed card for post: URI=%s, CID=%s", post.URI, post.CID)
+	slog.Debug("creating embed card for post", "uri", post.URI, "cid", post.CID)
 
 	return &bsky.FeedPost_Embed{
 		EmbedRecord: &bsky.EmbedRecord{
@@ -742,32 +740,31 @@ func convertATURItoWebURL(uri string) string {
 }
 
 func truncateText(text string, maxLength int) string {
-	if len(text) <= maxLength {
+	runes := []rune(text)
+	if len(runes) <= maxLength {
 		return text
 	}
-	return text[:maxLength-3] + "..."
+	return string(runes[:maxLength-3]) + "..."
 }
 
 // createLinkFacets creates rich text facets for URLs in the text
 // Based on Bluesky rich text documentation: https://docs.bsky.app/docs/advanced-guides/post-richtext
 
-// hasAdultContentLabel checks if a post has adult content labels
+// adultLabels are Bluesky moderation label values for adult content.
+var adultLabels = map[string]bool{
+	"porn":          true,
+	"sexual":        true,
+	"nudity":        true,
+	"graphic-media": true,
+}
+
+// hasAdultContentLabel checks if a post has adult content labels.
 func (c *BlueskyClient) hasAdultContentLabel(labels []*atproto.LabelDefs_Label) bool {
-	if labels == nil {
-		return false
-	}
-
-	// Adult content label values from Bluesky moderation
-	adultLabels := []string{"porn", "sexual", "nudity", "graphic-media"}
-
 	for _, label := range labels {
-		for _, adultLabel := range adultLabels {
-			if label.Val == adultLabel {
-				return true
-			}
+		if label != nil && adultLabels[label.Val] {
+			return true
 		}
 	}
-
 	return false
 }
 
@@ -803,7 +800,7 @@ func (c *BlueskyClient) PostWithFacets(ctx context.Context, text string, facets 
 		return fmt.Errorf("failed to post to Bluesky: %w", err)
 	}
 
-	log.Printf("Successfully posted to Bluesky: %s", text[:min(50, len(text))])
+	slog.Info("successfully posted to Bluesky", "text", text[:min(50, len(text))])
 	return nil
 }
 
@@ -840,7 +837,7 @@ func (c *BlueskyClient) UploadImage(ctx context.Context, imageData []byte, altTe
 		Alt: altText,
 	}
 
-	log.Printf("Successfully uploaded image blob: %s (%d bytes, %s)", blob.Blob.Ref, len(imageData), contentType)
+	slog.Info("successfully uploaded image blob", "ref", blob.Blob.Ref, "size_bytes", len(imageData), "mime_type", contentType)
 	return imageRef, nil
 }
 
@@ -886,7 +883,7 @@ func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageDat
 
 	postedURI := result.Uri
 	postedCID := result.Cid
-	log.Printf("Successfully posted with embedded image: %s (URI: %s, CID: %s)", text[:min(50, len(text))], postedURI, postedCID)
+	slog.Info("successfully posted with embedded image", "text", text[:min(50, len(text))], "uri", postedURI, "cid", postedCID)
 	return postedURI, postedCID, nil
 }
 
@@ -927,7 +924,7 @@ func (c *BlueskyClient) PostWithFacetsAsReply(ctx context.Context, text string, 
 		return "", "", fmt.Errorf("failed to post reply with facets: %w", err)
 	}
 
-	log.Printf("Successfully posted reply with facets: %s (root: %s, parent: %s)", text[:min(50, len(text))], rootURI, parentURI)
+	slog.Info("successfully posted reply with facets", "text", text[:min(50, len(text))], "root_uri", rootURI, "parent_uri", parentURI)
 	return resp.Uri, resp.Cid, nil
 }
 
@@ -979,7 +976,7 @@ func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, i
 		return "", "", fmt.Errorf("failed to post reply with image: %w", err)
 	}
 
-	log.Printf("Successfully posted reply with embedded image: %s (root: %s, parent: %s)", text[:min(50, len(text))], rootURI, parentURI)
+	slog.Info("successfully posted reply with embedded image", "text", text[:min(50, len(text))], "root_uri", rootURI, "parent_uri", parentURI)
 	return resp.Uri, resp.Cid, nil
 }
 
@@ -1020,7 +1017,7 @@ func (c *BlueskyClient) PostReplyWithQuote(ctx context.Context, text string, roo
 		return "", "", fmt.Errorf("failed to post reply with quote: %w", err)
 	}
 
-	log.Printf("Successfully posted reply with quote embed (root: %s, quote: %s)", rootURI, quoteURI)
+	slog.Info("successfully posted reply with quote embed", "root_uri", rootURI, "quote_uri", quoteURI)
 	return resp.Uri, resp.Cid, nil
 }
 
@@ -1039,40 +1036,38 @@ func (c *BlueskyClient) PinPost(ctx context.Context, postURI string, postCID str
 	// Check if authenticated client has AccountDID (set after login)
 	if c.client != nil && c.client.AccountDID != nil {
 		did = c.client.AccountDID.String()
-		log.Printf("Using AccountDID from authenticated client: %s", did)
+		slog.Debug("using AccountDID from authenticated client", "did", did)
 	} else {
 		// Fallback: resolve handle to DID
-		log.Printf("AccountDID not available, resolving handle %s to DID...", handle)
+		slog.Debug("AccountDID not available, resolving handle to DID", "handle", handle)
 		resolution, err := atproto.IdentityResolveHandle(ctx, c.client, handle)
 		if err != nil {
 			return fmt.Errorf("failed to resolve handle to DID: %w", err)
 		}
 		did = resolution.Did
-		log.Printf("Resolved handle %s to DID: %s", handle, did)
+		slog.Debug("resolved handle to DID", "handle", handle, "did", did)
 	}
 
 	// Use DID for RepoGetRecord (DID is more reliable than handle for repo operations)
 	// Function signature: RepoGetRecord(ctx, client, cid, collection, repo, rkey)
 	// Parameters: ctx, client, "" (cid - empty for latest), collection, repo (DID/handle), rkey ("self")
-	log.Printf("Attempting RepoGetRecord with DID: %s", did)
+	slog.Debug("attempting RepoGetRecord with DID", "did", did)
 	profile, err := atproto.RepoGetRecord(ctx, c.client, "", "app.bsky.actor.profile", did, "self")
 	if err != nil {
 		// Log the full error for debugging
 		errMsg := err.Error()
-		log.Printf("RepoGetRecord with DID failed: %s", errMsg)
-		log.Printf("Full error details: %+v", err)
+		slog.Error("RepoGetRecord with DID failed", "error", errMsg)
 
 		// Try with handle as fallback
-		log.Printf("Attempting RepoGetRecord with handle as fallback: %s", handle)
+		slog.Debug("attempting RepoGetRecord with handle as fallback", "handle", handle)
 		profile, err = atproto.RepoGetRecord(ctx, c.client, "", "app.bsky.actor.profile", handle, "self")
 		if err != nil {
-			log.Printf("RepoGetRecord with handle also failed: %s", err.Error())
-			log.Printf("Full error details: %+v", err)
+			slog.Error("RepoGetRecord with handle also failed", "error", err.Error())
 			return fmt.Errorf("failed to get current profile (tried DID %s and handle %s): %w", did, handle, err)
 		}
-		log.Printf("Successfully retrieved profile using handle (fallback)")
+		slog.Info("successfully retrieved profile using handle (fallback)")
 	} else {
-		log.Printf("Successfully retrieved profile using DID")
+		slog.Info("successfully retrieved profile using DID")
 	}
 
 	// Parse the existing profile record
@@ -1105,13 +1100,6 @@ func (c *BlueskyClient) PinPost(ctx context.Context, postURI string, postCID str
 		return fmt.Errorf("failed to pin post: %w", err)
 	}
 
-	log.Printf("Successfully pinned post: %s", postURI)
+	slog.Info("successfully pinned post", "uri", postURI)
 	return nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

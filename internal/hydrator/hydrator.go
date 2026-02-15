@@ -4,7 +4,8 @@ package hydrator
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -152,7 +153,7 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 
 			views, err := h.fetcher.GetPosts(ctx, batchURIs)
 			if err != nil {
-				log.Printf("hydrator: batch %d/%d failed: %v", batchIdx+1, len(batches), err)
+				slog.Error("hydrator batch failed", "batch", fmt.Sprintf("%d/%d", batchIdx+1, len(batches)), "error", err)
 				errCount.Add(int64(len(batchURIs)))
 				return
 			}
@@ -175,7 +176,7 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 
 				// Sentiment and engagement score are left zero — the analyzer fills them later.
 				if err := h.updater.UpdatePostEngagement(ctx, v.Uri, likes, reposts, replies, handle, "", 0); err != nil {
-					log.Printf("hydrator: update %s failed: %v", v.Uri, err)
+					slog.Error("hydrator update failed", "uri", v.Uri, "error", err)
 					errCount.Add(1)
 					continue
 				}
@@ -185,7 +186,7 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 			// Progress log every few batches.
 			h2 := hydrated.Load()
 			if h2 > 0 && h2%500 < int64(h.cfg.BatchSize) {
-				log.Printf("hydrator: progress %d/%d hydrated", h2, len(posts))
+				slog.Info("hydrator progress", "hydrated", h2, "total", len(posts))
 			}
 		}(i, batch)
 	}

@@ -38,3 +38,24 @@ bd sync               # Sync with git
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 
+## Architecture diagrams 
+
+Use **mermaid-ascii** ([github.com/AlexanderGrooff/mermaid-ascii](https://github.com/AlexanderGrooff/mermaid-ascii)) to render architecture diagrams as ASCII art in design docs, proposals, and code comments. This keeps diagrams version-controlled, diffable, and readable without a renderer.
+
+```bash
+# Install
+pip install mermaid-ascii
+
+# Render from a .mmd file
+mermaid-ascii < diagram.mmd
+
+# Render inline
+echo 'graph LR; A-->B;' | mermaid-ascii
+```
+
+**When to use:**
+- Proposals and design docs (`openspec/`) — include rendered ASCII alongside or instead of Mermaid source
+- Code comments where a visual helps (data flow, state machines)
+- PR descriptions explaining architectural changes
+
+**Convention:** Keep the Mermaid source in a fenced `mermaid` block, followed by the rendered ASCII in a fenced `text` block. This gives both the editable source and the readable output.
