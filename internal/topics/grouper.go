@@ -135,12 +135,12 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 		return fallbackClusters(terms), fmt.Errorf("grouper: marshal request: %w", err)
 	}
 
-	url := g.endpoint + "?key=" + g.apiKey
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, strings.NewReader(string(body)))
 	if err != nil {
 		return fallbackClusters(terms), fmt.Errorf("grouper: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
@@ -410,12 +410,12 @@ func (g *Grouper) GenerateAltText(ctx context.Context, ranked []IdentifiedTopic,
 		return fallback
 	}
 
-	url := g.endpoint + "?key=" + g.apiKey
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, strings.NewReader(string(body)))
 	if err != nil {
 		return fallback
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
@@ -545,12 +545,12 @@ func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidat
 		return pairs, fmt.Errorf("validate-exemplars: marshal: %w", err)
 	}
 
-	url := g.endpoint + "?key=" + g.apiKey
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, strings.NewReader(string(body)))
 	if err != nil {
 		return pairs, fmt.Errorf("validate-exemplars: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
