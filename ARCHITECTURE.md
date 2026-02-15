@@ -2,7 +2,7 @@
 
 HourStats is a Bluesky sentiment analysis bot. It ingests every public English-language Bluesky post in real time via Jetstream, analyzes sentiment using VADER, and posts 30-minute summaries with the top 5 most engaged posts, sparkline charts, and trending topics.
 
-> **Migration status:** The project is migrating from AWS Lambda to Fly.io. Production currently runs on AWS Lambda; the `migrate-to-jetstream` branch contains the complete Fly.io reimplementation. See the [Migration Plan](openspec/changes/jetstream-migration/MIGRATION_PLAN.md) for details.
+> **Note:** The project was migrated from AWS Lambda to Fly.io. Production runs on Fly.io. Legacy Lambda code remains in the repository under `cmd/lambda-*` and `internal/lambda/` for reference.
 
 ## System Overview (Fly.io Architecture)
 
@@ -224,4 +224,4 @@ hourstats-bsky/
 
 ## Legacy Architecture (AWS Lambda)
 
-The production system currently runs on AWS Lambda. See [AWS_SERVERLESS_DESIGN.md](AWS_SERVERLESS_DESIGN.md) for the legacy architecture documentation. The [Migration Plan](openspec/changes/jetstream-migration/MIGRATION_PLAN.md) tracks the transition to Fly.io.
+The original system ran on AWS Lambda. See [AWS_SERVERLESS_DESIGN.md](AWS_SERVERLESS_DESIGN.md) for the legacy architecture documentation. Legacy Lambda code (`cmd/lambda-*`, `internal/lambda/`, `internal/scheduler/`) remains in the repository for reference but is no longer deployed.
