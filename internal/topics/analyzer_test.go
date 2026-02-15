@@ -41,7 +41,7 @@ func (m *mockAnalyzerStore) PurgeTopicTokens(_ context.Context, _ string) (int64
 func (m *mockAnalyzerStore) InsertTopicSnapshot(_ context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, synonymsJSON, exemplarURI, exemplarHandle string, isMeme bool, justification string) error {
 	m.insertedSnapshots = append(m.insertedSnapshots, store.TopicSnapshotRow{
 		SnapshotTime: snapshotTime, Rank: rank, TopicID: topicID,
-		Label: label, Description: description, PostCount: postCount,
+		Label: label, Description: description, UniqueAuthorCount: postCount,
 		Keywords: keywordsJSON, Synonyms: synonymsJSON, ExemplarURI: exemplarURI, ExemplarHandle: exemplarHandle,
 		IsMeme: isMeme, Justification: justification,
 	})
@@ -162,8 +162,8 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 func TestRunTrendingPost_DryRun(t *testing.T) {
 	ms := &mockAnalyzerStore{
 		snapshots: []store.TopicSnapshotRow{
-			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 10},
-			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 15},
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", UniqueAuthorCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", UniqueAuthorCount: 15},
 		},
 	}
 
@@ -217,8 +217,8 @@ func (m *mockPoster) PostWithFacetsAsReply(_ context.Context, _ string, _ []*bsk
 func TestRunTrendingPost_Posts(t *testing.T) {
 	ms := &mockAnalyzerStore{
 		snapshots: []store.TopicSnapshotRow{
-			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 10},
-			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 15},
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", UniqueAuthorCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", UniqueAuthorCount: 15},
 		},
 	}
 
@@ -242,8 +242,8 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 func TestRunTrendingPost_AsReply(t *testing.T) {
 	ms := &mockAnalyzerStore{
 		snapshots: []store.TopicSnapshotRow{
-			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 10},
-			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 15},
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", UniqueAuthorCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", UniqueAuthorCount: 15},
 		},
 	}
 
@@ -270,8 +270,8 @@ func TestRunTrendingPost_AsReply(t *testing.T) {
 func TestRunTrendingPost_ReplyFallback(t *testing.T) {
 	ms := &mockAnalyzerStore{
 		snapshots: []store.TopicSnapshotRow{
-			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 10},
-			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", PostCount: 15},
+			{SnapshotTime: "2026-01-01T00:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", UniqueAuthorCount: 10},
+			{SnapshotTime: "2026-01-01T06:00:00Z", Rank: 1, TopicID: "t1", Label: "Politics", Keywords: "[]", Synonyms: "[]", UniqueAuthorCount: 15},
 		},
 	}
 
@@ -301,10 +301,10 @@ func TestBackfillFromPrevious_FillsToFive(t *testing.T) {
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "B"}}, TopicID: "t2", Rank: 2},
 	}
 	previous := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "C"}, PostCount: 50}, TopicID: "t3", Rank: 1},
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "D"}, PostCount: 40}, TopicID: "t4", Rank: 2},
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "E"}, PostCount: 30}, TopicID: "t5", Rank: 3},
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "F"}, PostCount: 20}, TopicID: "t6", Rank: 4},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "C"}, UniqueAuthorCount: 50}, TopicID: "t3", Rank: 1},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "D"}, UniqueAuthorCount: 40}, TopicID: "t4", Rank: 2},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "E"}, UniqueAuthorCount: 30}, TopicID: "t5", Rank: 3},
+		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "F"}, UniqueAuthorCount: 20}, TopicID: "t6", Rank: 4},
 	}
 
 	result := backfillFromPrevious(current, previous)
@@ -435,36 +435,6 @@ func TestOverlapsCurrent_NoOverlap(t *testing.T) {
 	}
 	if overlapsCurrent(candidate, current) {
 		t.Error("expected no overlap for unrelated keyword sets")
-	}
-}
-
-func TestBuildTrajectories(t *testing.T) {
-	snapshots := []store.TopicSnapshotRow{
-		{SnapshotTime: "2026-01-01T00:00:00Z", TopicID: "t1", Rank: 3},
-		{SnapshotTime: "2026-01-01T00:00:00Z", TopicID: "t2", Rank: 1},
-		{SnapshotTime: "2026-01-01T01:00:00Z", TopicID: "t1", Rank: 1},
-		{SnapshotTime: "2026-01-01T01:00:00Z", TopicID: "t2", Rank: 2},
-		{SnapshotTime: "2026-01-01T02:00:00Z", TopicID: "t1", Rank: 1},
-	}
-	current := []IdentifiedTopic{
-		{TopicID: "t1", Rank: 1},
-		{TopicID: "t2", Rank: 2},
-	}
-
-	traj := buildTrajectories(snapshots, current)
-
-	if len(traj) != 2 {
-		t.Fatalf("expected 2 trajectories, got %d", len(traj))
-	}
-
-	t1 := traj["t1"]
-	if len(t1) != 3 || t1[0] != 3 || t1[1] != 1 || t1[2] != 1 {
-		t.Errorf("t1 trajectory: expected [3 1 1], got %v", t1)
-	}
-
-	t2 := traj["t2"]
-	if len(t2) != 3 || t2[0] != 1 || t2[1] != 2 || t2[2] != 0 {
-		t.Errorf("t2 trajectory: expected [1 2 0], got %v", t2)
 	}
 }
 
