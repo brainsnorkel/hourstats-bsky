@@ -15,7 +15,7 @@ import (
 const (
 	geminiBaseURL      = "https://generativelanguage.googleapis.com/v1beta/models/"
 	DefaultGeminiModel = "gemini-2.5-pro"
-	maxDailyCalls      = 100
+	maxDailyCalls      = 150
 )
 
 // Grouper calls Google Gemini Flash to group TF-IDF terms into topic clusters.
@@ -497,6 +497,123 @@ func buildAltTextPrompt(ranked []IdentifiedTopic, trajectories map[string][]int)
 	b.WriteString("- Do NOT use markdown, hashtags, or @mentions\n")
 	b.WriteString("- Keep it under 900 characters\n")
 	b.WriteString("- Return only the alt text, nothing else\n")
+	return b.String()
+}
+
+type ExemplarValidation struct {
+	TopicLabel string `json:"topic_label"`
+	PostText   string `json:"post_text"`
+	IsRelevant bool   `json:"is_relevant"`
+}
+
+var exemplarValidationSchema = map[string]interface{}{
+	"type": "ARRAY",
+	"items": map[string]interface{}{
+		"type": "OBJECT",
+		"properties": map[string]interface{}{
+			"topic_label": map[string]interface{}{"type": "STRING"},
+			"is_relevant": map[string]interface{}{"type": "BOOLEAN"},
+		},
+		"required": []string{"topic_label", "is_relevant"},
+	},
+}
+
+func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidation) ([]ExemplarValidation, error) {
+	if len(pairs) == 0 {
+		return pairs, nil
+	}
+
+	if !g.checkAndIncrementRate() {
+		log.Printf("validate-exemplars: rate limit reached, skipping validation")
+		return pairs, nil
+	}
+
+	prompt := buildValidationPrompt(pairs)
+
+	reqBody := geminiRequest{
+		Contents: []geminiContent{
+			{Parts: []geminiPart{{Text: prompt}}},
+		},
+		GenerationConfig: geminiGenConfig{
+			ResponseMimeType: "application/json",
+			ResponseSchema:   exemplarValidationSchema,
+		},
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return pairs, fmt.Errorf("validate-exemplars: marshal: %w", err)
+	}
+
+	url := g.endpoint + "?key=" + g.apiKey
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		return pairs, fmt.Errorf("validate-exemplars: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		log.Printf("validate-exemplars: API call failed: %v, skipping", err)
+		return pairs, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("validate-exemplars: API returned %d: %s, skipping", resp.StatusCode, string(respBody))
+		return pairs, nil
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return pairs, nil
+	}
+
+	var gemResp geminiResponse
+	if err := json.Unmarshal(respBody, &gemResp); err != nil {
+		return pairs, nil
+	}
+
+	if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
+		return pairs, nil
+	}
+
+	jsonText := extractResponseText(gemResp.Candidates[0].Content.Parts)
+	if jsonText == "" {
+		return pairs, nil
+	}
+
+	var results []ExemplarValidation
+	if err := json.Unmarshal([]byte(jsonText), &results); err != nil {
+		log.Printf("validate-exemplars: parse JSON: %v, skipping", err)
+		return pairs, nil
+	}
+
+	resultMap := make(map[string]bool)
+	for _, r := range results {
+		resultMap[r.TopicLabel] = r.IsRelevant
+	}
+
+	for i := range pairs {
+		if relevant, ok := resultMap[pairs[i].TopicLabel]; ok {
+			pairs[i].IsRelevant = relevant
+		}
+	}
+
+	return pairs, nil
+}
+
+func buildValidationPrompt(pairs []ExemplarValidation) string {
+	var b strings.Builder
+	b.WriteString("For each topic-post pair below, determine if the post is genuinely about the topic.\n")
+	b.WriteString("A post is relevant if its main subject matches the topic. Tangential keyword overlap does NOT count.\n\n")
+
+	for i, p := range pairs {
+		fmt.Fprintf(&b, "%d. Topic: %q\n   Post: %q\n\n", i+1, p.TopicLabel, p.PostText)
+	}
+
+	b.WriteString("Return is_relevant=true only if the post is genuinely about the topic, not just sharing a keyword.\n")
 	return b.String()
 }
 

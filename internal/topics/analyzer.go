@@ -18,7 +18,7 @@ type AnalyzerStore interface {
 	GetTopicTokensSinceLimit(ctx context.Context, cutoff string, limit int) ([]store.TopicTokenRow, error)
 	CountTopicTokensSince(ctx context.Context, cutoff string) (int64, error)
 	PurgeTopicTokens(ctx context.Context, cutoff string) (int64, error)
-	InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, exemplarURI, exemplarHandle string, isMeme bool, justification string) error
+	InsertTopicSnapshot(ctx context.Context, snapshotTime string, rank int, topicID, label, description string, postCount int, keywordsJSON, synonymsJSON, exemplarURI, exemplarHandle string, isMeme bool, justification string) error
 	GetTopicSnapshotsSince(ctx context.Context, cutoff string) ([]store.TopicSnapshotRow, error)
 	PurgeTopicSnapshots(ctx context.Context, cutoff string) (int64, error)
 	UpdateSnapshotExemplar(ctx context.Context, snapshotID int64, exemplarURI, exemplarHandle string) error
@@ -41,6 +41,9 @@ func NewAnalyzer(s AnalyzerStore, geminiAPIKey, geminiModel string) *Analyzer {
 	grouper := NewGrouper(geminiAPIKey, geminiModel)
 	tracker := NewTracker(s)
 	exemplarHydrator := NewExemplarHydrator(s)
+	if geminiAPIKey != "" {
+		exemplarHydrator.SetValidator(grouper)
+	}
 
 	return &Analyzer{
 		store:    s,
@@ -115,9 +118,10 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, topic := range identified {
 		kwJSON, _ := json.Marshal(topic.Cluster.Keywords)
+		synJSON, _ := json.Marshal(topic.Cluster.Synonyms)
 		if err := a.store.InsertTopicSnapshot(ctx, now, topic.Rank, topic.TopicID,
 			topic.Cluster.Label, topic.Cluster.Description, topic.PostCount,
-			string(kwJSON), "", "", topic.Cluster.IsMeme, topic.Cluster.Justification); err != nil {
+			string(kwJSON), string(synJSON), "", "", topic.Cluster.IsMeme, topic.Cluster.Justification); err != nil {
 			return fmt.Errorf("insert snapshot: %w", err)
 		}
 	}
@@ -146,9 +150,11 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		if s.SnapshotTime == latestTime {
 			var kws []string
 			_ = json.Unmarshal([]byte(s.Keywords), &kws)
+			var syns []string
+			_ = json.Unmarshal([]byte(s.Synonyms), &syns)
 			latestTopics = append(latestTopics, IdentifiedTopic{
 				RankedTopic: RankedTopic{
-					Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, IsMeme: s.IsMeme},
+					Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, Synonyms: syns, IsMeme: s.IsMeme},
 					PostCount: s.PostCount,
 				},
 				TopicID: s.TopicID,
@@ -176,9 +182,11 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 			if s.SnapshotTime == prevTime {
 				var kws []string
 				_ = json.Unmarshal([]byte(s.Keywords), &kws)
+				var syns []string
+				_ = json.Unmarshal([]byte(s.Synonyms), &syns)
 				full := IdentifiedTopic{
 					RankedTopic: RankedTopic{
-						Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, IsMeme: s.IsMeme},
+						Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, Synonyms: syns, IsMeme: s.IsMeme},
 						PostCount: s.PostCount,
 					},
 					TopicID: s.TopicID,

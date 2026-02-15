@@ -352,6 +352,7 @@ func (s *Store) migrate() error {
 
 		`ALTER TABLE topic_snapshots ADD COLUMN is_meme INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE topic_snapshots ADD COLUMN justification TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE topic_snapshots ADD COLUMN synonyms TEXT NOT NULL DEFAULT '[]'`,
 
 		`CREATE TABLE IF NOT EXISTS topic_identity (
 			topic_id TEXT PRIMARY KEY,
