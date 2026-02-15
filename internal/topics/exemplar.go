@@ -3,6 +3,7 @@ package topics
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -20,6 +21,11 @@ func NewExemplarHydrator(s ExemplarCandidateStore) *ExemplarHydrator {
 	return &ExemplarHydrator{store: s}
 }
 
+type exemplarResult struct {
+	index      int
+	candidates []store.ExemplarCandidate
+}
+
 func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []IdentifiedTopic) ([]IdentifiedTopic, error) {
 	if len(topics) == 0 {
 		return topics, nil
@@ -29,7 +35,8 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 	result := make([]IdentifiedTopic, len(topics))
 	copy(result, topics)
 
-	usedHandles := make(map[string]bool)
+	var wg sync.WaitGroup
+	resultCh := make(chan exemplarResult, len(topics))
 
 	for i, topic := range result {
 		if topic.Cluster.IsMeme {
@@ -42,21 +49,41 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			continue
 		}
 
-		candidates, err := h.store.GetExemplarCandidates(ctx, allKeywords, cutoff, 20)
-		if err != nil {
-			slog.Warn("exemplar: query failed", "topic", topic.Cluster.Label, "error", err)
+		wg.Add(1)
+		go func(idx int, label string, kws []string) {
+			defer wg.Done()
+			candidates, err := h.store.GetExemplarCandidates(ctx, kws, cutoff, 20)
+			if err != nil {
+				slog.Warn("exemplar: query failed", "topic", label, "error", err)
+				return
+			}
+			if len(candidates) == 0 {
+				slog.Warn("exemplar: no candidates", "topic", label, "keywords", kws)
+				return
+			}
+			slog.Info("exemplar: found candidates", "topic", label, "count", len(candidates), "top_engagement", candidates[0].Engagement)
+			resultCh <- exemplarResult{index: idx, candidates: candidates}
+		}(i, topic.Cluster.Label, allKeywords)
+	}
+
+	go func() { wg.Wait(); close(resultCh) }()
+
+	candidatesByIndex := make(map[int][]store.ExemplarCandidate)
+	for cr := range resultCh {
+		candidatesByIndex[cr.index] = cr.candidates
+	}
+
+	usedHandles := make(map[string]bool)
+	for i := range result {
+		candidates, ok := candidatesByIndex[i]
+		if !ok {
 			continue
 		}
-		if len(candidates) == 0 {
-			slog.Warn("exemplar: no candidates", "topic", topic.Cluster.Label, "keywords", allKeywords)
-			continue
-		}
-		slog.Info("exemplar: found candidates", "topic", topic.Cluster.Label, "count", len(candidates), "top_engagement", candidates[0].Engagement)
 
 		found := false
 		for _, c := range candidates {
 			if c.Handle == "" {
-				continue // skip unhydrated posts — no handle for @mention
+				continue
 			}
 			if usedHandles[c.Handle] {
 				continue
@@ -64,12 +91,12 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			result[i].ExemplarURI = c.URI
 			result[i].ExemplarHandle = c.Handle
 			usedHandles[c.Handle] = true
-			slog.Info("exemplar: selected", "topic", topic.Cluster.Label, "handle", c.Handle, "engagement", c.Engagement)
+			slog.Info("exemplar: selected", "topic", result[i].Cluster.Label, "handle", c.Handle, "engagement", c.Engagement)
 			found = true
 			break
 		}
 		if !found {
-			slog.Warn("exemplar: no hydrated candidate available", "topic", topic.Cluster.Label, "candidates", len(candidates))
+			slog.Warn("exemplar: no hydrated candidate available", "topic", result[i].Cluster.Label, "candidates", len(candidates))
 		}
 	}
 
