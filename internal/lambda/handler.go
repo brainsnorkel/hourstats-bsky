@@ -2,6 +2,7 @@ package lambda
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
@@ -40,72 +41,11 @@ func NewHourStatsAnalyzer(cfg *config.Config) *HourStatsAnalyzer {
 // RunAnalysis executes the complete trend analysis process
 func (h *HourStatsAnalyzer) RunAnalysis(ctx context.Context) (*AnalysisResult, error) {
 	log.Println("Starting trend analysis...")
-
-	// Authenticate with Bluesky
-	if err := h.client.Authenticate(); err != nil {
-		return &AnalysisResult{
-			Success:      false,
-			ErrorMessage: "Failed to authenticate with Bluesky: " + err.Error(),
-		}, err
-	}
-
-	log.Println("Successfully authenticated with Bluesky")
-
-	// Fetch trending posts
-	clientPosts, err := h.client.GetTrendingPosts(h.config.Settings.AnalysisIntervalMinutes)
-	if err != nil {
-		return &AnalysisResult{
-			Success:      false,
-			ErrorMessage: "Failed to fetch trending posts: " + err.Error(),
-		}, err
-	}
-
-	log.Printf("Retrieved %d posts from Bluesky", len(clientPosts))
-
-	// Convert client posts to analyzer posts
-	analyzerPosts := h.convertToAnalyzerPosts(clientPosts)
-
-	// Analyze sentiment and extract topics
-	analyzedPosts, err := h.analyzer.AnalyzePosts(analyzerPosts)
-	if err != nil {
-		return &AnalysisResult{
-			Success:      false,
-			ErrorMessage: "Failed to analyze posts: " + err.Error(),
-		}, err
-	}
-
-	log.Printf("Analyzed %d posts for sentiment", len(analyzedPosts))
-
-	// Get top 5 posts
-	topPosts := h.getTopPosts(analyzedPosts, h.config.Settings.TopPostsCount)
-
-	// Calculate overall sentiment from all analyzed posts using compound scores
-	overallSentiment, netSentimentPercentage := h.calculateOverallSentiment(analyzedPosts)
-	totalPosts := len(analyzedPosts)
-
-	// Convert back to client posts for posting
-	clientTopPosts := h.convertToClientPosts(topPosts)
-
-	// Post the results (skip if dry run)
-	if !h.config.Settings.DryRun {
-		_, _, err := h.client.PostTrendingSummary(clientTopPosts, overallSentiment, h.config.Settings.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
-		if err != nil {
-			return &AnalysisResult{
-				Success:      false,
-				ErrorMessage: "Failed to post trending summary: " + err.Error(),
-			}, err
-		}
-		log.Printf("Successfully posted trending summary with %d posts", len(clientTopPosts))
-	} else {
-		log.Println("Dry run mode: Skipping post to Bluesky")
-	}
-
+	errMsg := "GetTrendingPosts removed: use GetTrendingPostsBatch (lambda is legacy)"
 	return &AnalysisResult{
-		PostsAnalyzed: len(analyzedPosts),
-		TopPosts:      len(topPosts),
-		Sentiment:     overallSentiment,
-		Success:       true,
-	}, nil
+		Success:      false,
+		ErrorMessage: errMsg,
+	}, fmt.Errorf("%s", errMsg)
 }
 
 // convertToAnalyzerPosts converts client posts to analyzer posts

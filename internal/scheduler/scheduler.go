@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -56,41 +57,7 @@ func (s *Scheduler) Start() error {
 
 func (s *Scheduler) runAnalysis() error {
 	log.Println("Starting trend analysis...")
-
-	// Fetch trending posts
-	clientPosts, err := s.client.GetTrendingPosts(s.config.Settings.AnalysisIntervalMinutes)
-	if err != nil {
-		return err
-	}
-
-	// Convert client posts to analyzer posts
-	analyzerPosts := s.convertToAnalyzerPosts(clientPosts)
-
-	// Analyze sentiment and extract topics
-	analyzedPosts, err := s.analyzer.AnalyzePosts(analyzerPosts)
-	if err != nil {
-		return err
-	}
-
-	// Get top 5 posts
-	topPosts := s.GetTopPosts(analyzedPosts, 5)
-
-	// Calculate overall sentiment from all analyzed posts using compound scores
-	overallSentiment, netSentimentPercentage := s.CalculateOverallSentiment(analyzedPosts)
-	totalPosts := len(analyzedPosts)
-
-	// Convert back to client posts for posting
-	clientTopPosts := s.convertToClientPosts(topPosts)
-
-	// Post the results
-	_, _, err = s.client.PostTrendingSummary(clientTopPosts, overallSentiment, s.config.Settings.AnalysisIntervalMinutes, totalPosts, netSentimentPercentage)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("Successfully posted trending summary with %d posts", len(clientTopPosts))
-
-	return nil
+	return fmt.Errorf("GetTrendingPosts removed: use GetTrendingPostsBatch (scheduler is legacy)")
 }
 
 func (s *Scheduler) convertToAnalyzerPosts(clientPosts []client.Post) []analyzer.Post {
