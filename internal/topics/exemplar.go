@@ -69,7 +69,9 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			slog.Info("exemplar: skipping meme topic", "topic", topic.Cluster.Label)
 			continue
 		}
-		allKeywords := append(topic.Cluster.Keywords, topic.Cluster.Synonyms...)
+		allKeywords := make([]string, 0, len(topic.Cluster.Keywords)+len(topic.Cluster.Synonyms))
+		allKeywords = append(allKeywords, topic.Cluster.Keywords...)
+		allKeywords = append(allKeywords, topic.Cluster.Synonyms...)
 		if len(allKeywords) == 0 {
 			slog.Info("exemplar: no keywords", "topic", topic.Cluster.Label)
 			continue
