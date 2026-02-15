@@ -272,9 +272,6 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		},
 	}
 
-	backoff := 1 * time.Second
-	maxBackoff := 60 * time.Second
-
 	for {
 		consumer := jetstream.NewConsumer(cfg)
 		collector.SetConsumer(consumer)
@@ -284,23 +281,10 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 			return
 		}
 
-		_ = collector.LogEvent(ctx, "connection_drop", fmt.Sprintf("endpoint=%s error=%v", consumer.ActiveEndpoint(), err))
-
-		slog.Error("jetstream consumer exited unexpectedly, will restart",
-			"error", err,
-			"restart_in", backoff,
-		)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
+		// consumer.Run only returns on fatal errors not handled by its
+		// internal reconnect loop; restart immediately.
+		_ = collector.LogEvent(ctx, "consumer_restart", fmt.Sprintf("unexpected exit: %v", err))
+		slog.Error("jetstream consumer exited unexpectedly, restarting immediately", "error", err)
 	}
 }
 
