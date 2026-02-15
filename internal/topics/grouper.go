@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -113,7 +113,7 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 	}
 
 	if !g.checkAndIncrementRate() {
-		log.Printf("grouper: daily rate limit (%d) reached, using fallback", maxDailyCalls)
+		slog.Warn("grouper: daily rate limit reached, using fallback", "limit", maxDailyCalls)
 		return fallbackClusters(terms), nil
 	}
 
@@ -144,48 +144,48 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		log.Printf("grouper: API call failed: %v, using fallback", err)
+		slog.Warn("grouper: API call failed, using fallback", "error", err)
 		return fallbackClusters(terms), nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("grouper: API returned %d: %s, using fallback", resp.StatusCode, string(respBody))
+		slog.Warn("grouper: API returned non-OK, using fallback", "status", resp.StatusCode, "body", string(respBody))
 		return fallbackClusters(terms), nil
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("grouper: read response: %v, using fallback", err)
+		slog.Warn("grouper: read response failed, using fallback", "error", err)
 		return fallbackClusters(terms), nil
 	}
 
 	var gemResp geminiResponse
 	if err := json.Unmarshal(respBody, &gemResp); err != nil {
-		log.Printf("grouper: unmarshal response: %v, using fallback", err)
+		slog.Warn("grouper: unmarshal response failed, using fallback", "error", err)
 		return fallbackClusters(terms), nil
 	}
 
 	if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
-		log.Printf("grouper: empty response from Gemini, using fallback")
+		slog.Warn("grouper: empty response from Gemini, using fallback")
 		return fallbackClusters(terms), nil
 	}
 
 	jsonText := extractResponseText(gemResp.Candidates[0].Content.Parts)
 	if jsonText == "" {
-		log.Printf("grouper: no response text in Gemini output, using fallback")
+		slog.Warn("grouper: no response text in Gemini output, using fallback")
 		return fallbackClusters(terms), nil
 	}
 
 	var clusters []TopicCluster
 	if err := json.Unmarshal([]byte(jsonText), &clusters); err != nil {
-		log.Printf("grouper: parse clusters JSON: %v, using fallback", err)
+		slog.Warn("grouper: parse clusters JSON failed, using fallback", "error", err)
 		return fallbackClusters(terms), nil
 	}
 
 	for _, c := range clusters {
-		log.Printf("grouper: topic %q — %s", c.Label, c.Justification)
+		slog.Info("grouper: topic", "label", c.Label, "justification", c.Justification)
 	}
 
 	if len(clusters) > MaxLLMGroups {
@@ -419,14 +419,14 @@ func (g *Grouper) GenerateAltText(ctx context.Context, ranked []IdentifiedTopic,
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		log.Printf("alt-text: API call failed: %v, using fallback", err)
+		slog.Warn("alt-text: API call failed, using fallback", "error", err)
 		return fallback
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("alt-text: API returned %d: %s, using fallback", resp.StatusCode, string(respBody))
+		slog.Warn("alt-text: API returned non-OK, using fallback", "status", resp.StatusCode, "body", string(respBody))
 		return fallback
 	}
 
@@ -464,7 +464,7 @@ func buildAltTextPrompt(ranked []IdentifiedTopic, trajectories map[string][]int)
 	b.WriteString("Current rankings:\n")
 
 	for _, t := range ranked {
-		line := fmt.Sprintf("- #%d: \"%s\" — %s (%d posts)", t.Rank, t.Cluster.Label, t.Cluster.Description, t.PostCount)
+		line := fmt.Sprintf("- #%d: \"%s\" — %s (%d authors)", t.Rank, t.Cluster.Label, t.Cluster.Description, t.UniqueAuthorCount)
 		if t.Cluster.IsMeme {
 			line += " (viral meme/phrase — search link provided)"
 		} else if t.ExemplarHandle != "" {
@@ -524,7 +524,7 @@ func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidat
 	}
 
 	if !g.checkAndIncrementRate() {
-		log.Printf("validate-exemplars: rate limit reached, skipping validation")
+		slog.Warn("validate-exemplars: rate limit reached, skipping validation")
 		return pairs, nil
 	}
 
@@ -554,14 +554,14 @@ func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidat
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		log.Printf("validate-exemplars: API call failed: %v, skipping", err)
+		slog.Warn("validate-exemplars: API call failed, skipping", "error", err)
 		return pairs, nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("validate-exemplars: API returned %d: %s, skipping", resp.StatusCode, string(respBody))
+		slog.Warn("validate-exemplars: API returned non-OK, skipping", "status", resp.StatusCode, "body", string(respBody))
 		return pairs, nil
 	}
 
@@ -586,7 +586,7 @@ func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidat
 
 	var results []ExemplarValidation
 	if err := json.Unmarshal([]byte(jsonText), &results); err != nil {
-		log.Printf("validate-exemplars: parse JSON: %v, skipping", err)
+		slog.Warn("validate-exemplars: parse JSON failed, skipping", "error", err)
 		return pairs, nil
 	}
 
