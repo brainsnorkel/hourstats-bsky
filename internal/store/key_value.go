@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // KeyValueEntry holds a key-value pair with its last-updated timestamp.
@@ -40,6 +41,25 @@ func (s *Store) SetKeyValue(ctx context.Context, key, value string) error {
 		return fmt.Errorf("set key_value %q: %w", key, err)
 	}
 	return nil
+}
+
+// DeleteKeyValues removes the given keys and returns how many rows were affected.
+func (s *Store) DeleteKeyValues(ctx context.Context, keys []string) (int64, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(keys))
+	args := make([]interface{}, len(keys))
+	for i, k := range keys {
+		placeholders[i] = "?"
+		args[i] = k
+	}
+	query := fmt.Sprintf(`DELETE FROM key_value WHERE key IN (%s)`, strings.Join(placeholders, ", "))
+	res, err := s.writeDB.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete key_values: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 func (s *Store) GetKeyValue(ctx context.Context, key string) (string, error) {
