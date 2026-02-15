@@ -370,6 +370,7 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 // ---------------------------------------------------------------------------
 
 func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password string, dryRun bool, analysisMinutes int, collector *stats.Collector, topicAnalyzer *topics.Analyzer) {
+	cycleStart := time.Now()
 	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102-150405"))
 	slog.Info("analysis cycle starting", "run_id", runID)
 
@@ -391,6 +392,18 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	if err := bskyClient.Authenticate(); err != nil {
 		slog.Error("bluesky auth failed", "error", err)
 		return
+	}
+
+	// RunAnalysisCycle reads topic_tokens (no dependency on hydration).
+	// Starting here overlaps Gemini latency with the hydration pipeline.
+	var topicAnalysisDone <-chan error
+	if topicAnalyzer != nil {
+		ch := make(chan error, 1)
+		topicAnalysisDone = ch
+		slog.Info("topics: analysis goroutine started (parallel with hydration)")
+		go func() {
+			ch <- topicAnalyzer.RunAnalysisCycle(ctx)
+		}()
 	}
 
 	fetcher := hydrator.NewBlueskyFetcher(bskyClient.APIClient())
@@ -530,6 +543,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"sentiment", overallSentiment,
 			"net_pct", fmt.Sprintf("%.1f%%", netSentimentPct),
 		)
+		if topicAnalysisDone != nil {
+			if err := <-topicAnalysisDone; err != nil {
+				slog.Warn("topic analysis failed (low confidence cycle)", "error", err)
+			}
+		}
 	} else if dryRun {
 		slog.Info("DRY_RUN: would post summary",
 			"sentiment", overallSentiment,
@@ -537,6 +555,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"top_count", len(top5),
 			"total_posts", len(posts),
 		)
+		if topicAnalysisDone != nil {
+			if err := <-topicAnalysisDone; err != nil {
+				slog.Warn("topic analysis failed (dry run cycle)", "error", err)
+			}
+		}
 	} else {
 		postedURI, postedCID := postSummary(ctx, bskyClient, top5, overallSentiment, netSentimentPct, analysisMinutes, len(posts))
 		if postedURI != "" {
@@ -547,19 +570,27 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 		rootURI, rootCID := postedURI, postedCID
 		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
+		slog.Info("timing: sparkline complete", "cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 
-		// Run trending topics as reply to sparkline (topics failure must not block the cycle)
 		if topicAnalyzer != nil {
-			if err := topicAnalyzer.RunAnalysisCycle(ctx); err != nil {
-				slog.Error("topic analysis cycle failed", "error", err)
+			topicWait := time.Now()
+			topicErr := <-topicAnalysisDone
+			slog.Info("timing: topic analysis goroutine collected",
+				"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
+				"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
+			if topicErr != nil {
+				slog.Error("topic analysis cycle failed", "error", topicErr)
 			} else if sparkURI != "" && sparkCID != "" {
 				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, rootURI, rootCID, sparkURI, sparkCID); err != nil {
 					slog.Error("trending post failed", "error", err)
+				} else {
+					slog.Info("timing: trending post complete", "cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 				}
 			} else {
-				// Sparkline didn't post (dry run or error) — post topics standalone
 				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, "", "", "", ""); err != nil {
 					slog.Error("trending post failed", "error", err)
+				} else {
+					slog.Info("timing: trending post complete", "cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 				}
 			}
 		}
