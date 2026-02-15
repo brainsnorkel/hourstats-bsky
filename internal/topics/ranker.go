@@ -2,6 +2,7 @@ package topics
 
 import (
 	"encoding/json"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -39,6 +40,7 @@ func RankTopics(clusters []TopicCluster, rows []store.TopicTokenRow) []RankedTop
 	for _, row := range rows {
 		var tokens []string
 		if err := json.Unmarshal([]byte(row.Tokens), &tokens); err != nil {
+			slog.Warn("ranker: unmarshal tokens", "error", err, "post_uri", row.PostURI)
 			continue
 		}
 		for i, cs := range sets {
@@ -56,14 +58,14 @@ func RankTopics(clusters []TopicCluster, rows []store.TopicTokenRow) []RankedTop
 	ranked := make([]RankedTopic, len(clusters))
 	for i, cs := range sets {
 		ranked[i] = RankedTopic{
-			Cluster:   cs.cluster,
-			PostCount: len(authorSets[i]),
+			Cluster:           cs.cluster,
+			UniqueAuthorCount: len(authorSets[i]),
 		}
 	}
 
 	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].PostCount != ranked[j].PostCount {
-			return ranked[i].PostCount > ranked[j].PostCount
+		if ranked[i].UniqueAuthorCount != ranked[j].UniqueAuthorCount {
+			return ranked[i].UniqueAuthorCount > ranked[j].UniqueAuthorCount
 		}
 		return ranked[i].Cluster.Label < ranked[j].Cluster.Label
 	})

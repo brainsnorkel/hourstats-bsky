@@ -120,7 +120,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		kwJSON, _ := json.Marshal(topic.Cluster.Keywords)
 		synJSON, _ := json.Marshal(topic.Cluster.Synonyms)
 		if err := a.store.InsertTopicSnapshot(ctx, now, topic.Rank, topic.TopicID,
-			topic.Cluster.Label, topic.Cluster.Description, topic.PostCount,
+			topic.Cluster.Label, topic.Cluster.Description, topic.UniqueAuthorCount,
 			string(kwJSON), string(synJSON), "", "", topic.Cluster.IsMeme, topic.Cluster.Justification); err != nil {
 			return fmt.Errorf("insert snapshot: %w", err)
 		}
@@ -149,13 +149,17 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	for _, s := range snapshots {
 		if s.SnapshotTime == latestTime {
 			var kws []string
-			_ = json.Unmarshal([]byte(s.Keywords), &kws)
+			if err := json.Unmarshal([]byte(s.Keywords), &kws); err != nil {
+				slog.Warn("topics: unmarshal snapshot keywords", "error", err, "snapshot_id", s.ID, "label", s.Label)
+			}
 			var syns []string
-			_ = json.Unmarshal([]byte(s.Synonyms), &syns)
+			if err := json.Unmarshal([]byte(s.Synonyms), &syns); err != nil {
+				slog.Warn("topics: unmarshal snapshot synonyms", "error", err, "snapshot_id", s.ID, "label", s.Label)
+			}
 			latestTopics = append(latestTopics, IdentifiedTopic{
 				RankedTopic: RankedTopic{
-					Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, Synonyms: syns, IsMeme: s.IsMeme},
-					PostCount: s.PostCount,
+					Cluster:           TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, Synonyms: syns, IsMeme: s.IsMeme},
+					UniqueAuthorCount: s.UniqueAuthorCount,
 				},
 				TopicID: s.TopicID,
 				Rank:    s.Rank,
@@ -181,13 +185,17 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		for _, s := range prevSnapshots {
 			if s.SnapshotTime == prevTime {
 				var kws []string
-				_ = json.Unmarshal([]byte(s.Keywords), &kws)
+				if err := json.Unmarshal([]byte(s.Keywords), &kws); err != nil {
+					slog.Warn("topics: unmarshal prev snapshot keywords", "error", err, "snapshot_id", s.ID, "label", s.Label)
+				}
 				var syns []string
-				_ = json.Unmarshal([]byte(s.Synonyms), &syns)
+				if err := json.Unmarshal([]byte(s.Synonyms), &syns); err != nil {
+					slog.Warn("topics: unmarshal prev snapshot synonyms", "error", err, "snapshot_id", s.ID, "label", s.Label)
+				}
 				full := IdentifiedTopic{
 					RankedTopic: RankedTopic{
-						Cluster:   TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, Synonyms: syns, IsMeme: s.IsMeme},
-						PostCount: s.PostCount,
+						Cluster:           TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, Synonyms: syns, IsMeme: s.IsMeme},
+						UniqueAuthorCount: s.UniqueAuthorCount,
 					},
 					TopicID: s.TopicID,
 					Rank:    s.Rank,
@@ -284,42 +292,6 @@ func overlapsCurrent(candidate IdentifiedTopic, current []IdentifiedTopic) bool 
 		}
 	}
 	return false
-}
-
-func buildTrajectories(snapshots []store.TopicSnapshotRow, current []IdentifiedTopic) map[string][]int {
-	timeSlots := make([]string, 0)
-	seen := make(map[string]bool)
-	for _, s := range snapshots {
-		if !seen[s.SnapshotTime] {
-			seen[s.SnapshotTime] = true
-			timeSlots = append(timeSlots, s.SnapshotTime)
-		}
-	}
-
-	rankByTimeAndTopic := make(map[string]map[string]int)
-	for _, s := range snapshots {
-		if rankByTimeAndTopic[s.SnapshotTime] == nil {
-			rankByTimeAndTopic[s.SnapshotTime] = make(map[string]int)
-		}
-		rankByTimeAndTopic[s.SnapshotTime][s.TopicID] = s.Rank
-	}
-
-	currentIDs := make(map[string]bool)
-	for _, t := range current {
-		currentIDs[t.TopicID] = true
-	}
-
-	result := make(map[string][]int)
-	for id := range currentIDs {
-		ranks := make([]int, len(timeSlots))
-		for i, ts := range timeSlots {
-			if r, ok := rankByTimeAndTopic[ts][id]; ok {
-				ranks[i] = r
-			}
-		}
-		result[id] = ranks
-	}
-	return result
 }
 
 func convertFacets(facets []Facet) []*bsky.RichtextFacet {
