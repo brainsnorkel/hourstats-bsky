@@ -57,7 +57,11 @@ func ComputeTFIDF(rows []store.TopicTokenRow) []TermScore {
 				continue
 			}
 			if count, ok := tf[term]; ok {
-				totalTFIDF += float64(count) * idf
+				capped := count
+				if capped > MaxTermFreqPerDoc {
+					capped = MaxTermFreqPerDoc
+				}
+				totalTFIDF += float64(capped) * idf
 			}
 		}
 		tfidfScores[term] = totalTFIDF
