@@ -1,12 +1,13 @@
 package topics
 
 const (
-	MinDocFrequency  = 10
-	MinUniqueAuthors = 3
-	MinCorpusSize    = 100
-	MaxTFIDFTerms    = 50
-	MaxLLMGroups     = 10
-	TopTopics        = 5
+	MinDocFrequency   = 10
+	MinUniqueAuthors  = 3
+	MinCorpusSize     = 100
+	MaxTFIDFTerms     = 50
+	MaxLLMGroups      = 10
+	TopTopics         = 5
+	MaxTermFreqPerDoc = 3
 )
 
 type TermScore struct {

@@ -83,6 +83,31 @@ func isEmoji(r rune) bool {
 		(r >= 0xE0020 && r <= 0xE007F) // tags
 }
 
+// minRepetitionWords is the minimum word count before the repetition
+// check kicks in. Very short posts naturally have low diversity.
+const minRepetitionWords = 8
+
+// maxRepetitionRatio is the unique-word / total-word threshold below
+// which a post is considered keyword-stuffed. Normal prose scores 0.5+;
+// spam like "TRUMP EPSTEIN TRUMP EPSTEIN…" scores < 0.1.
+const maxRepetitionRatio = 0.3
+
+// IsRepetitive returns true if the text appears to be keyword-stuffed
+// (the same few words repeated many times to game trending topics).
+func IsRepetitive(text string) bool {
+	text = strings.ToLower(text)
+	words := strings.Fields(text)
+	if len(words) < minRepetitionWords {
+		return false
+	}
+	unique := make(map[string]bool, len(words))
+	for _, w := range words {
+		unique[w] = true
+	}
+	ratio := float64(len(unique)) / float64(len(words))
+	return ratio < maxRepetitionRatio
+}
+
 var stopwords = map[string]bool{
 	// pronouns & determiners
 	"the": true, "this": true, "that": true, "these": true, "those": true,

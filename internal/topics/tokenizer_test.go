@@ -164,6 +164,30 @@ func TestTokenize_BigramBridgesStopword(t *testing.T) {
 	}
 }
 
+func TestIsRepetitive_KeywordStuffing(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"trump_epstein_spam", "TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN", true},
+		{"single_word_spam", "Epstein Epstein Epstein Epstein Epstein Epstein Epstein Epstein Epstein Epstein Epstein Epstein", true},
+		{"normal_post", "The earthquake in Turkey has caused widespread damage and rescue efforts are underway across the region", false},
+		{"short_post", "hello hello hello", false},
+		{"empty", "", false},
+		{"moderate_repetition", "trump trump election vote trump election rally crowd trump supporters rally", false},
+		{"three_word_spam", "buy now buy now buy now buy now buy now buy now", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsRepetitive(tt.text)
+			if got != tt.want {
+				t.Errorf("IsRepetitive(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
 func contains(slice []string, s string) bool {
 	for _, v := range slice {
 		if v == s {
