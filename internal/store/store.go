@@ -408,6 +408,21 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_stats_events_type ON stats_events(event_type)`,
 
 		`ALTER TABLE stats_snapshots ADD COLUMN dropped_posts INTEGER NOT NULL DEFAULT 0`,
+
+		// Health metrics columns (hs-21g health-metrics-dashboard)
+		`ALTER TABLE stats_snapshots ADD COLUMN heap_inuse_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN heap_sys_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN sys_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN gc_pause_total_ns INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN gc_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN gc_cpu_fraction REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN slow_flush_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN slow_flush_max_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN write_channel_depth INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN wal_size_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN goroutine_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN cycle_duration_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN trending_duration_ms INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, stmt := range stmts {

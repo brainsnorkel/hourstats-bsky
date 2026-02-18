@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
@@ -17,22 +18,30 @@ import (
 type StatsStore interface {
 	GetLatestSnapshot(ctx context.Context) (*store.StatsSnapshot, error)
 	GetSnapshotHistory(ctx context.Context, since time.Time, limit int) ([]store.StatsSnapshot, error)
+	GetHealthHistory(ctx context.Context, since time.Time, limit int) ([]store.StatsSnapshot, error)
 	GetEvents(ctx context.Context, since time.Time, eventType string, limit int) ([]store.StatsEvent, error)
 	GetRecentTopicSnapshots(ctx context.Context, since string, limit int) ([]store.TopicSnapshotRow, error)
 	GetPostingActivity(ctx context.Context) (*store.PostingActivity, error)
 	GetDatabaseHealth(ctx context.Context) (*store.DatabaseHealth, error)
 }
 
+// HealthChartConfig holds configuration for the health chart endpoint.
+type HealthChartConfig struct {
+	Hours         int
+	MemoryLimitMB int
+}
+
 // Server provides an HTTP API for querying stats.
 type Server struct {
-	store  StatsStore
-	port   int
-	server *http.Server
+	store       StatsStore
+	port        int
+	server      *http.Server
+	healthChart HealthChartConfig
 }
 
 // New creates a new stats API server.
-func New(store StatsStore, port int) *Server {
-	s := &Server{store: store, port: port}
+func New(store StatsStore, port int, healthCfg HealthChartConfig) *Server {
+	s := &Server{store: store, port: port, healthChart: healthCfg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /stats/latest", s.handleLatest)
 	mux.HandleFunc("GET /stats/history", s.handleHistory)
@@ -40,6 +49,8 @@ func New(store StatsStore, port int) *Server {
 	mux.HandleFunc("GET /stats/topics", s.handleTopics)
 	mux.HandleFunc("GET /stats/posting", s.handlePosting)
 	mux.HandleFunc("GET /stats/health", s.handleHealth)
+	mux.HandleFunc("GET /stats/health/history", s.handleHealthHistory)
+	mux.HandleFunc("GET /stats/health/chart", s.handleHealthChart)
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
@@ -278,6 +289,96 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, health)
+}
+
+func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	hoursStr := r.URL.Query().Get("hours")
+	hours := s.healthChart.Hours
+	if hours <= 0 {
+		hours = 6
+	}
+	if hoursStr != "" {
+		var err error
+		hours, err = strconv.Atoi(hoursStr)
+		if err != nil || hours <= 0 {
+			writeError(w, http.StatusBadRequest, "hours must be a positive integer")
+			return
+		}
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 1000
+	if limitStr != "" {
+		var err error
+		limit, err = strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 || limit > 5000 {
+			writeError(w, http.StatusBadRequest, "limit must be a positive integer <= 5000")
+			return
+		}
+	}
+
+	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	snapshots, err := s.store.GetHealthHistory(ctx, since, limit)
+	if err != nil {
+		slog.Error("failed to get health history", "error", err, "hours", hours, "limit", limit)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if snapshots == nil {
+		snapshots = []store.StatsSnapshot{}
+	}
+	writeJSON(w, http.StatusOK, snapshots)
+}
+
+func (s *Server) handleHealthChart(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	hoursStr := r.URL.Query().Get("hours")
+	hours := s.healthChart.Hours
+	if hours <= 0 {
+		hours = 6
+	}
+	if hoursStr != "" {
+		var err error
+		hours, err = strconv.Atoi(hoursStr)
+		if err != nil || hours <= 0 {
+			writeError(w, http.StatusBadRequest, "hours must be a positive integer")
+			return
+		}
+	}
+
+	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	snapshots, err := s.store.GetHealthHistory(ctx, since, 1000)
+	if err != nil {
+		slog.Error("failed to get health history for chart", "error", err, "hours", hours)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if len(snapshots) < 2 {
+		writeError(w, http.StatusNotFound, "not enough data points for chart (need at least 2)")
+		return
+	}
+
+	memLimitMB := s.healthChart.MemoryLimitMB
+	if memLimitMB <= 0 {
+		memLimitMB = 512
+	}
+
+	png, err := sparkline.GenerateHealthChart(snapshots, memLimitMB)
+	if err != nil {
+		slog.Error("failed to generate health chart", "error", err)
+		writeError(w, http.StatusInternalServerError, "chart generation failed")
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Length", strconv.Itoa(len(png)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(png)
 }
 
 // writeError writes a JSON error response.

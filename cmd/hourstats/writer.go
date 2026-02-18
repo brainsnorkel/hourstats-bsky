@@ -39,6 +39,7 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 		}
 		if dur := time.Since(start); dur > 1*time.Second {
 			slog.Warn("slow write flush", "batch_size", n, "duration_ms", dur.Milliseconds())
+			collector.IncrementSlowFlush(dur.Milliseconds())
 		}
 		batch = batch[:0]
 	}

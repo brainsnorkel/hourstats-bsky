@@ -3,6 +3,8 @@ package stats
 import (
 	"context"
 	"log/slog"
+	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +28,8 @@ type StatsStore interface {
 type Collector struct {
 	store    StatsStore
 	provider ConsumerStatsProvider // may be nil during consumer restart
-	mu       sync.RWMutex          // protects provider and lastAnalysis
+	mu       sync.RWMutex          // protects provider, lastAnalysis, and health fields
+	dbPath   string
 
 	// Traffic counters (incremented from OnPost callback via atomic)
 	englishPosts atomic.Int64
@@ -40,7 +43,11 @@ type Collector struct {
 	// Dropped-post counter — incremented when the write buffer is full
 	droppedPosts atomic.Int64
 
-	// Last-seen cumulative values for delta computation (NOT atomic — only read/written in TakeSnapshot)
+	// Health metric counters (hs-21g)
+	slowFlushCount atomic.Int64
+	slowFlushMaxMs atomic.Int64
+	writeChDepthFn func() int // returns len(writeCh); nil-safe
+
 	lastSeen struct {
 		eventsReceived    int64
 		postsProcessed    int64
@@ -49,24 +56,63 @@ type Collector struct {
 		errors            int64
 		endpointRotations int64
 		firehosePosts     int64
+		gcPauseTotalNs    uint64
+		gcCount           uint32
 	}
 
-	// Analysis results from last cycle
 	lastAnalysis struct {
-		ran             bool
-		postsConsidered int
-		postsHydrated   int
-		hydrationErrors int
-		sentimentResult string
-		postingSkipped  bool
+		ran                bool
+		postsConsidered    int
+		postsHydrated      int
+		hydrationErrors    int
+		sentimentResult    string
+		postingSkipped     bool
+		cycleDurationMs    int64
+		trendingDurationMs int64
 	}
 }
 
-// New creates a new Collector with the given store.
-func New(store StatsStore) *Collector {
+// New creates a new Collector with the given store and database path.
+func New(store StatsStore, dbPath string) *Collector {
 	return &Collector{
-		store: store,
+		store:  store,
+		dbPath: dbPath,
 	}
+}
+
+// SetWriteChannelFunc registers a function that returns the current write channel depth.
+func (c *Collector) SetWriteChannelFunc(fn func() int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writeChDepthFn = fn
+}
+
+// IncrementSlowFlush records a slow flush event, tracking count and max duration.
+func (c *Collector) IncrementSlowFlush(durationMs int64) {
+	c.slowFlushCount.Add(1)
+	for {
+		cur := c.slowFlushMaxMs.Load()
+		if durationMs <= cur {
+			break
+		}
+		if c.slowFlushMaxMs.CompareAndSwap(cur, durationMs) {
+			break
+		}
+	}
+}
+
+// RecordCycleDuration records the duration of the most recent analysis cycle.
+func (c *Collector) RecordCycleDuration(ms int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastAnalysis.cycleDurationMs = ms
+}
+
+// RecordTrendingDuration records the duration of the most recent trending analysis.
+func (c *Collector) RecordTrendingDuration(ms int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastAnalysis.trendingDurationMs = ms
 }
 
 // SetConsumer updates the consumer provider (thread-safe).
@@ -190,6 +236,37 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	// Read and reset dropped-post counter
 	droppedDelta := c.droppedPosts.Swap(0)
 
+	// Read and reset slow flush counters
+	slowFlushCount := c.slowFlushCount.Swap(0)
+	slowFlushMaxMs := c.slowFlushMaxMs.Swap(0)
+
+	// Sample write channel depth
+	var writeChDepth int
+	c.mu.RLock()
+	if c.writeChDepthFn != nil {
+		writeChDepth = c.writeChDepthFn()
+	}
+	c.mu.RUnlock()
+
+	// Sample runtime memory and GC stats
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	gcPauseDelta := memStats.PauseTotalNs - uint64(c.lastSeen.gcPauseTotalNs)
+	gcCountDelta := memStats.NumGC - c.lastSeen.gcCount
+	c.lastSeen.gcPauseTotalNs = memStats.PauseTotalNs
+	c.lastSeen.gcCount = memStats.NumGC
+
+	// Sample WAL file size
+	var walSize int64
+	if c.dbPath != "" {
+		if fi, err := os.Stat(c.dbPath + "-wal"); err == nil {
+			walSize = fi.Size()
+		}
+	}
+
+	goroutineCount := runtime.NumGoroutine()
+
 	// Compute posts per minute (30-minute window)
 	postsPerMinute := float64(englishDelta) / 30.0
 
@@ -201,6 +278,8 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	hydrationErrors := c.lastAnalysis.hydrationErrors
 	sentimentResult := c.lastAnalysis.sentimentResult
 	postingSkipped := c.lastAnalysis.postingSkipped
+	cycleDurationMs := c.lastAnalysis.cycleDurationMs
+	trendingDurationMs := c.lastAnalysis.trendingDurationMs
 	c.mu.RUnlock()
 
 	// Build snapshot
@@ -226,6 +305,19 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		SentimentResult:         sentimentResult,
 		PostingSkipped:          boolToInt(postingSkipped),
 		DroppedPosts:            int(droppedDelta),
+		HeapInuseBytes:          int64(memStats.HeapInuse),
+		HeapSysBytes:            int64(memStats.HeapSys),
+		SysBytes:                int64(memStats.Sys),
+		GCPauseTotalNs:          int64(gcPauseDelta),
+		GCCount:                 int64(gcCountDelta),
+		GCCPUFraction:           memStats.GCCPUFraction,
+		SlowFlushCount:          int(slowFlushCount),
+		SlowFlushMaxMs:          slowFlushMaxMs,
+		WriteChannelDepth:       writeChDepth,
+		WALSizeBytes:            walSize,
+		GoroutineCount:          goroutineCount,
+		CycleDurationMs:         cycleDurationMs,
+		TrendingDurationMs:      trendingDurationMs,
 	}
 
 	// Persist snapshot
@@ -236,6 +328,8 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	// Reset analysis state after snapshot
 	c.mu.Lock()
 	c.lastAnalysis.ran = false
+	c.lastAnalysis.cycleDurationMs = 0
+	c.lastAnalysis.trendingDurationMs = 0
 	c.mu.Unlock()
 
 	slog.Info("stats snapshot taken",

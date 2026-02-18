@@ -52,7 +52,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		topicAnalysisDone = ch
 		slog.Info("topics: analysis goroutine started (parallel with hydration)")
 		go func() {
-			ch <- topicAnalyzer.RunAnalysisCycle(ctx)
+			trendStart := time.Now()
+			err := topicAnalyzer.RunAnalysisCycle(ctx)
+			collector.RecordTrendingDuration(time.Since(trendStart).Milliseconds())
+			ch <- err
 		}()
 	}
 
@@ -256,10 +259,13 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		slog.Info("purged expired stats", "count", statsPurged)
 	}
 
+	collector.RecordCycleDuration(time.Since(cycleStart).Milliseconds())
+
 	slog.Info("analysis cycle complete",
 		"run_id", runID,
 		"posts", len(posts),
 		"sentiment", overallSentiment,
 		"net_pct", fmt.Sprintf("%.1f%%", netSentimentPct),
+		"cycle_ms", time.Since(cycleStart).Milliseconds(),
 	)
 }

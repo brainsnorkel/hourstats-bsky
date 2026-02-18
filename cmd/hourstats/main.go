@@ -35,6 +35,9 @@ func main() {
 	geminiAPIKey := os.Getenv("GOOGLE_AI_API_KEY")
 	geminiModel := envOr("GEMINI_MODEL", "gemini-2.5-pro")
 
+	healthChartHours := envInt("HEALTH_CHART_HOURS", 6)
+	healthChartMemoryLimitMB := envInt("HEALTH_CHART_MEMORY_LIMIT_MB", 512)
+
 	if trendingEnabled && geminiAPIKey == "" {
 		slog.Error("TRENDING_ENABLED=true but GOOGLE_AI_API_KEY is empty, disabling trending")
 		trendingEnabled = false
@@ -70,7 +73,7 @@ func main() {
 	}
 
 	// Initialize stats collector
-	collector := stats.New(db)
+	collector := stats.New(db, dbPath)
 	if err := collector.LogEvent(context.Background(), "app_start", fmt.Sprintf("profile=%s pid=%d", profile, os.Getpid())); err != nil {
 		slog.Warn("failed to log app_start event", "error", err)
 	}
@@ -90,7 +93,10 @@ func main() {
 			statsPort = parsed
 		}
 	}
-	statsServer := statsapi.New(db, statsPort)
+	statsServer := statsapi.New(db, statsPort, statsapi.HealthChartConfig{
+		Hours:         healthChartHours,
+		MemoryLimitMB: healthChartMemoryLimitMB,
+	})
 	if err := statsServer.Start(); err != nil {
 		slog.Error("failed to start stats API", "error", err)
 	}
@@ -102,6 +108,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	writeCh := make(chan store.PendingWrite, 50000)
+	collector.SetWriteChannelFunc(func() int { return len(writeCh) })
 	go runWriteFlusher(ctx, db, writeCh, collector)
 	go runJetstream(ctx, db, trendingEnabled, collector, writeCh)
 
