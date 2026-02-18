@@ -33,6 +33,19 @@ type StatsSnapshot struct {
 	SentimentResult         string    `json:"sentiment_result"`
 	PostingSkipped          int       `json:"posting_skipped"`
 	DroppedPosts            int       `json:"dropped_posts"`
+	HeapInuseBytes          int64     `json:"heap_inuse_bytes"`
+	HeapSysBytes            int64     `json:"heap_sys_bytes"`
+	SysBytes                int64     `json:"sys_bytes"`
+	GCPauseTotalNs          int64     `json:"gc_pause_total_ns"`
+	GCCount                 int64     `json:"gc_count"`
+	GCCPUFraction           float64   `json:"gc_cpu_fraction"`
+	SlowFlushCount          int       `json:"slow_flush_count"`
+	SlowFlushMaxMs          int64     `json:"slow_flush_max_ms"`
+	WriteChannelDepth       int       `json:"write_channel_depth"`
+	WALSizeBytes            int64     `json:"wal_size_bytes"`
+	GoroutineCount          int       `json:"goroutine_count"`
+	CycleDurationMs         int64     `json:"cycle_duration_ms"`
+	TrendingDurationMs      int64     `json:"trending_duration_ms"`
 }
 
 // StatsEvent represents a logged event in the system.
@@ -209,14 +222,19 @@ func (s *Store) InsertStatsSnapshot(ctx context.Context, snap *StatsSnapshot) er
 			connection_uptime_seconds, events_received, posts_processed, events_skipped, consumer_errors,
 			total_firehose_posts, english_posts_stored, root_posts, reply_posts, posts_per_minute_avg,
 			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
-			dropped_posts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			dropped_posts, heap_inuse_bytes, heap_sys_bytes, sys_bytes, gc_pause_total_ns, gc_count,
+			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
+			goroutine_count, cycle_duration_ms, trending_duration_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		timeToStr(snap.SnapshotTime), snap.ActiveEndpoint, snap.EndpointRotations, snap.ReconnectCount,
 		snap.ConnectionUptimeSeconds, snap.EventsReceived, snap.PostsProcessed, snap.EventsSkipped,
 		snap.ConsumerErrors, snap.TotalFirehosePosts, snap.EnglishPostsStored, snap.RootPosts,
 		snap.ReplyPosts, snap.PostsPerMinuteAvg, snap.AnalysisRan, snap.PostsConsidered,
 		snap.PostsHydrated, snap.HydrationErrors, snap.SentimentResult, snap.PostingSkipped,
-		snap.DroppedPosts,
+		snap.DroppedPosts, snap.HeapInuseBytes, snap.HeapSysBytes, snap.SysBytes, snap.GCPauseTotalNs,
+		snap.GCCount, snap.GCCPUFraction, snap.SlowFlushCount, snap.SlowFlushMaxMs,
+		snap.WriteChannelDepth, snap.WALSizeBytes, snap.GoroutineCount, snap.CycleDurationMs,
+		snap.TrendingDurationMs,
 	)
 	if err != nil {
 		return fmt.Errorf("insert stats snapshot: %w", err)
@@ -250,7 +268,9 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 			connection_uptime_seconds, events_received, posts_processed, events_skipped, consumer_errors,
 			total_firehose_posts, english_posts_stored, root_posts, reply_posts, posts_per_minute_avg,
 			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
-			dropped_posts
+			dropped_posts, heap_inuse_bytes, heap_sys_bytes, sys_bytes, gc_pause_total_ns, gc_count,
+			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
+			goroutine_count, cycle_duration_ms, trending_duration_ms
 		 FROM stats_snapshots
 		 ORDER BY snapshot_time DESC
 		 LIMIT 1`,
@@ -260,7 +280,10 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 		&snap.ConsumerErrors, &snap.TotalFirehosePosts, &snap.EnglishPostsStored, &snap.RootPosts,
 		&snap.ReplyPosts, &snap.PostsPerMinuteAvg, &snap.AnalysisRan, &snap.PostsConsidered,
 		&snap.PostsHydrated, &snap.HydrationErrors, &snap.SentimentResult, &snap.PostingSkipped,
-		&snap.DroppedPosts,
+		&snap.DroppedPosts, &snap.HeapInuseBytes, &snap.HeapSysBytes, &snap.SysBytes,
+		&snap.GCPauseTotalNs, &snap.GCCount, &snap.GCCPUFraction, &snap.SlowFlushCount,
+		&snap.SlowFlushMaxMs, &snap.WriteChannelDepth, &snap.WALSizeBytes, &snap.GoroutineCount,
+		&snap.CycleDurationMs, &snap.TrendingDurationMs,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -280,7 +303,9 @@ func (s *Store) GetSnapshotHistory(ctx context.Context, since time.Time, limit i
 			connection_uptime_seconds, events_received, posts_processed, events_skipped, consumer_errors,
 			total_firehose_posts, english_posts_stored, root_posts, reply_posts, posts_per_minute_avg,
 			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
-			dropped_posts
+			dropped_posts, heap_inuse_bytes, heap_sys_bytes, sys_bytes, gc_pause_total_ns, gc_count,
+			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
+			goroutine_count, cycle_duration_ms, trending_duration_ms
 		 FROM stats_snapshots
 		 WHERE snapshot_time >= ?
 		 ORDER BY snapshot_time DESC
@@ -302,9 +327,57 @@ func (s *Store) GetSnapshotHistory(ctx context.Context, since time.Time, limit i
 			&snap.ConsumerErrors, &snap.TotalFirehosePosts, &snap.EnglishPostsStored, &snap.RootPosts,
 			&snap.ReplyPosts, &snap.PostsPerMinuteAvg, &snap.AnalysisRan, &snap.PostsConsidered,
 			&snap.PostsHydrated, &snap.HydrationErrors, &snap.SentimentResult, &snap.PostingSkipped,
-			&snap.DroppedPosts,
+			&snap.DroppedPosts, &snap.HeapInuseBytes, &snap.HeapSysBytes, &snap.SysBytes,
+			&snap.GCPauseTotalNs, &snap.GCCount, &snap.GCCPUFraction, &snap.SlowFlushCount,
+			&snap.SlowFlushMaxMs, &snap.WriteChannelDepth, &snap.WALSizeBytes, &snap.GoroutineCount,
+			&snap.CycleDurationMs, &snap.TrendingDurationMs,
 		); err != nil {
 			return nil, fmt.Errorf("scan snapshot: %w", err)
+		}
+		snap.SnapshotTime = strToTime(snapshotTimeStr)
+		results = append(results, snap)
+	}
+	return results, rows.Err()
+}
+
+// GetHealthHistory returns snapshots since the given time, ordered by snapshot_time ASC (oldest first).
+// Designed for time-series charting where chronological order is required.
+func (s *Store) GetHealthHistory(ctx context.Context, since time.Time, limit int) ([]StatsSnapshot, error) {
+	rows, err := s.readDB.QueryContext(ctx,
+		`SELECT id, snapshot_time, active_endpoint, endpoint_rotations, reconnect_count,
+			connection_uptime_seconds, events_received, posts_processed, events_skipped, consumer_errors,
+			total_firehose_posts, english_posts_stored, root_posts, reply_posts, posts_per_minute_avg,
+			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
+			dropped_posts, heap_inuse_bytes, heap_sys_bytes, sys_bytes, gc_pause_total_ns, gc_count,
+			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
+			goroutine_count, cycle_duration_ms, trending_duration_ms
+		 FROM stats_snapshots
+		 WHERE snapshot_time >= ?
+		 ORDER BY snapshot_time ASC
+		 LIMIT ?`,
+		timeToStr(since), limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query health history: %w", err)
+	}
+	defer rows.Close()
+
+	var results []StatsSnapshot
+	for rows.Next() {
+		var snap StatsSnapshot
+		var snapshotTimeStr string
+		if err := rows.Scan(
+			&snap.ID, &snapshotTimeStr, &snap.ActiveEndpoint, &snap.EndpointRotations, &snap.ReconnectCount,
+			&snap.ConnectionUptimeSeconds, &snap.EventsReceived, &snap.PostsProcessed, &snap.EventsSkipped,
+			&snap.ConsumerErrors, &snap.TotalFirehosePosts, &snap.EnglishPostsStored, &snap.RootPosts,
+			&snap.ReplyPosts, &snap.PostsPerMinuteAvg, &snap.AnalysisRan, &snap.PostsConsidered,
+			&snap.PostsHydrated, &snap.HydrationErrors, &snap.SentimentResult, &snap.PostingSkipped,
+			&snap.DroppedPosts, &snap.HeapInuseBytes, &snap.HeapSysBytes, &snap.SysBytes,
+			&snap.GCPauseTotalNs, &snap.GCCount, &snap.GCCPUFraction, &snap.SlowFlushCount,
+			&snap.SlowFlushMaxMs, &snap.WriteChannelDepth, &snap.WALSizeBytes, &snap.GoroutineCount,
+			&snap.CycleDurationMs, &snap.TrendingDurationMs,
+		); err != nil {
+			return nil, fmt.Errorf("scan health snapshot: %w", err)
 		}
 		snap.SnapshotTime = strToTime(snapshotTimeStr)
 		results = append(results, snap)

@@ -35,6 +35,20 @@ type Snapshot struct {
 	HydrationErrors         int     `json:"hydration_errors"`
 	SentimentResult         string  `json:"sentiment_result"`
 	PostingSkipped          int     `json:"posting_skipped"`
+	DroppedPosts            int     `json:"dropped_posts"`
+	HeapInuseBytes          int64   `json:"heap_inuse_bytes"`
+	HeapSysBytes            int64   `json:"heap_sys_bytes"`
+	SysBytes                int64   `json:"sys_bytes"`
+	GCPauseTotalNs          int64   `json:"gc_pause_total_ns"`
+	GCCount                 int64   `json:"gc_count"`
+	GCCPUFraction           float64 `json:"gc_cpu_fraction"`
+	SlowFlushCount          int     `json:"slow_flush_count"`
+	SlowFlushMaxMs          int64   `json:"slow_flush_max_ms"`
+	WriteChannelDepth       int     `json:"write_channel_depth"`
+	WALSizeBytes            int64   `json:"wal_size_bytes"`
+	GoroutineCount          int     `json:"goroutine_count"`
+	CycleDurationMs         int64   `json:"cycle_duration_ms"`
+	TrendingDurationMs      int64   `json:"trending_duration_ms"`
 }
 
 type Event struct {
@@ -107,7 +121,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  history   Show stats snapshot history\n")
 		fmt.Fprintf(os.Stderr, "  events    Show event log\n")
 		fmt.Fprintf(os.Stderr, "  topics    Show recent topic reasoning\n")
-		fmt.Fprintf(os.Stderr, "  health    Show database health diagnostics\n\n")
+		fmt.Fprintf(os.Stderr, "  health    Show database health diagnostics\n")
+		fmt.Fprintf(os.Stderr, "  plot      Show health metric sparklines in terminal\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
@@ -131,6 +146,8 @@ func main() {
 		cmdTopics()
 	case "health":
 		cmdHealth()
+	case "plot":
+		cmdPlot()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
 		flag.Usage()
@@ -473,6 +490,119 @@ func cmdHealth() {
 		}
 		w.Flush()
 	}
+}
+
+func cmdPlot() {
+	body, err := apiGet(fmt.Sprintf("/stats/health/history?hours=%d&limit=1000", *hours))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *jsonOut {
+		fmt.Println(string(body))
+		return
+	}
+
+	var snaps []Snapshot
+	if err := json.Unmarshal(body, &snaps); err != nil {
+		fmt.Fprintf(os.Stderr, "Parse error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(snaps) == 0 {
+		fmt.Println("No health data available yet")
+		return
+	}
+
+	width := 60
+	fmt.Printf("=== Health Metrics (%d points, %dh window) ===\n\n", len(snaps), *hours)
+
+	printSparkRow("Heap InUse", width, snaps, func(s Snapshot) float64 { return float64(s.HeapInuseBytes) / (1024 * 1024) }, "MB")
+	printSparkRow("Sys Memory", width, snaps, func(s Snapshot) float64 { return float64(s.SysBytes) / (1024 * 1024) }, "MB")
+	printSparkRow("WAL Size", width, snaps, func(s Snapshot) float64 { return float64(s.WALSizeBytes) / (1024 * 1024) }, "MB")
+	printSparkRow("Write Queue", width, snaps, func(s Snapshot) float64 { return float64(s.WriteChannelDepth) }, "")
+	printSparkRow("GC Pause", width, snaps, func(s Snapshot) float64 { return float64(s.GCPauseTotalNs) / 1e6 }, "ms")
+	printSparkRow("GC CPU %", width, snaps, func(s Snapshot) float64 { return s.GCCPUFraction * 100 }, "%")
+	printSparkRow("Goroutines", width, snaps, func(s Snapshot) float64 { return float64(s.GoroutineCount) }, "")
+	printSparkRow("Cycle Dur", width, snaps, func(s Snapshot) float64 { return float64(s.CycleDurationMs) / 1000 }, "s")
+	printSparkRow("Slow Flush", width, snaps, func(s Snapshot) float64 { return float64(s.SlowFlushCount) }, "")
+
+	fmt.Printf("\nTime range: %s → %s\n",
+		formatTime(snaps[0].SnapshotTime),
+		formatTime(snaps[len(snaps)-1].SnapshotTime))
+}
+
+func printSparkRow(label string, width int, snaps []Snapshot, extract func(Snapshot) float64, unit string) {
+	blocks := []rune(" ▁▂▃▄▅▆▇█")
+	values := make([]float64, len(snaps))
+	var min, max float64
+	for i, s := range snaps {
+		v := extract(s)
+		values[i] = v
+		if i == 0 || v < min {
+			min = v
+		}
+		if i == 0 || v > max {
+			max = v
+		}
+	}
+
+	resampled := resample(values, width)
+
+	vRange := max - min
+	if vRange == 0 {
+		vRange = 1
+	}
+	var spark strings.Builder
+	for _, v := range resampled {
+		idx := int((v - min) / vRange * float64(len(blocks)-1))
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(blocks) {
+			idx = len(blocks) - 1
+		}
+		spark.WriteRune(blocks[idx])
+	}
+
+	last := values[len(values)-1]
+	fmt.Printf("%-12s %s  now: %s%s  (min: %s, max: %s)\n",
+		label, spark.String(),
+		formatFloat(last), unit,
+		formatFloat(min)+unit,
+		formatFloat(max)+unit)
+}
+
+func resample(values []float64, width int) []float64 {
+	n := len(values)
+	if n <= width {
+		return values
+	}
+	result := make([]float64, width)
+	for i := 0; i < width; i++ {
+		start := i * n / width
+		end := (i + 1) * n / width
+		if end > n {
+			end = n
+		}
+		sum := 0.0
+		for j := start; j < end; j++ {
+			sum += values[j]
+		}
+		result[i] = sum / float64(end-start)
+	}
+	return result
+}
+
+func formatFloat(v float64) string {
+	if v >= 1000 {
+		return fmt.Sprintf("%.1fk", v/1000)
+	}
+	if v == float64(int(v)) {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return fmt.Sprintf("%.1f", v)
 }
 
 func formatBytes(b int64) string {

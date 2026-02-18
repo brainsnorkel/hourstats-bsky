@@ -48,7 +48,7 @@ func (m *mockConsumerProvider) GetStatsReport() jetstream.StatsReport {
 
 func TestNew(t *testing.T) {
 	s := &mockStatsStore{}
-	c := New(s)
+	c := New(s, "")
 	if c == nil {
 		t.Fatal("New returned nil")
 	}
@@ -58,7 +58,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestIncrementFirehosePost(t *testing.T) {
-	c := New(&mockStatsStore{})
+	c := New(&mockStatsStore{}, "")
 
 	if got := c.GetFirehoseCount(); got != 0 {
 		t.Fatalf("initial firehose count = %d, want 0", got)
@@ -74,7 +74,7 @@ func TestIncrementFirehosePost(t *testing.T) {
 }
 
 func TestSwapFirehoseCount(t *testing.T) {
-	c := New(&mockStatsStore{})
+	c := New(&mockStatsStore{}, "")
 
 	c.IncrementFirehosePost()
 	c.IncrementFirehosePost()
@@ -89,7 +89,7 @@ func TestSwapFirehoseCount(t *testing.T) {
 }
 
 func TestIncrementEnglishPost(t *testing.T) {
-	c := New(&mockStatsStore{})
+	c := New(&mockStatsStore{}, "")
 
 	c.IncrementEnglishPost(false) // root
 	c.IncrementEnglishPost(false) // root
@@ -107,7 +107,7 @@ func TestIncrementEnglishPost(t *testing.T) {
 }
 
 func TestIncrementDroppedPosts(t *testing.T) {
-	c := New(&mockStatsStore{})
+	c := New(&mockStatsStore{}, "")
 
 	c.IncrementDroppedPosts(5)
 	c.IncrementDroppedPosts(3)
@@ -122,7 +122,7 @@ func TestIncrementDroppedPosts(t *testing.T) {
 }
 
 func TestLastPostReceived(t *testing.T) {
-	c := New(&mockStatsStore{})
+	c := New(&mockStatsStore{}, "")
 
 	// Before any posts, should return zero time
 	if got := c.LastPostReceived(); !got.IsZero() {
@@ -142,7 +142,7 @@ func TestLastPostReceived(t *testing.T) {
 }
 
 func TestSetConsumer(t *testing.T) {
-	c := New(&mockStatsStore{})
+	c := New(&mockStatsStore{}, "")
 
 	// Initially nil — TakeSnapshot should not panic
 	c.SetConsumer(nil)
@@ -171,7 +171,7 @@ func TestSetConsumer(t *testing.T) {
 }
 
 func TestRecordAnalysis(t *testing.T) {
-	c := New(&mockStatsStore{})
+	c := New(&mockStatsStore{}, "")
 
 	c.RecordAnalysis(1000, 950, 5, "positive", false)
 
@@ -200,7 +200,7 @@ func TestRecordAnalysis(t *testing.T) {
 
 func TestTakeSnapshot_WithProvider(t *testing.T) {
 	ms := &mockStatsStore{}
-	c := New(ms)
+	c := New(ms, "")
 
 	provider := &mockConsumerProvider{
 		report: jetstream.StatsReport{
@@ -295,7 +295,7 @@ func TestTakeSnapshot_WithProvider(t *testing.T) {
 
 func TestTakeSnapshot_NilProvider(t *testing.T) {
 	ms := &mockStatsStore{}
-	c := New(ms)
+	c := New(ms, "")
 
 	// No provider set — should use zeros and not panic
 	c.IncrementFirehosePost()
@@ -324,7 +324,7 @@ func TestTakeSnapshot_NilProvider(t *testing.T) {
 
 func TestTakeSnapshot_DeltaComputation(t *testing.T) {
 	ms := &mockStatsStore{}
-	c := New(ms)
+	c := New(ms, "")
 
 	provider := &mockConsumerProvider{
 		report: jetstream.StatsReport{
@@ -359,7 +359,7 @@ func TestTakeSnapshot_DeltaComputation(t *testing.T) {
 
 func TestLogEvent(t *testing.T) {
 	ms := &mockStatsStore{}
-	c := New(ms)
+	c := New(ms, "")
 
 	err := c.LogEvent(context.Background(), "app_start", "profile=staging")
 	if err != nil {
@@ -384,11 +384,107 @@ func TestLogEvent(t *testing.T) {
 
 func TestLogEvent_StoreError(t *testing.T) {
 	ms := &mockStatsStore{eventErr: context.DeadlineExceeded}
-	c := New(ms)
+	c := New(ms, "")
 
 	err := c.LogEvent(context.Background(), "test", "details")
 	if err == nil {
 		t.Fatal("expected error from LogEvent when store fails")
+	}
+}
+
+func TestIncrementSlowFlush(t *testing.T) {
+	c := New(&mockStatsStore{}, "")
+
+	c.IncrementSlowFlush(500)
+	c.IncrementSlowFlush(1200)
+	c.IncrementSlowFlush(800)
+
+	count := c.slowFlushCount.Load()
+	if count != 3 {
+		t.Errorf("slowFlushCount = %d, want 3", count)
+	}
+	maxMs := c.slowFlushMaxMs.Load()
+	if maxMs != 1200 {
+		t.Errorf("slowFlushMaxMs = %d, want 1200", maxMs)
+	}
+}
+
+func TestRecordCycleDuration(t *testing.T) {
+	c := New(&mockStatsStore{}, "")
+
+	c.RecordCycleDuration(45000)
+	c.mu.RLock()
+	got := c.lastAnalysis.cycleDurationMs
+	c.mu.RUnlock()
+	if got != 45000 {
+		t.Errorf("cycleDurationMs = %d, want 45000", got)
+	}
+}
+
+func TestRecordTrendingDuration(t *testing.T) {
+	c := New(&mockStatsStore{}, "")
+
+	c.RecordTrendingDuration(12000)
+	c.mu.RLock()
+	got := c.lastAnalysis.trendingDurationMs
+	c.mu.RUnlock()
+	if got != 12000 {
+		t.Errorf("trendingDurationMs = %d, want 12000", got)
+	}
+}
+
+func TestSetWriteChannelFunc(t *testing.T) {
+	c := New(&mockStatsStore{}, "")
+
+	c.SetWriteChannelFunc(func() int { return 42 })
+	c.mu.RLock()
+	depth := c.writeChDepthFn()
+	c.mu.RUnlock()
+	if depth != 42 {
+		t.Errorf("writeChDepthFn() = %d, want 42", depth)
+	}
+}
+
+func TestTakeSnapshotIncludesHealthMetrics(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+	c.SetConsumer(&mockConsumerProvider{report: jetstream.StatsReport{
+		ActiveEndpoint: "wss://test",
+	}})
+	c.SetWriteChannelFunc(func() int { return 100 })
+	c.IncrementSlowFlush(2000)
+	c.RecordCycleDuration(30000)
+	c.RecordTrendingDuration(5000)
+
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+
+	if len(ms.snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(ms.snapshots))
+	}
+	snap := ms.snapshots[0]
+
+	if snap.SysBytes == 0 {
+		t.Error("SysBytes should be >0 (runtime.MemStats.Sys)")
+	}
+	if snap.GoroutineCount == 0 {
+		t.Error("GoroutineCount should be >0")
+	}
+	if snap.WriteChannelDepth != 100 {
+		t.Errorf("WriteChannelDepth = %d, want 100", snap.WriteChannelDepth)
+	}
+	if snap.SlowFlushCount != 1 {
+		t.Errorf("SlowFlushCount = %d, want 1", snap.SlowFlushCount)
+	}
+	if snap.SlowFlushMaxMs != 2000 {
+		t.Errorf("SlowFlushMaxMs = %d, want 2000", snap.SlowFlushMaxMs)
+	}
+	if snap.CycleDurationMs != 30000 {
+		t.Errorf("CycleDurationMs = %d, want 30000", snap.CycleDurationMs)
+	}
+	if snap.TrendingDurationMs != 5000 {
+		t.Errorf("TrendingDurationMs = %d, want 5000", snap.TrendingDurationMs)
 	}
 }
 

@@ -110,6 +110,93 @@ func TestGetSnapshotHistory(t *testing.T) {
 	}
 }
 
+func TestHealthFieldsRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	snap := &StatsSnapshot{
+		SnapshotTime:       time.Now().UTC(),
+		ActiveEndpoint:     "test",
+		HeapInuseBytes:     1024 * 1024 * 50,
+		HeapSysBytes:       1024 * 1024 * 100,
+		SysBytes:           1024 * 1024 * 200,
+		GCPauseTotalNs:     5000000,
+		GCCount:            10,
+		GCCPUFraction:      0.015,
+		SlowFlushCount:     3,
+		SlowFlushMaxMs:     2500,
+		WriteChannelDepth:  150,
+		WALSizeBytes:       1024 * 512,
+		GoroutineCount:     25,
+		CycleDurationMs:    45000,
+		TrendingDurationMs: 12000,
+	}
+
+	if err := s.InsertStatsSnapshot(ctx, snap); err != nil {
+		t.Fatalf("InsertStatsSnapshot: %v", err)
+	}
+
+	got, err := s.GetLatestSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestSnapshot: %v", err)
+	}
+	if got.HeapInuseBytes != snap.HeapInuseBytes {
+		t.Errorf("HeapInuseBytes = %d, want %d", got.HeapInuseBytes, snap.HeapInuseBytes)
+	}
+	if got.SysBytes != snap.SysBytes {
+		t.Errorf("SysBytes = %d, want %d", got.SysBytes, snap.SysBytes)
+	}
+	if got.GCCount != snap.GCCount {
+		t.Errorf("GCCount = %d, want %d", got.GCCount, snap.GCCount)
+	}
+	if got.SlowFlushCount != snap.SlowFlushCount {
+		t.Errorf("SlowFlushCount = %d, want %d", got.SlowFlushCount, snap.SlowFlushCount)
+	}
+	if got.WALSizeBytes != snap.WALSizeBytes {
+		t.Errorf("WALSizeBytes = %d, want %d", got.WALSizeBytes, snap.WALSizeBytes)
+	}
+	if got.GoroutineCount != snap.GoroutineCount {
+		t.Errorf("GoroutineCount = %d, want %d", got.GoroutineCount, snap.GoroutineCount)
+	}
+	if got.CycleDurationMs != snap.CycleDurationMs {
+		t.Errorf("CycleDurationMs = %d, want %d", got.CycleDurationMs, snap.CycleDurationMs)
+	}
+	if got.TrendingDurationMs != snap.TrendingDurationMs {
+		t.Errorf("TrendingDurationMs = %d, want %d", got.TrendingDurationMs, snap.TrendingDurationMs)
+	}
+}
+
+func TestGetHealthHistory(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		snap := &StatsSnapshot{
+			SnapshotTime:   now.Add(time.Duration(i) * time.Minute),
+			ActiveEndpoint: "endpoint",
+			HeapInuseBytes: int64(i * 1000000),
+		}
+		if err := s.InsertStatsSnapshot(ctx, snap); err != nil {
+			t.Fatalf("InsertStatsSnapshot[%d]: %v", i, err)
+		}
+	}
+
+	history, err := s.GetHealthHistory(ctx, now.Add(-time.Minute), 10)
+	if err != nil {
+		t.Fatalf("GetHealthHistory: %v", err)
+	}
+	if len(history) != 5 {
+		t.Fatalf("expected 5 snapshots, got %d", len(history))
+	}
+	if history[0].HeapInuseBytes != 0 {
+		t.Errorf("first (oldest) HeapInuseBytes = %d, want 0 (ASC order)", history[0].HeapInuseBytes)
+	}
+	if history[4].HeapInuseBytes != 4000000 {
+		t.Errorf("last (newest) HeapInuseBytes = %d, want 4000000", history[4].HeapInuseBytes)
+	}
+}
+
 func TestInsertAndGetEvents(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

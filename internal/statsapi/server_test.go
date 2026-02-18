@@ -45,9 +45,12 @@ func (m *mockStore) GetPostingActivity(_ context.Context) (*store.PostingActivit
 func (m *mockStore) GetDatabaseHealth(_ context.Context) (*store.DatabaseHealth, error) {
 	return m.dbHealth, m.dbHealthErr
 }
+func (m *mockStore) GetHealthHistory(_ context.Context, _ time.Time, _ int) ([]store.StatsSnapshot, error) {
+	return m.history, m.historyErr
+}
 
 func newTestServer(ms *mockStore) *Server {
-	return New(ms, 0)
+	return New(ms, 0, HealthChartConfig{})
 }
 
 func doRequest(s *Server, method, path string) *httptest.ResponseRecorder {
