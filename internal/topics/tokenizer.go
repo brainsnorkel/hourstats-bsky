@@ -3,6 +3,7 @@ package topics
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var (
@@ -92,20 +93,64 @@ const minRepetitionWords = 8
 // spam like "TRUMP EPSTEIN TRUMP EPSTEIN…" scores < 0.1.
 const maxRepetitionRatio = 0.3
 
+// maxWordRepetitions is the maximum number of times any single word
+// may appear before the post is considered keyword-stuffed. This catches
+// posts with a normal preamble followed by a spam tail, which the ratio
+// check alone misses because the preamble dilutes the unique/total ratio.
+const maxWordRepetitions = 4
+
 // IsRepetitive returns true if the text appears to be keyword-stuffed
 // (the same few words repeated many times to game trending topics).
+// It checks two conditions (either triggers a true result):
+//  1. Low unique/total word ratio (catches pure repetition)
+//  2. Any single word appearing more than maxWordRepetitions times
+//     (catches "normal preamble + spam tail" patterns)
 func IsRepetitive(text string) bool {
 	text = strings.ToLower(text)
 	words := strings.Fields(text)
 	if len(words) < minRepetitionWords {
 		return false
 	}
-	unique := make(map[string]bool, len(words))
+
+	freq := make(map[string]int, len(words))
 	for _, w := range words {
-		unique[w] = true
+		w = stripWordPunctuation(w)
+		if w == "" {
+			continue
+		}
+		freq[w]++
 	}
-	ratio := float64(len(unique)) / float64(len(words))
-	return ratio < maxRepetitionRatio
+
+	total := 0
+	for _, c := range freq {
+		total += c
+	}
+	if total < minRepetitionWords {
+		return false
+	}
+
+	// Check 1: overall unique/total ratio.
+	ratio := float64(len(freq)) / float64(total)
+	if ratio < maxRepetitionRatio {
+		return true
+	}
+
+	// Check 2: any single word repeated excessively.
+	for _, count := range freq {
+		if count > maxWordRepetitions {
+			return true
+		}
+	}
+
+	return false
+}
+
+// stripWordPunctuation removes leading/trailing punctuation from a word,
+// keeping internal characters like hyphens and apostrophes intact.
+func stripWordPunctuation(word string) string {
+	return strings.TrimFunc(word, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '\''
+	})
 }
 
 var stopwords = map[string]bool{

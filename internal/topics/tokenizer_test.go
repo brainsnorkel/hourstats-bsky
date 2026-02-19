@@ -177,12 +177,53 @@ func TestIsRepetitive_KeywordStuffing(t *testing.T) {
 		{"empty", "", false},
 		{"moderate_repetition", "trump trump election vote trump election rally crowd trump supporters rally", false},
 		{"three_word_spam", "buy now buy now buy now buy now buy now buy now", true},
+		{
+			"preamble_then_spam",
+			"KASH PATEL IS NOW TALKING ABOUT \u201cANTIFA FUNDERS\u201d INSTEAD OF THE EPSTEIN FILES JUSTICE FOR THE SURVIVORS Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein, Trump-Epstein.....",
+			true,
+		},
+		{
+			"hyphenated_spam",
+			"TRUMP-EPSTEIN FILES TRUMP-EPSTEIN FILES TRUMP-EPSTEIN FILES TRUMP-EPSTEIN FILES TRUMP-EPSTEIN FILES TRUMP-EPSTEIN FILES TRUMP-EPSTEIN FILES TRUMP-EPSTEIN FILES",
+			true,
+		},
+		{
+			"punctuation_disguised_spam",
+			"Epstein! Epstein? Epstein... Epstein, Epstein; Epstein: Epstein! Epstein? Epstein...",
+			true,
+		},
+		{"four_repetitions_ok", "trump mentioned trump again said trump today trump statement was clear and direct", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := IsRepetitive(tt.text)
 			if got != tt.want {
 				t.Errorf("IsRepetitive(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripWordPunctuation(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"trump-epstein,", "trump-epstein"},
+		{"trump-epstein.....", "trump-epstein"},
+		{"survivors!!!!", "survivors"},
+		{"\u201cantifa", "antifa"},
+		{"funders\u201d", "funders"},
+		{"hello", "hello"},
+		{"it's", "it's"},
+		{"...", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := stripWordPunctuation(tt.input)
+			if got != tt.want {
+				t.Errorf("stripWordPunctuation(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
