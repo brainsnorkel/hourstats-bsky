@@ -131,6 +131,10 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 				slog.Info("exemplar: below threshold", "topic", result[i].Cluster.Label, "handle", c.Handle, "score", c.MatchScore, "threshold", threshold)
 				continue
 			}
+			if IsRepetitive(c.Text) {
+				slog.Info("exemplar: skipping repetitive post", "topic", result[i].Cluster.Label, "handle", c.Handle)
+				continue
+			}
 			result[i].ExemplarURI = c.URI
 			result[i].ExemplarHandle = c.Handle
 			selectedText[i] = c.Text
