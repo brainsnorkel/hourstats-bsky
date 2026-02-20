@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 )
 
 // JSON response types matching API output
@@ -262,6 +263,24 @@ func cmdSummary() {
 	printPostingEntry("Yearly", posting.YearlyChart)
 	printPostingEntry("Daily Quote", posting.DailyQuote)
 	printPostingEntry("Topics", posting.TrendingTopics)
+	fmt.Println()
+
+	walPressureBody, _ := apiGet(fmt.Sprintf("/stats/events?hours=%d&limit=100&type=wal_pressure_checkpoint", *hours))
+	var walEvents []Event
+	if walPressureBody != nil {
+		json.Unmarshal(walPressureBody, &walEvents)
+	}
+
+	fmt.Println("--- WAL Pressure ---")
+	fmt.Printf("WAL size:    %s\n", formatBytes(snap.WALSizeBytes))
+	if len(walEvents) == 0 {
+		fmt.Printf("Checkpoints: none in %dh\n", *hours)
+	} else {
+		fmt.Printf("Checkpoints: %d in %dh\n", len(walEvents), *hours)
+		for _, e := range walEvents {
+			fmt.Printf("  %s  %s\n", formatTime(e.EventTime), e.Details)
+		}
+	}
 }
 
 func cmdLatest() {
@@ -518,22 +537,32 @@ func cmdPlot() {
 	width := 60
 	fmt.Printf("=== Health Metrics (%d points, %dh window) ===\n\n", len(snaps), *hours)
 
-	printSparkRow("Heap InUse", width, snaps, func(s Snapshot) float64 { return float64(s.HeapInuseBytes) / (1024 * 1024) }, "MB")
-	printSparkRow("Sys Memory", width, snaps, func(s Snapshot) float64 { return float64(s.SysBytes) / (1024 * 1024) }, "MB")
-	printSparkRow("WAL Size", width, snaps, func(s Snapshot) float64 { return float64(s.WALSizeBytes) / (1024 * 1024) }, "MB")
-	printSparkRow("Write Queue", width, snaps, func(s Snapshot) float64 { return float64(s.WriteChannelDepth) }, "")
-	printSparkRow("GC Pause", width, snaps, func(s Snapshot) float64 { return float64(s.GCPauseTotalNs) / 1e6 }, "ms")
-	printSparkRow("GC CPU %", width, snaps, func(s Snapshot) float64 { return s.GCCPUFraction * 100 }, "%")
-	printSparkRow("Goroutines", width, snaps, func(s Snapshot) float64 { return float64(s.GoroutineCount) }, "")
-	printSparkRow("Cycle Dur", width, snaps, func(s Snapshot) float64 { return float64(s.CycleDurationMs) / 1000 }, "s")
-	printSparkRow("Slow Flush", width, snaps, func(s Snapshot) float64 { return float64(s.SlowFlushCount) }, "")
+	type metric struct {
+		label   string
+		extract func(Snapshot) float64
+		unit    string
+	}
+	metrics := []metric{
+		{"Heap InUse", func(s Snapshot) float64 { return float64(s.HeapInuseBytes) / (1024 * 1024) }, "MB"},
+		{"Sys Memory", func(s Snapshot) float64 { return float64(s.SysBytes) / (1024 * 1024) }, "MB"},
+		{"WAL Size", func(s Snapshot) float64 { return float64(s.WALSizeBytes) / (1024 * 1024) }, "MB"},
+		{"Write Queue", func(s Snapshot) float64 { return float64(s.WriteChannelDepth) }, ""},
+		{"GC Pause", func(s Snapshot) float64 { return float64(s.GCPauseTotalNs) / 1e6 }, "ms"},
+		{"GC CPU %", func(s Snapshot) float64 { return s.GCCPUFraction * 100 }, "%"},
+		{"Goroutines", func(s Snapshot) float64 { return float64(s.GoroutineCount) }, ""},
+		{"Cycle Dur", func(s Snapshot) float64 { return float64(s.CycleDurationMs) / 1000 }, "s"},
+		{"Slow Flush", func(s Snapshot) float64 { return float64(s.SlowFlushCount) }, ""},
+	}
+	for i, m := range metrics {
+		printSparkRow(m.label, width, snaps, m.extract, m.unit, i)
+	}
 
 	fmt.Printf("\nTime range: %s → %s\n",
 		formatTime(snaps[0].SnapshotTime),
 		formatTime(snaps[len(snaps)-1].SnapshotTime))
 }
 
-func printSparkRow(label string, width int, snaps []Snapshot, extract func(Snapshot) float64, unit string) {
+func printSparkRow(label string, width int, snaps []Snapshot, extract func(Snapshot) float64, unit string, rowIdx int) {
 	blocks := []rune(" ▁▂▃▄▅▆▇█")
 	values := make([]float64, len(snaps))
 	var min, max float64
@@ -567,11 +596,24 @@ func printSparkRow(label string, width int, snaps []Snapshot, extract func(Snaps
 	}
 
 	last := values[len(values)-1]
-	fmt.Printf("%-12s %s  now: %s%s  (min: %s, max: %s)\n",
+	line := fmt.Sprintf("%-12s %s  now: %s%s  (min: %s, max: %s)",
 		label, spark.String(),
 		formatFloat(last), unit,
 		formatFloat(min)+unit,
 		formatFloat(max)+unit)
+
+	// Pad to uniform width for consistent background stripes
+	const lineWidth = 120
+	if runeLen := utf8.RuneCountInString(line); runeLen < lineWidth {
+		line += strings.Repeat(" ", lineWidth-runeLen)
+	}
+
+	// Alternating row backgrounds: white / very light yellow (24-bit ANSI)
+	bg := "\033[48;2;255;255;255m" // white
+	if rowIdx%2 == 1 {
+		bg = "\033[48;2;255;255;224m" // light yellow
+	}
+	fmt.Printf("%s%s\033[0m\n", bg, line)
 }
 
 func resample(values []float64, width int) []float64 {

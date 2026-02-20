@@ -884,7 +884,8 @@ func TestRunWALCheckpoint(t *testing.T) {
 	}
 
 	// RunWALCheckpoint has no return value; just verify it doesn't panic.
-	s.RunWALCheckpoint(ctx)
+	// Use a high threshold so the test exercises the PASSIVE path.
+	s.RunWALCheckpoint(ctx, 50*1024*1024)
 }
 
 func TestRunStartupMaintenance(t *testing.T) {
