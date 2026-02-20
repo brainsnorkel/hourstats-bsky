@@ -224,7 +224,7 @@ func filterGenericClusters(clusters []TopicCluster) []TopicCluster {
 	var filtered []TopicCluster
 	for _, c := range clusters {
 		lower := strings.ToLower(strings.TrimSpace(c.Label))
-		if lower == "__discard__" {
+		if strings.Trim(lower, "_ ") == "discard" {
 			continue
 		}
 		words := strings.Fields(lower)
