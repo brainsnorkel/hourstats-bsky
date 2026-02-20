@@ -71,17 +71,23 @@ This query runs on the read connection and only executes during trending post hy
 
 `RunStartupMaintenance()` in `store.go` runs once on process start, before the firehose connects:
 
-1. **DROP and recreate `token_postings`** — clears the bloated table. The schema is preserved in `migrate()` for backwards compatibility, but the table is emptied on every deploy. This took ~22 minutes on the first run against the 3.3GB staging database; future runs are near-instant since the table is always empty.
+1. **WAL checkpoint TRUNCATE** — forces all WAL content into the main database file and resets the WAL to zero bytes. This runs **first**, before any heavy deletes, because a bloated WAL makes subsequent writes glacially slow. At startup no other goroutines are running, so the exclusive lock always succeeds. (This ordering was changed after a Feb 2025 incident where a 405MB WAL made the subsequent purge DELETEs take minutes instead of milliseconds.)
 
-2. **Purge stale `post_buffer` rows** (older than 3 hours) and **stale `topic_tokens`** (older than 26 hours). This cleans up data that accumulated while the process was down.
+2. **DROP and recreate `token_postings`** — clears the bloated table. The schema is preserved in `migrate()` for backwards compatibility, but the table is emptied on every deploy. This took ~22 minutes on the first run against the 3.3GB staging database; future runs are near-instant since the table is always empty.
 
-3. **WAL checkpoint TRUNCATE** — forces all WAL content into the main database file and resets the WAL to zero bytes. This requires an exclusive lock, which is safe at startup because no other goroutines are running yet.
+3. **Purge stale `post_buffer` rows** (older than 3 hours) and **stale `topic_tokens`** (older than 26 hours). This cleans up data that accumulated while the process was down.
 
-### 3. Periodic WAL checkpoints
+### 3. Periodic WAL checkpoints (with pressure-based escalation)
 
-A new `maintDB` connection pool (1 connection, 1-second busy_timeout) runs `PRAGMA wal_checkpoint(PASSIVE)` every 5 minutes from the main scheduler loop. PASSIVE mode checkpoints whatever WAL frames it can without blocking writers — if the writer is mid-transaction, it simply does nothing and tries again in 5 minutes.
+A `maintDB` connection pool (1 connection, 1-second busy_timeout) runs `PRAGMA wal_checkpoint(PASSIVE)` every 5 minutes from the main scheduler loop. PASSIVE mode checkpoints whatever WAL frames it can without blocking writers — if the writer is mid-transaction, it simply does nothing and tries again in 5 minutes.
 
 Using a separate connection pool with a short timeout means the checkpoint never contends with the write path. The write pool has a 30-second busy_timeout; the maintenance pool has 1 second and silently gives up if it can't acquire the lock.
+
+**Pressure-based escalation:** If the WAL file exceeds a configurable threshold (default 50MB, set via `WAL_CHECKPOINT_THRESHOLD_MB`), `RunWALCheckpoint()` escalates from PASSIVE on `maintDB` to TRUNCATE on `writeDB`. The `writeDB` has a 30-second busy_timeout, so TRUNCATE can wait for active readers to finish. This prevents unbounded WAL growth during long analysis cycles where PASSIVE checkpoints silently fail for extended periods.
+
+The escalation decision uses `os.Stat()` on the WAL file (not a PRAGMA) because file size is immediately available without acquiring a database lock. The function returns a `WALCheckpointResult` struct (`Escalated`, `Completed`, `WALBefore`, `WALAfter`) that the caller uses to log `wal_pressure_checkpoint` events for operational visibility.
+
+**Why this matters:** During long analysis cycles (10+ minutes), all `readDB` connections may hold read transactions that prevent PASSIVE checkpoints from making progress. Every 5-minute PASSIVE attempt silently does nothing. The WAL grows by ~2MB/minute under normal firehose load, so a 30-minute analysis cycle can add 60MB+ to the WAL. Without pressure escalation, back-to-back long cycles can push the WAL past 400MB, degrading write performance and risking disk exhaustion.
 
 ### 4. Larger, less frequent batches
 
@@ -104,12 +110,16 @@ Jetstream WebSocket (~1,500 English posts/min)
         v
   [Write flusher goroutine]           [Main scheduler goroutine]
   Every 2s or 1500 posts:             Every 5 min:
-    BEGIN                               maintDB: PRAGMA wal_checkpoint(PASSIVE)
-      INSERT post_buffer (batch)
-    COMMIT                            On startup:
-    BEGIN                               writeDB: DROP/recreate token_postings
-      INSERT topic_tokens (batch)       writeDB: purge stale rows
-    COMMIT                              writeDB: PRAGMA wal_checkpoint(TRUNCATE)
+    BEGIN                               IF wal < threshold:
+      INSERT post_buffer (batch)          maintDB: PRAGMA wal_checkpoint(PASSIVE)
+    COMMIT                              ELSE (pressure escalation):
+    BEGIN                                 writeDB: PRAGMA wal_checkpoint(TRUNCATE)
+      INSERT topic_tokens (batch)         log wal_pressure_checkpoint event
+    COMMIT
+                                      On startup (in this order):
+                                        1. writeDB: PRAGMA wal_checkpoint(TRUNCATE)
+                                        2. writeDB: DROP/recreate token_postings
+                                        3. writeDB: purge stale rows
 
   Read connections (up to 4 concurrent):
     - Analysis cycle: read post_buffer
@@ -138,10 +148,10 @@ Jetstream WebSocket (~1,500 English posts/min)
 
 | File | What changed |
 |------|-------------|
-| `internal/store/store.go` | Added `maintDB` pool, `RunStartupMaintenance()`, `RunWALCheckpoint()` |
+| `internal/store/store.go` | Added `maintDB` pool, `RunStartupMaintenance()`, `RunWALCheckpoint()` with pressure-based escalation (`WALCheckpointResult`), `walFileSize()` helper |
 | `internal/store/write_batch.go` | Removed `token_postings` INSERTs from `FlushTokenBatch()` |
 | `internal/store/topic_store.go` | Rewrote `GetExemplarCandidates()` to use `json_each()`. Removed `token_postings` writes from `InsertTopicTokens()` and purges from `PurgeTopicTokens()` |
-| `cmd/hourstats/main.go` | Added `RunStartupMaintenance()` call, WAL checkpoint ticker, changed batch 150/500ms → 1500/2s |
+| `cmd/hourstats/main.go` | Added `RunStartupMaintenance()` call, WAL checkpoint ticker with pressure threshold (`WAL_CHECKPOINT_THRESHOLD_MB`), `wal_pressure_checkpoint` event logging, changed batch 150/500ms → 1500/2s |
 | `internal/store/write_batch_test.go` | Updated to expect 0 `token_postings` rows |
 | `internal/store/topic_store_test.go` | Updated test names and assertions for new behaviour |
 
@@ -157,7 +167,7 @@ With 1,500-post batches flushing in 250–1,200ms and a 50K channel buffer, the 
 
 1. **`slow write flush` log warnings** — if flush times consistently exceed 1 second at batch_size=1500, the write path is approaching saturation
 2. **`dropped_posts` in stats snapshots** — any non-zero value means the channel buffer is filling faster than the flusher can drain it
-3. **WAL file size** — should stay under 100MB between checkpoints. If it grows persistently, the PASSIVE checkpoints aren't getting through
+3. **WAL file size** — should stay under 100MB between checkpoints. The system auto-escalates to TRUNCATE when the WAL exceeds `WAL_CHECKPOINT_THRESHOLD_MB` (default 50MB), logging a `wal_pressure_checkpoint` event. Check recent events via `hourstats-stats summary`. If the WAL grows persistently despite escalation, readers may be holding transactions open longer than the 30-second writeDB timeout
 4. **Disk usage** — the 5GB volume is 89% full after the fix. The freed pages from DROP TABLE are available as SQLite free pages but the OS still sees the 3.3GB file. VACUUM would reclaim them but requires ~3.3GB of temporary disk space
 5. **post_buffer row count** — currently ~40K rows at any time (2-hour retention). If this grows significantly, post writes are falling behind purges
 

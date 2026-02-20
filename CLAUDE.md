@@ -51,6 +51,9 @@ fly ssh console -a hourstats-prod       # SSH into production
 | `GOOGLE_AI_API_KEY` | (required if trending) | Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model for topic grouping |
 | `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily backups |
+| `WAL_CHECKPOINT_THRESHOLD_MB` | `50` | WAL size (MB) that triggers TRUNCATE escalation |
+| `HEALTH_CHART_HOURS` | `6` | Default hours for health chart generation |
+| `HEALTH_CHART_MEMORY_LIMIT_MB` | `512` | Memory limit line on health charts |
 
 ## Architecture
 
@@ -68,7 +71,7 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 | **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply |
 | **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile |
 | **Stall Detection** | 5m ticker | Warns if no posts received recently |
-| **WAL Checkpoint** | 5m ticker | Passive SQLite WAL checkpoint |
+| **WAL Checkpoint** | 5m ticker | Pressure-based WAL checkpoint: PASSIVE under threshold, TRUNCATE over threshold (default 50MB) |
 
 Wall-clock aligned scheduling: tickers fire at UTC clock boundaries so deploys don't shift the schedule. An optional offset (`ANALYSIS_OFFSET_MINUTES`) shifts the fire point within each interval.
 

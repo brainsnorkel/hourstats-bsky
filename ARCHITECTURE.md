@@ -105,7 +105,7 @@ All state stored in a single SQLite file on Fly.io persistent volume (`/data/hou
 | `readDB` | 4 | 30s | All reads (analysis, topics, stats API). `query_only=ON` pragma. |
 | `maintDB` | 1 | 1s | WAL checkpoints only. Short timeout so it never blocks writers. |
 
-On startup, `RunStartupMaintenance()` cleans derived tables, purges stale rows, and forces a WAL checkpoint before the firehose connects. During operation, `RunWALCheckpoint()` runs PASSIVE checkpoints every 5 minutes via the maintenance pool. See [docs/WRITE_BOTTLENECK_FIX.md](docs/WRITE_BOTTLENECK_FIX.md) for the full write path design and scaling guidance.
+On startup, `RunStartupMaintenance()` forces a WAL checkpoint (TRUNCATE) **first** — before any heavy deletes — then cleans derived tables and purges stale rows. During operation, `RunWALCheckpoint()` runs every 5 minutes with pressure-based escalation: PASSIVE on `maintDB` when the WAL is under the threshold, TRUNCATE on `writeDB` (30s busy timeout) when the WAL exceeds it. The threshold defaults to 50MB and is configurable via `WAL_CHECKPOINT_THRESHOLD_MB`. Pressure escalation events are logged as `wal_pressure_checkpoint` stats events. See [docs/WRITE_BOTTLENECK_FIX.md](docs/WRITE_BOTTLENECK_FIX.md) for the full write path design and scaling guidance.
 
 ### Tables
 
@@ -139,6 +139,9 @@ On startup, `RunStartupMaintenance()` cleans derived tables, purges stale rows, 
 | `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily SQLite backups |
 | `S3_BACKUP_REGION` | `us-west-2` | AWS region for S3 backups |
 | `BACKUP_RETAIN_DAYS` | `1` | Local backup retention |
+| `WAL_CHECKPOINT_THRESHOLD_MB` | `50` | WAL size (MB) that triggers TRUNCATE escalation |
+| `HEALTH_CHART_HOURS` | `6` | Default hours for health chart generation |
+| `HEALTH_CHART_MEMORY_LIMIT_MB` | `512` | Memory limit line on health charts |
 | `AWS_ACCESS_KEY_ID` | (optional) | AWS credentials for S3 backups |
 | `AWS_SECRET_ACCESS_KEY` | (optional) | AWS credentials for S3 backups |
 

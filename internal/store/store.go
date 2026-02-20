@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -183,8 +184,19 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) RunStartupMaintenance(ctx context.Context) error {
-	slog.Info("startup maintenance: cleaning derived tables")
+	slog.Info("startup maintenance: starting")
 
+	walBefore := s.walFileSize()
+	slog.Info("startup maintenance: WAL checkpoint", "wal_mb", walBefore/(1024*1024))
+	if _, err := s.writeDB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		slog.Warn("startup WAL checkpoint failed", "error", err, "wal_mb", walBefore/(1024*1024))
+	} else {
+		walAfter := s.walFileSize()
+		slog.Info("startup maintenance: WAL checkpoint complete",
+			"wal_before_mb", walBefore/(1024*1024), "wal_after_mb", walAfter/(1024*1024))
+	}
+
+	slog.Info("startup maintenance: cleaning derived tables")
 	if _, err := s.writeDB.ExecContext(ctx, "DROP TABLE IF EXISTS token_postings"); err != nil {
 		slog.Warn("drop token_postings failed", "error", err)
 	}
@@ -215,18 +227,69 @@ func (s *Store) RunStartupMaintenance(ctx context.Context) error {
 		}
 	}
 
-	if _, err := s.writeDB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		slog.Warn("startup WAL checkpoint failed", "error", err)
-	} else {
-		slog.Info("startup maintenance: WAL checkpoint complete")
-	}
-
 	slog.Info("startup maintenance complete")
 	return nil
 }
 
-func (s *Store) RunWALCheckpoint(ctx context.Context) {
-	s.maintDB.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)")
+// WALCheckpointResult reports what happened during a WAL checkpoint attempt.
+type WALCheckpointResult struct {
+	Escalated bool
+	Completed bool
+	WALBefore int64
+	WALAfter  int64
+}
+
+// RunWALCheckpoint runs an opportunistic WAL checkpoint. If the WAL exceeds
+// pressureThreshold bytes, it escalates from PASSIVE (non-blocking, on the
+// low-priority maintDB) to TRUNCATE (blocking, on the writeDB with 30 s busy
+// timeout) to prevent unbounded WAL growth during long-running read transactions.
+func (s *Store) RunWALCheckpoint(ctx context.Context, pressureThreshold int64) WALCheckpointResult {
+	walSize := s.walFileSize()
+
+	if walSize < pressureThreshold {
+		var busy, logFrames, checkpointed int
+		row := s.maintDB.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)")
+		if err := row.Scan(&busy, &logFrames, &checkpointed); err != nil {
+			return WALCheckpointResult{}
+		}
+		if logFrames > 0 {
+			slog.Debug("wal checkpoint (passive)", "wal_mb", walSize/(1024*1024),
+				"log_frames", logFrames, "checkpointed", checkpointed)
+		}
+		return WALCheckpointResult{}
+	}
+
+	slog.Warn("wal pressure: forcing truncate checkpoint",
+		"wal_mb", walSize/(1024*1024), "threshold_mb", pressureThreshold/(1024*1024))
+
+	var busy, logFrames, checkpointed int
+	row := s.writeDB.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+	if err := row.Scan(&busy, &logFrames, &checkpointed); err != nil {
+		slog.Error("wal checkpoint (truncate) failed", "error", err,
+			"wal_mb", walSize/(1024*1024))
+		return WALCheckpointResult{Escalated: true, WALBefore: walSize, WALAfter: walSize}
+	}
+
+	afterSize := s.walFileSize()
+	completed := busy == 0
+	if !completed {
+		slog.Warn("wal checkpoint (truncate) incomplete — readers blocking",
+			"wal_before_mb", walSize/(1024*1024),
+			"wal_after_mb", afterSize/(1024*1024),
+			"log_frames", logFrames, "checkpointed", checkpointed)
+	} else {
+		slog.Info("wal checkpoint (truncate) complete",
+			"wal_before_mb", walSize/(1024*1024),
+			"wal_after_mb", afterSize/(1024*1024))
+	}
+	return WALCheckpointResult{Escalated: true, Completed: completed, WALBefore: walSize, WALAfter: afterSize}
+}
+
+func (s *Store) walFileSize() int64 {
+	if info, err := os.Stat(s.dbPath + "-wal"); err == nil {
+		return info.Size()
+	}
+	return 0
 }
 
 // RunVacuum reclaims freelist pages from high-churn tables (post_buffer, topic_tokens).

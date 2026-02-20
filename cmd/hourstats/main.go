@@ -37,6 +37,7 @@ func main() {
 
 	healthChartHours := envInt("HEALTH_CHART_HOURS", 6)
 	healthChartMemoryLimitMB := envInt("HEALTH_CHART_MEMORY_LIMIT_MB", 512)
+	walCheckpointThresholdMB := envInt("WAL_CHECKPOINT_THRESHOLD_MB", 50)
 
 	if trendingEnabled && geminiAPIKey == "" {
 		slog.Error("TRENDING_ENABLED=true but GOOGLE_AI_API_KEY is empty, disabling trending")
@@ -202,7 +203,16 @@ func main() {
 			}
 
 		case <-walCheckpointTicker.C:
-			db.RunWALCheckpoint(ctx)
+			result := db.RunWALCheckpoint(ctx, int64(walCheckpointThresholdMB)*1024*1024)
+			if result.Escalated {
+				status := "incomplete"
+				if result.Completed {
+					status = "complete"
+				}
+				_ = collector.LogEvent(ctx, "wal_pressure_checkpoint",
+					fmt.Sprintf("before=%dMB after=%dMB status=%s",
+						result.WALBefore/(1024*1024), result.WALAfter/(1024*1024), status))
+			}
 		}
 	}
 }
