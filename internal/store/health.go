@@ -61,9 +61,9 @@ func (s *Store) GetDatabaseHealth(ctx context.Context) (*DatabaseHealth, error) 
 	specs := []tableSpec{
 		{
 			name:      "post_buffer",
-			retention: "7h",
+			retention: "3h",
 			staleSQL:  "SELECT COUNT(*) FROM post_buffer WHERE inserted_at < ?",
-			cutoff:    func() string { return now.Add(-7 * time.Hour).Format(time.RFC3339) },
+			cutoff:    func() string { return now.Add(-3 * time.Hour).Format(time.RFC3339) },
 		},
 		{
 			name:      "topic_tokens",
