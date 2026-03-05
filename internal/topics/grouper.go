@@ -117,7 +117,8 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 		return fallbackClusters(terms), nil
 	}
 
-	prompt := buildPrompt(terms)
+	headlines := FetchHeadlines(ctx)
+	prompt := buildPrompt(terms, headlines)
 
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
@@ -319,12 +320,22 @@ func detectOverlappingPhrases(terms []TermScore) []detectedPhrase {
 	return phrases
 }
 
-func buildPrompt(terms []TermScore) string {
+func buildPrompt(terms []TermScore, headlines []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Group these %d TF-IDF terms from recent Bluesky posts into trending topics.\n\n", len(terms))
 	b.WriteString("Terms (score):\n")
 	for _, t := range terms {
 		fmt.Fprintf(&b, "- %s (%.2f)\n", t.Term, t.Score)
+	}
+
+	if len(headlines) > 0 {
+		b.WriteString("\nCURRENT NEWS HEADLINES (for disambiguation only):\n")
+		for _, h := range headlines {
+			fmt.Fprintf(&b, "- %s\n", h)
+		}
+		b.WriteString("Use these ONLY to pick the correct event name when TF-IDF terms are ambiguous.\n")
+		b.WriteString("If terms don't match any headline, label based on the terms alone.\n")
+		b.WriteString("Bluesky-specific topics (memes, community trends) will NOT appear in headlines — that is expected.\n\n")
 	}
 
 	if phrases := detectOverlappingPhrases(terms); len(phrases) > 0 {

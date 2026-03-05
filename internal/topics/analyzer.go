@@ -104,6 +104,8 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		return nil
 	}
 
+	clusters = MergeSimilarClusters(clusters, terms)
+
 	ranked := RankTopics(clusters, rows)
 	if len(ranked) == 0 {
 		slog.Warn("topics: no ranked topics produced")
@@ -174,7 +176,6 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	previousCutoff := time.Now().UTC().Add(-12 * time.Hour).Format(time.RFC3339)
 	prevSnapshots, _ := a.store.GetTopicSnapshotsSince(ctx, previousCutoff)
 	var previous []IdentifiedTopic
-	var previousFull []IdentifiedTopic
 	if len(prevSnapshots) > 0 {
 		prevTime := ""
 		for _, s := range prevSnapshots {
@@ -184,29 +185,10 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		}
 		for _, s := range prevSnapshots {
 			if s.SnapshotTime == prevTime {
-				var kws []string
-				if err := json.Unmarshal([]byte(s.Keywords), &kws); err != nil {
-					slog.Warn("topics: unmarshal prev snapshot keywords", "error", err, "snapshot_id", s.ID, "label", s.Label)
-				}
-				var syns []string
-				if err := json.Unmarshal([]byte(s.Synonyms), &syns); err != nil {
-					slog.Warn("topics: unmarshal prev snapshot synonyms", "error", err, "snapshot_id", s.ID, "label", s.Label)
-				}
-				full := IdentifiedTopic{
-					RankedTopic: RankedTopic{
-						Cluster:           TopicCluster{Label: s.Label, Description: s.Description, Keywords: kws, Synonyms: syns, IsMeme: s.IsMeme},
-						UniqueAuthorCount: s.UniqueAuthorCount,
-					},
-					TopicID: s.TopicID,
-					Rank:    s.Rank,
-				}
 				previous = append(previous, IdentifiedTopic{TopicID: s.TopicID, Rank: s.Rank})
-				previousFull = append(previousFull, full)
 			}
 		}
 	}
-
-	latestTopics = backfillFromPrevious(latestTopics, previousFull)
 
 	latestTopics, err = a.hydrator.HydrateExemplars(ctx, latestTopics)
 	if err != nil {
@@ -248,50 +230,6 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		slog.Warn("topics: failed to record trending post time", "error", err)
 	}
 	return nil
-}
-
-func backfillFromPrevious(current, previous []IdentifiedTopic) []IdentifiedTopic {
-	if len(current) >= TopTopics || len(previous) == 0 {
-		return current
-	}
-
-	currentIDs := make(map[string]bool, len(current))
-	for _, t := range current {
-		currentIDs[t.TopicID] = true
-	}
-
-	nextRank := len(current) + 1
-	for _, prev := range previous {
-		if len(current) >= TopTopics {
-			break
-		}
-		if currentIDs[prev.TopicID] {
-			continue
-		}
-		if overlapsCurrent(prev, current) {
-			slog.Info("topics: skipped backfill (semantic overlap)", "topic", prev.Cluster.Label)
-			continue
-		}
-		backfilled := prev
-		backfilled.Rank = nextRank
-		backfilled.ExemplarURI = ""
-		backfilled.ExemplarHandle = ""
-		current = append(current, backfilled)
-		currentIDs[prev.TopicID] = true
-		nextRank++
-		slog.Info("topics: backfilled from previous cycle", "topic", prev.Cluster.Label, "rank", backfilled.Rank)
-	}
-
-	return current
-}
-
-func overlapsCurrent(candidate IdentifiedTopic, current []IdentifiedTopic) bool {
-	for _, c := range current {
-		if jaccard(candidate.Cluster.Keywords, c.Cluster.Keywords) > jaccardThreshold {
-			return true
-		}
-	}
-	return false
 }
 
 func convertFacets(facets []Facet) []*bsky.RichtextFacet {
