@@ -15,6 +15,11 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
 
+// minPostsRequired is the minimum post count per analysis window. Below this,
+// the run is marked low-confidence: sentiment is still recorded, but posting to
+// Bluesky and charting are skipped to avoid misleading output from tiny samples.
+const minPostsRequired = 500
+
 // ---------------------------------------------------------------------------
 // 30-minute analysis cycle
 // ---------------------------------------------------------------------------
@@ -96,7 +101,6 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	// connection instability).  We still run sentiment + store the data point
 	// so there are no gaps in the historical record, but we don't publish a
 	// misleading summary or sparkline.
-	const minPostsRequired = 500
 	lowConfidence := len(posts) < minPostsRequired
 
 	if lowConfidence {

@@ -13,6 +13,30 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
+// filterHighConfidence drops sentiment data points whose sample size is below
+// minPostsRequired. Low-denominator points produce extreme percentages that
+// distort the chart; they are retained in sentiment_history for audit but
+// excluded from visualisations and aggregations.
+func filterHighConfidence(points []store.SentimentDataPoint) []store.SentimentDataPoint {
+	filtered := make([]store.SentimentDataPoint, 0, len(points))
+	var dropped int
+	for _, p := range points {
+		if p.TotalPosts < minPostsRequired {
+			dropped++
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	if dropped > 0 {
+		slog.Info("filtered low-confidence sentiment points",
+			"dropped", dropped,
+			"remaining", len(filtered),
+			"min_posts", minPostsRequired,
+		)
+	}
+	return filtered
+}
+
 // ---------------------------------------------------------------------------
 // Posting helpers
 // ---------------------------------------------------------------------------
@@ -46,8 +70,10 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 		slog.Error("get sentiment history failed", "error", err)
 		return "", ""
 	}
+
+	history = filterHighConfidence(history)
 	if len(history) < 2 {
-		slog.Info("insufficient data for sparkline", "points", len(history))
+		slog.Info("insufficient data for sparkline after low-confidence filter", "points", len(history))
 		return "", ""
 	}
 
