@@ -29,6 +29,8 @@ func runDailyAggregation(ctx context.Context, db *store.Store) {
 		return
 	}
 
+	history = filterHighConfidence(history)
+
 	var dayPoints []store.SentimentDataPoint
 	for _, h := range history {
 		if h.Timestamp.Format("2006-01-02") == yesterday {
