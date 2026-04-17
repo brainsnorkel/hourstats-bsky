@@ -8,42 +8,55 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
+// docEntry records a (capped) term frequency contribution from a single doc.
+type docEntry struct {
+	tf int // already capped at MaxTermFreqPerDoc
+}
+
 func ComputeTFIDF(rows []store.TopicTokenRow) []TermScore {
 	if len(rows) == 0 {
 		return nil
 	}
 
 	totalDocs := float64(len(rows))
-	docFreq := make(map[string]int)
+	// inverted maps term -> per-doc TF contributions (length == DF).
+	inverted := make(map[string][]docEntry)
 	authorFreq := make(map[string]map[string]bool) // term -> set of author DIDs
-	termFreqs := make([]map[string]int, len(rows))
 
-	for i, row := range rows {
+	for _, row := range rows {
 		var tokens []string
 		if err := json.Unmarshal([]byte(row.Tokens), &tokens); err != nil {
 			continue
 		}
 
+		// Count raw TF for this doc.
 		tf := make(map[string]int)
-		seen := make(map[string]bool)
 		for _, tok := range tokens {
 			tf[tok]++
-			if !seen[tok] {
-				docFreq[tok]++
-				seen[tok] = true
-				if row.AuthorDID != "" {
-					if authorFreq[tok] == nil {
-						authorFreq[tok] = make(map[string]bool)
-					}
-					authorFreq[tok][row.AuthorDID] = true
+		}
+
+		// Append one docEntry per term seen in this doc; update authorFreq.
+		for tok, count := range tf {
+			capped := count
+			if capped > MaxTermFreqPerDoc {
+				capped = MaxTermFreqPerDoc
+			}
+			inverted[tok] = append(inverted[tok], docEntry{tf: capped})
+			if row.AuthorDID != "" {
+				if authorFreq[tok] == nil {
+					authorFreq[tok] = make(map[string]bool)
 				}
+				authorFreq[tok][row.AuthorDID] = true
 			}
 		}
-		termFreqs[i] = tf
 	}
 
-	tfidfScores := make(map[string]float64)
-	for term, df := range docFreq {
+	// Score: iterate inverted index once; DF == len(entries).
+	tfidfScores := make(map[string]float64, len(inverted))
+	docFreq := make(map[string]int, len(inverted))
+	for term, entries := range inverted {
+		df := len(entries)
+		docFreq[term] = df
 		if df < MinDocFrequency {
 			continue
 		}
@@ -52,17 +65,8 @@ func ComputeTFIDF(rows []store.TopicTokenRow) []TermScore {
 		}
 		idf := math.Log(totalDocs / float64(df))
 		var totalTFIDF float64
-		for _, tf := range termFreqs {
-			if tf == nil {
-				continue
-			}
-			if count, ok := tf[term]; ok {
-				capped := count
-				if capped > MaxTermFreqPerDoc {
-					capped = MaxTermFreqPerDoc
-				}
-				totalTFIDF += float64(capped) * idf
-			}
+		for _, e := range entries {
+			totalTFIDF += float64(e.tf) * idf
 		}
 		tfidfScores[term] = totalTFIDF
 	}

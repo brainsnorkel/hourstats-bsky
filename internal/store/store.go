@@ -136,6 +136,9 @@ func New(dbPath string) (*Store, error) {
 	readParams.Add("_pragma", "journal_mode(WAL)")
 	readParams.Add("_pragma", "foreign_keys(ON)")
 	readParams.Add("_pragma", "query_only(ON)")
+	readParams.Add("_pragma", "cache_size(-20000)")
+	readParams.Add("_pragma", "temp_store(MEMORY)")
+	readParams.Add("_pragma", "mmap_size(134217728)")
 	readDSN := fmt.Sprintf("file:%s?%s", dbPath, readParams.Encode())
 
 	readDB, err := sql.Open("sqlite", readDSN)
@@ -145,6 +148,7 @@ func New(dbPath string) (*Store, error) {
 	}
 	readDB.SetMaxOpenConns(4)
 	readDB.SetMaxIdleConns(4)
+	slog.Info("readDB pragmas set", "cache_size", "-20000 (20MB)", "temp_store", "MEMORY", "mmap_size", "128MB")
 
 	maintParams := url.Values{}
 	maintParams.Add("_pragma", "busy_timeout(1000)")
@@ -213,6 +217,9 @@ func (s *Store) RunStartupMaintenance(ctx context.Context) error {
 	}
 	if _, err := s.writeDB.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_token_postings_created_at ON token_postings(created_at)"); err != nil {
 		slog.Error("failed to create index", "index", "idx_token_postings_created_at", "error", err)
+	}
+	if _, err := s.writeDB.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_post_buffer_created_at ON post_buffer(created_at)"); err != nil {
+		slog.Error("failed to create index", "index", "idx_post_buffer_created_at", "error", err)
 	}
 
 	cutoff := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
