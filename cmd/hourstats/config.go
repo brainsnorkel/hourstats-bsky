@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -29,7 +29,7 @@ func envInt(key string, fallback int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		log.Printf("invalid %s=%q, using default %d", key, v, fallback)
+		fmt.Fprintf(os.Stderr, "invalid %s=%q, using default %d\n", key, v, fallback)
 		return fallback
 	}
 	return n
