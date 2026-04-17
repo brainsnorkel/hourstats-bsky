@@ -92,7 +92,11 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 		// If it's a rate limit error, wait and retry
 		if strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "rate") {
 			slog.Warn("API rate limit hit, waiting 5 seconds before retry", "attempt", retries+1)
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				return nil, "", false, stats, ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
 			continue
 		}
 
@@ -103,7 +107,11 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 				// Wait longer before retrying timeout errors
 				waitTime := time.Duration(retries+1) * 10 * time.Second
 				slog.Warn("waiting before retry", "duration", waitTime)
-				time.Sleep(waitTime)
+				select {
+				case <-ctx.Done():
+					return nil, "", false, stats, ctx.Err()
+				case <-time.After(waitTime):
+				}
 				continue
 			}
 			// After 3 retries, if it's a timeout at a high cursor, skip this cursor

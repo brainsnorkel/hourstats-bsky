@@ -17,6 +17,8 @@ kill_timeout = 15
   S3_BACKUP_BUCKET = "hourstats-sqlite-backups"
   S3_BACKUP_REGION = "us-west-2"
   BACKUP_RETAIN_DAYS = "7"
+  GOMEMLIMIT = "800MiB"
+  GOGC = "75"
 
 [mounts]
   source = "data"
