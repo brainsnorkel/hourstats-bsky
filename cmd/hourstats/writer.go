@@ -58,13 +58,39 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 		case <-ticker.C:
 			flush()
 		case <-ctx.Done():
-			// Drain remaining items from channel before exiting
+			// Drain remaining items from channel before exiting.
+			// ctx is already cancelled here, so use a fresh bounded context
+			// so that the final FlushPostBatch call actually reaches SQLite.
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer drainCancel()
+
+			drainFlush := func() {
+				if len(batch) == 0 {
+					return
+				}
+				n := len(batch)
+				if err := db.FlushPostBatch(drainCtx, batch); err != nil {
+					slog.Error("shutdown drain flush failed", "batch_size", n, "error", err)
+				}
+				if err := db.FlushTokenBatch(drainCtx, batch); err != nil {
+					slog.Warn("shutdown drain token flush failed", "batch_size", n, "error", err)
+				}
+				batch = batch[:0]
+			}
+
+			drained := 0
 			for {
 				select {
 				case w := <-ch:
 					batch = append(batch, w)
+					drained++
+				case <-drainCtx.Done():
+					slog.Warn("shutdown drain budget exceeded, some posts may be lost",
+						"remaining_batch", len(batch))
+					return
 				default:
-					flush()
+					drainFlush()
+					slog.Info("shutdown drain complete", "shutdown_drain_count", drained)
 					return
 				}
 			}

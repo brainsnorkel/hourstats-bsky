@@ -3,6 +3,7 @@ package topics
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -47,7 +48,13 @@ func (t *Tracker) AssignIdentities(ctx context.Context, ranked []RankedTopic) ([
 	pool := make([]parsedIdentity, len(existing))
 	for i, row := range existing {
 		var kws []string
-		_ = json.Unmarshal([]byte(row.Keywords), &kws)
+		if err := json.Unmarshal([]byte(row.Keywords), &kws); err != nil {
+			kwsTrunc := row.Keywords
+			if len(kwsTrunc) > 80 {
+				kwsTrunc = kwsTrunc[:80]
+			}
+			slog.Warn("malformed topic keywords JSON", "topic_id", row.TopicID, "keywords", kwsTrunc)
+		}
 		pool[i] = parsedIdentity{row: row, keywords: kws}
 	}
 

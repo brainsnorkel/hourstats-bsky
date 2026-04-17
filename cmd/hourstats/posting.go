@@ -99,10 +99,21 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 		sparkURI, sparkCID, err = bskyClient.PostWithImageAsReply(ctx, postText, imgData, altText, rootURI, rootCID, parentURI, parentCID)
 		if err != nil {
 			slog.Warn("sparkline reply failed, posting standalone", "error", err)
-			sparkURI, sparkCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+			var fallbackErr error
+			sparkURI, sparkCID, fallbackErr = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+			if fallbackErr != nil {
+				slog.Warn("sparkline fallback post failed", "error", fallbackErr)
+			}
 		}
 	} else {
-		sparkURI, sparkCID, _ = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+		var postErr error
+		sparkURI, sparkCID, postErr = bskyClient.PostWithImage(ctx, postText, imgData, altText)
+		if postErr != nil {
+			slog.Warn("sparkline fallback post failed", "error", postErr)
+		}
+	}
+	if sparkURI == "" || sparkCID == "" {
+		slog.Warn("sparkline URI/CID empty; trending attachment will be skipped")
 	}
 	slog.Info("sparkline posted", "points", len(history))
 	return sparkURI, sparkCID

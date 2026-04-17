@@ -208,8 +208,12 @@ func (s *Store) RunStartupMaintenance(ctx context.Context) error {
 	)`); err != nil {
 		return fmt.Errorf("recreate token_postings: %w", err)
 	}
-	s.writeDB.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_token_postings_token_created ON token_postings(token, created_at)")
-	s.writeDB.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_token_postings_created_at ON token_postings(created_at)")
+	if _, err := s.writeDB.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_token_postings_token_created ON token_postings(token, created_at)"); err != nil {
+		slog.Error("failed to create index", "index", "idx_token_postings_token_created", "error", err)
+	}
+	if _, err := s.writeDB.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_token_postings_created_at ON token_postings(created_at)"); err != nil {
+		slog.Error("failed to create index", "index", "idx_token_postings_created_at", "error", err)
+	}
 
 	cutoff := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
 	result, _ := s.writeDB.ExecContext(ctx, "DELETE FROM post_buffer WHERE inserted_at < ?", cutoff)
