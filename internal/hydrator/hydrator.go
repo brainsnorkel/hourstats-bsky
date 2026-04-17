@@ -108,10 +108,14 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 		defer cancel()
 	}
 
-	// Collect URIs.
+	// Collect URIs and build a URI→index map so each batch goroutine can
+	// mutate its posts in place. URIs are partitioned across disjoint batches,
+	// so writes touch disjoint slice elements without additional locking.
 	uris := make([]string, len(posts))
+	idx := make(map[string]int, len(posts))
 	for i, p := range posts {
 		uris[i] = p.URI
+		idx[p.URI] = i
 	}
 
 	// Split into batches.
@@ -179,6 +183,15 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 					slog.Error("hydrator update failed", "uri", v.Uri, "error", err)
 					errCount.Add(1)
 					continue
+				}
+
+				// Mirror the DB write to the in-memory slice so callers don't
+				// need a second GetPostsSince to see post-hydration state.
+				if i, ok := idx[v.Uri]; ok {
+					posts[i].AuthorHandle = handle
+					posts[i].Likes = likes
+					posts[i].Reposts = reposts
+					posts[i].Replies = replies
 				}
 				hydrated.Add(1)
 			}
