@@ -77,16 +77,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		"errors", result.Errors,
 	)
 
-	posts, err = db.GetPostsSince(ctx, cutoff)
-	if err != nil {
-		slog.Error("re-fetch posts failed", "error", err)
-		return
-	}
-
 	// Exclude posts that failed hydration (no author handle means the
 	// hydrator could not resolve them — deleted, private, or API error).
 	// Including them would skew sentiment with un-engageable ghost posts.
-	var hydrated []store.Post
+	hydrated := make([]store.Post, 0, len(posts))
 	for _, p := range posts {
 		if p.AuthorHandle != "" {
 			hydrated = append(hydrated, p)
