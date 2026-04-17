@@ -222,7 +222,9 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		if postedURI != "" {
 			runState.TopPostURI = postedURI
 			runState.TopPostCID = postedCID
-			_ = db.UpdateRun(ctx, runState)
+			if err := db.UpdateRun(ctx, runState); err != nil {
+				slog.Warn("failed to persist run TopPostURI", "error", err, "run_id", runState.RunID)
+			}
 		}
 
 		rootURI, rootCID := postedURI, postedCID
