@@ -1,69 +1,42 @@
 # HourStats Makefile
 
-.PHONY: build test test-unit test-lambdas clean deps fmt lint graph-lab help \
+.PHONY: build test test-unit clean deps fmt lint graph-lab graph-lab-sparkline graph-lab-yearly help \
 	build-hourstats build-stats deploy-prod deploy-staging deploy-all \
 	fly-status fly-logs-prod fly-logs-staging sync-staging
 
-# Build the application
-build:
-	@echo "Building Lambda functions..."
-	@for dir in cmd/lambda-*; do \
-		if [ -d "$$dir" ]; then \
-			echo "Building $$dir..."; \
-			cd "$$dir" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bootstrap . && cd ../..; \
-		fi; \
-	done
-	@echo "All Lambda functions built successfully"
+# Default build target — the Fly.io binary
+build: build-hourstats
 
-# Build DynamoDB backup utility
-build-backup:
-	go build -o bin/dynamodb-backup cmd/dynamodb-backup/main.go
+build-hourstats:
+	CGO_ENABLED=0 go build -o bin/hourstats ./cmd/hourstats
 
-# Build DynamoDB restore utility
-build-restore:
-	go build -o bin/dynamodb-restore cmd/dynamodb-restore/main.go
-
-# Build both backup and restore utilities
-build-backup-tools: build-backup build-restore
+build-stats:
+	go build -o bin/hourstats-stats ./cmd/hourstats-stats
 
 # Run tests
 test-unit:
 	go test ./...
 
-# Run tests
 test:
 	go test ./...
 
 # Clean build artifacts
 clean:
 	rm -rf bin/
-	rm -f bin/dynamodb-backup bin/dynamodb-restore
 
 # Install dependencies
 deps:
 	go mod download
 	go mod tidy
 
-# Build and verify individual Lambda functions
-test-lambdas:
-	@echo "Building and testing individual Lambda functions..."
-	@for dir in cmd/lambda-*; do \
-		if [ -d "$$dir" ]; then \
-			echo "Testing $$dir..."; \
-			cd "$$dir" && go build -o /dev/null . && echo "  ✅ Build OK" && cd ../..; \
-		fi; \
-	done
-
 # Generate chart experiments with synthetic data (no AWS needed)
 graph-lab:
 	go run cmd/graph-lab/main.go
 	@echo "Open test-results/graph-lab/ to view generated charts"
 
-# Generate only sparkline experiments
 graph-lab-sparkline:
 	go run cmd/graph-lab/main.go -type sparkline
 
-# Generate only yearly chart experiments
 graph-lab-yearly:
 	go run cmd/graph-lab/main.go -type yearly
 
@@ -80,12 +53,6 @@ lint:
 		exit 1; \
 	}
 	golangci-lint run
-
-build-hourstats:
-	CGO_ENABLED=0 go build -o bin/hourstats ./cmd/hourstats
-
-build-stats:
-	go build -o bin/hourstats-stats ./cmd/hourstats-stats
 
 deploy-prod:
 	fly deploy -c fly.prod.toml --ha=false
@@ -111,22 +78,18 @@ sync-staging:
 
 help:
 	@echo "Available targets:"
-	@echo "  build              - Build all Lambda functions (linux/amd64)"
+	@echo "  build              - Build the Fly.io binary (alias for build-hourstats)"
+	@echo "  build-hourstats    - Build Fly.io binary (cmd/hourstats)"
+	@echo "  build-stats        - Build stats CLI tool (cmd/hourstats-stats)"
 	@echo "  test               - Run all tests"
 	@echo "  test-unit          - Run unit tests"
-	@echo "  test-lambdas       - Build-verify each Lambda function"
 	@echo "  clean              - Clean build artifacts"
 	@echo "  deps               - Install and tidy dependencies"
-	@echo "  build-backup       - Build DynamoDB backup utility"
-	@echo "  build-restore      - Build DynamoDB restore utility"
-	@echo "  build-backup-tools - Build both backup and restore utilities"
 	@echo "  graph-lab          - Generate chart experiments with synthetic data"
 	@echo "  graph-lab-sparkline - Generate only sparkline experiments"
 	@echo "  graph-lab-yearly   - Generate only yearly chart experiments"
 	@echo "  fmt                - Format code"
 	@echo "  lint               - Lint code (requires golangci-lint)"
-	@echo "  build-hourstats    - Build Fly.io binary (cmd/hourstats)"
-	@echo "  build-stats        - Build stats CLI tool (cmd/hourstats-stats)"
 	@echo "  deploy-prod        - Deploy to hourstats-prod on Fly.io"
 	@echo "  deploy-staging     - Deploy to hourstats-staging on Fly.io"
 	@echo "  deploy-all         - Deploy to both prod and staging"
