@@ -6,6 +6,80 @@ import (
 	"time"
 )
 
+func TestFrameIsNonEnglishPost(t *testing.T) {
+	tests := []struct {
+		name string
+		// wantReject true means the pre-filter should drop the frame.
+		wantReject bool
+		frame      string
+	}{
+		{
+			name:       "english post - keep",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"hello","createdAt":"2024-09-09T19:46:02Z","langs":["en"]},"cid":"cid1"}}`,
+		},
+		{
+			name:       "english-US post - keep",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"hello","createdAt":"2024-09-09T19:46:02Z","langs":["en-US"]},"cid":"cid1"}}`,
+		},
+		{
+			name:       "english-GB post - keep",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"hello","createdAt":"2024-09-09T19:46:02Z","langs":["en-GB"]},"cid":"cid1"}}`,
+		},
+		{
+			name:       "multilingual post with english - keep",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"hello","createdAt":"2024-09-09T19:46:02Z","langs":["ja","en"]},"cid":"cid1"}}`,
+		},
+		{
+			name:       "japanese-only post - reject",
+			wantReject: true,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"こんにちは","createdAt":"2024-09-09T19:46:02Z","langs":["ja"]},"cid":"cid1"}}`,
+		},
+		{
+			name:       "portuguese post - reject",
+			wantReject: true,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"olá","createdAt":"2024-09-09T19:46:02Z","langs":["pt"]},"cid":"cid1"}}`,
+		},
+		{
+			name:       "no langs field - keep (conservative)",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.post","rkey":"xyz","record":{"$type":"app.bsky.feed.post","text":"hello","createdAt":"2024-09-09T19:46:02Z"},"cid":"cid1"}}`,
+		},
+		{
+			name:       "profile identity event - keep",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"identity","identity":{"did":"did:plc:abc","handle":"user.bsky.social"}}`,
+		},
+		{
+			name:       "account event - keep",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"account","account":{"active":true,"did":"did:plc:abc"}}`,
+		},
+		{
+			name:       "like event (not post) - keep",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"create","collection":"app.bsky.feed.like","rkey":"xyz","cid":"cid1"}}`,
+		},
+		{
+			name:       "post delete (not create) - keep",
+			wantReject: false,
+			frame:      `{"did":"did:plc:abc","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r","operation":"delete","collection":"app.bsky.feed.post","rkey":"xyz"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := frameIsNonEnglishPost([]byte(tt.frame))
+			if got != tt.wantReject {
+				t.Errorf("frameIsNonEnglishPost() = %v, want %v", got, tt.wantReject)
+			}
+		})
+	}
+}
+
 func TestEvent_IsPostCreate(t *testing.T) {
 	tests := []struct {
 		name string

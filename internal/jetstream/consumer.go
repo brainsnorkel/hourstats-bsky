@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -94,23 +95,25 @@ type Consumer struct {
 
 // Stats tracks consumer metrics.
 type Stats struct {
-	EventsReceived atomic.Int64
-	PostsProcessed atomic.Int64
-	EventsSkipped  atomic.Int64
-	Reconnects     atomic.Int64
-	Errors         atomic.Int64
+	EventsReceived        atomic.Int64
+	PostsProcessed        atomic.Int64
+	EventsSkipped         atomic.Int64
+	Reconnects            atomic.Int64
+	Errors                atomic.Int64
+	EarlyRejectedNonEnglish atomic.Int64
 }
 
 // StatsReport is an exported snapshot of consumer statistics.
 type StatsReport struct {
-	EventsReceived    int64
-	PostsProcessed    int64
-	EventsSkipped     int64
-	Reconnects        int64
-	Errors            int64
-	EndpointRotations int64
-	ActiveEndpoint    string
-	ConnectionUptime  time.Duration
+	EventsReceived          int64
+	PostsProcessed          int64
+	EventsSkipped           int64
+	Reconnects              int64
+	Errors                  int64
+	EndpointRotations       int64
+	ActiveEndpoint          string
+	ConnectionUptime        time.Duration
+	EarlyRejectedNonEnglish int64
 }
 
 // NewConsumer creates a new Jetstream consumer.
@@ -231,14 +234,15 @@ func (c *Consumer) GetStatsReport() StatsReport {
 	c.mu.Unlock()
 
 	return StatsReport{
-		EventsReceived:    c.stats.EventsReceived.Load(),
-		PostsProcessed:    c.stats.PostsProcessed.Load(),
-		EventsSkipped:     c.stats.EventsSkipped.Load(),
-		Reconnects:        c.stats.Reconnects.Load(),
-		Errors:            c.stats.Errors.Load(),
-		EndpointRotations: c.endpointRotations.Load(),
-		ActiveEndpoint:    c.ActiveEndpoint(),
-		ConnectionUptime:  uptime,
+		EventsReceived:          c.stats.EventsReceived.Load(),
+		PostsProcessed:          c.stats.PostsProcessed.Load(),
+		EventsSkipped:           c.stats.EventsSkipped.Load(),
+		Reconnects:              c.stats.Reconnects.Load(),
+		Errors:                  c.stats.Errors.Load(),
+		EndpointRotations:       c.endpointRotations.Load(),
+		ActiveEndpoint:          c.ActiveEndpoint(),
+		ConnectionUptime:        uptime,
+		EarlyRejectedNonEnglish: c.stats.EarlyRejectedNonEnglish.Load(),
 	}
 }
 
@@ -304,6 +308,15 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 
 		c.stats.EventsReceived.Add(1)
 
+		// Cheap bytes-level pre-filter: drop frames that are clearly feed.post
+		// creates with no English language tag, before paying for json.Unmarshal.
+		// Non-post events (identity, account, like, etc.) have no "langs" field
+		// and are always passed through to the full parse path.
+		if frameIsNonEnglishPost(message) {
+			c.stats.EarlyRejectedNonEnglish.Add(1)
+			continue
+		}
+
 		var event Event
 		if err := json.Unmarshal(message, &event); err != nil {
 			c.stats.Errors.Add(1)
@@ -363,4 +376,88 @@ func (c *Consumer) persistCursorNow(ctx context.Context) {
 	if err := c.cfg.SaveCursor(ctx, cursor); err != nil {
 		slog.Warn("failed to persist cursor", "error", err, "cursor", cursor)
 	}
+}
+
+// frameIsNonEnglishPost returns true when the raw WebSocket frame is
+// definitely a feed.post create event that contains no English language tag,
+// allowing the caller to skip the full json.Unmarshal.
+//
+// The check is intentionally CONSERVATIVE: when in doubt it returns false
+// (keep the frame) so that English posts are never silently dropped.
+// False-positives (a non-English post slips through) are harmless because
+// the authoritative isEnglish() filter in cmd/hourstats/jetstream_consumer.go
+// remains in place.
+//
+// Algorithm:
+//  1. The frame must look like a feed.post create — we require both
+//     `"app.bsky.feed.post"` and `"operation":"create"` to be present.
+//     If either is absent the frame is not a post-create and we keep it.
+//  2. We look for a `"langs":` key.  If absent the frame has no language
+//     field at all — keep it (some clients omit the field entirely; we must
+//     not drop those).
+//  3. After `"langs":[` we scan forward for the first JSON string token.
+//     If that token is `"en"` or starts with `"en-` (e.g. "en-US", "en-GB")
+//     we keep the frame.  Otherwise we reject it.
+//
+// The scan is bounded so it cannot run past the end of the slice.
+func frameIsNonEnglishPost(data []byte) bool {
+	// Guard 1: must look like a feed.post create.
+	if !bytes.Contains(data, []byte(`"app.bsky.feed.post"`)) {
+		return false
+	}
+	if !bytes.Contains(data, []byte(`"create"`)) {
+		return false
+	}
+
+	// Guard 2: must have a langs field.
+	langsIdx := bytes.Index(data, []byte(`"langs":`))
+	if langsIdx < 0 {
+		return false
+	}
+
+	// Advance past `"langs":` (8 bytes) and skip whitespace/array-open.
+	pos := langsIdx + 8
+	for pos < len(data) && (data[pos] == ' ' || data[pos] == '\t' || data[pos] == '\n' || data[pos] == '\r') {
+		pos++
+	}
+	if pos >= len(data) || data[pos] != '[' {
+		// Unexpected structure — keep the frame.
+		return false
+	}
+	pos++ // skip '['
+
+	// Guard 3: scan up to 256 bytes into the array for the first string token.
+	limit := pos + 256
+	if limit > len(data) {
+		limit = len(data)
+	}
+	for pos < limit {
+		switch data[pos] {
+		case ']':
+			// Empty array or exhausted — no English tag found; reject.
+			return true
+		case '"':
+			// Found a string token; read until closing quote (ignoring escapes
+			// for this quick scan — lang tags never contain backslashes).
+			pos++ // skip opening quote
+			start := pos
+			for pos < limit && data[pos] != '"' {
+				pos++
+			}
+			tag := data[start:pos]
+			// Accept "en" exactly or any "en-*" variant.
+			if bytes.Equal(tag, []byte("en")) || bytes.HasPrefix(tag, []byte("en-")) {
+				return false // has English tag — keep frame
+			}
+			// Non-English tag found; continue scanning (there may be more tags).
+			if pos < limit {
+				pos++ // skip closing quote
+			}
+		default:
+			pos++
+		}
+	}
+
+	// Scanned limit without finding an English tag — reject.
+	return true
 }
