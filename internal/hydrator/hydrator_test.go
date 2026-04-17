@@ -292,6 +292,36 @@ func TestHydrateConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestHydrateMutatesPostsInPlace(t *testing.T) {
+	fetcher := &mockFetcher{
+		response: func(uris []string) ([]*bsky.FeedDefs_PostView, error) {
+			return makeViews(uris), nil
+		},
+	}
+	h := New(fetcher, &mockUpdater{}, Config{BatchSize: 25, RateLimit: 1000})
+
+	posts := makePosts(60)
+	for _, p := range posts {
+		if p.AuthorHandle != "" {
+			t.Fatalf("precondition: posts start without handles")
+		}
+	}
+
+	if _, err := h.Hydrate(context.Background(), posts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Every post should now carry the values from makeViews.
+	for i, p := range posts {
+		if p.AuthorHandle == "" {
+			t.Errorf("posts[%d].AuthorHandle not populated", i)
+		}
+		if p.Likes == 0 && p.Reposts == 0 && p.Replies == 0 {
+			t.Errorf("posts[%d] engagement not populated", i)
+		}
+	}
+}
+
 func TestHydrateUpdaterCalled(t *testing.T) {
 	fetcher := &mockFetcher{
 		response: func(uris []string) ([]*bsky.FeedDefs_PostView, error) {
