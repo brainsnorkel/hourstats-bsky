@@ -151,7 +151,7 @@ Key tables: `post_buffer` (2h retention), `runs` (48h), `sentiment_history` (8 d
 
 ## Deployment
 
-- **Production**: `hourstats-prod` -- shared-cpu-1x, 512MB RAM, SJC region
+- **Production**: `hourstats-prod` -- shared-cpu-1x, 1024MB RAM, SJC region
 - **Staging**: `hourstats-staging` -- shared-cpu-1x, 512MB RAM, SJC region
 - **Container**: Multi-stage Docker build (golang:1.24-alpine to alpine:3.21)
 - **Secrets**: `fly secrets set KEY=value -a hourstats-prod`
