@@ -357,6 +357,39 @@ func TestTakeSnapshot_DeltaComputation(t *testing.T) {
 	}
 }
 
+// TestTakeSnapshot_FirehoseCounterReset verifies the collector handles
+// SwapFirehoseCount() being called out-of-band by the analysis cycle.
+// Without the reset-detection, the second snapshot's delta would be
+// current(30) - lastSeen(100) = -70, matching the negative values seen
+// in prod/staging.
+func TestTakeSnapshot_FirehoseCounterReset(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+
+	for i := 0; i < 100; i++ {
+		c.IncrementFirehosePost()
+	}
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ms.snapshots[0].TotalFirehosePosts; got != 100 {
+		t.Fatalf("first snapshot TotalFirehosePosts = %d, want 100", got)
+	}
+
+	// Analysis cycle resets the counter out-of-band.
+	c.SwapFirehoseCount()
+
+	for i := 0; i < 30; i++ {
+		c.IncrementFirehosePost()
+	}
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ms.snapshots[1].TotalFirehosePosts; got != 30 {
+		t.Fatalf("second snapshot TotalFirehosePosts = %d, want 30 (got negative means regression)", got)
+	}
+}
+
 func TestLogEvent(t *testing.T) {
 	ms := &mockStatsStore{}
 	c := New(ms, "")

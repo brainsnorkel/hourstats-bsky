@@ -228,8 +228,15 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	rootDelta := c.rootPosts.Swap(0)
 	replyDelta := c.replyPosts.Swap(0)
 
-	// Compute firehose delta (Load + lastSeen pattern, since SwapFirehoseCount also reads this)
+	// Compute firehose delta. The counter is also Swap(0)'d by the analysis
+	// cycle (cmd/hourstats/analysis.go: SwapFirehoseCount) which resets it
+	// out-of-band. When current < lastSeen, treat it as a generation reset:
+	// lastSeen belongs to the pre-swap generation and the correct delta is
+	// just the raw current value.
 	currentFirehose := c.firehosePosts.Load()
+	if currentFirehose < c.lastSeen.firehosePosts {
+		c.lastSeen.firehosePosts = 0
+	}
 	firehoseDelta := currentFirehose - c.lastSeen.firehosePosts
 	c.lastSeen.firehosePosts = currentFirehose
 
