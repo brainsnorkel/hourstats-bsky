@@ -97,7 +97,10 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 
 	clusters, err := a.grouper.GroupAndLabel(ctx, terms)
 	if err != nil {
-		slog.Warn("topics: grouper error, using fallback", "error", err)
+		// A failed LLM grouping call must NOT produce a post. Returning the
+		// error here causes the caller to skip RunTrendingPost entirely, rather
+		// than publishing a degraded post or re-posting a stale snapshot.
+		return fmt.Errorf("topics: grouping failed, skipping trending post: %w", err)
 	}
 	if len(clusters) == 0 {
 		slog.Warn("topics: no clusters produced, skipping")

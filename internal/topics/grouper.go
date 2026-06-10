@@ -113,8 +113,7 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 	}
 
 	if !g.checkAndIncrementRate() {
-		slog.Warn("grouper: daily rate limit reached, using fallback", "limit", maxDailyCalls)
-		return fallbackClusters(terms), nil
+		return nil, fmt.Errorf("grouper: daily rate limit reached (limit %d)", maxDailyCalls)
 	}
 
 	headlines := FetchHeadlines(ctx)
@@ -133,56 +132,49 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return fallbackClusters(terms), fmt.Errorf("grouper: marshal request: %w", err)
+		return nil, fmt.Errorf("grouper: marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, strings.NewReader(string(body)))
 	if err != nil {
-		return fallbackClusters(terms), fmt.Errorf("grouper: create request: %w", err)
+		return nil, fmt.Errorf("grouper: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		slog.Warn("grouper: API call failed, using fallback", "error", err)
-		return fallbackClusters(terms), nil
+		return nil, fmt.Errorf("grouper: API call failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		slog.Warn("grouper: API returned non-OK, using fallback", "status", resp.StatusCode, "body", string(respBody))
-		return fallbackClusters(terms), nil
+		return nil, fmt.Errorf("grouper: API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		slog.Warn("grouper: read response failed, using fallback", "error", err)
-		return fallbackClusters(terms), nil
+		return nil, fmt.Errorf("grouper: read response failed: %w", err)
 	}
 
 	var gemResp geminiResponse
 	if err := json.Unmarshal(respBody, &gemResp); err != nil {
-		slog.Warn("grouper: unmarshal response failed, using fallback", "error", err)
-		return fallbackClusters(terms), nil
+		return nil, fmt.Errorf("grouper: unmarshal response failed: %w", err)
 	}
 
 	if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
-		slog.Warn("grouper: empty response from Gemini, using fallback")
-		return fallbackClusters(terms), nil
+		return nil, fmt.Errorf("grouper: empty response from Gemini")
 	}
 
 	jsonText := extractResponseText(gemResp.Candidates[0].Content.Parts)
 	if jsonText == "" {
-		slog.Warn("grouper: no response text in Gemini output, using fallback")
-		return fallbackClusters(terms), nil
+		return nil, fmt.Errorf("grouper: no response text in Gemini output")
 	}
 
 	var clusters []TopicCluster
 	if err := json.Unmarshal([]byte(jsonText), &clusters); err != nil {
-		slog.Warn("grouper: parse clusters JSON failed, using fallback", "error", err)
-		return fallbackClusters(terms), nil
+		return nil, fmt.Errorf("grouper: parse clusters JSON failed: %w", err)
 	}
 
 	for _, c := range clusters {
@@ -376,26 +368,6 @@ func buildPrompt(terms []TermScore, headlines []string) string {
 	b.WriteString("- For each topic, provide a brief justification explaining why these terms form a coherent topic and why the label is specific enough.\n")
 	b.WriteString("- For __discard__, explain why the terms are too vague or generic to form a real topic.\n")
 	return b.String()
-}
-
-// fallbackClusters creates single-keyword clusters from the top terms.
-func fallbackClusters(terms []TermScore) []TopicCluster {
-	n := len(terms)
-	if n > TopTopics {
-		n = TopTopics
-	}
-	clusters := make([]TopicCluster, n)
-	for i := 0; i < n; i++ {
-		label := strings.ToUpper(terms[i].Term[:1]) + terms[i].Term[1:]
-		clusters[i] = TopicCluster{
-			Label:       label,
-			Description: "Trending term",
-			Keywords:    []string{terms[i].Term},
-			Synonyms:    []string{},
-			IsMeme:      false,
-		}
-	}
-	return clusters
 }
 
 // GenerateAltText asks Gemini to produce accessible alt text that narrates
