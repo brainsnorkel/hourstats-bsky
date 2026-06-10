@@ -93,14 +93,11 @@ func TestGroupAndLabel_APIError(t *testing.T) {
 	}
 
 	clusters, err := g.GroupAndLabel(context.Background(), terms)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error on API failure, got nil")
 	}
-	if len(clusters) == 0 {
-		t.Fatal("expected fallback clusters, got empty")
-	}
-	if clusters[0].Label != "Trump" {
-		t.Errorf("expected fallback label 'Trump', got %q", clusters[0].Label)
+	if clusters != nil {
+		t.Errorf("expected nil clusters on API failure (post must be suppressed), got %v", clusters)
 	}
 }
 
@@ -121,14 +118,11 @@ func TestGroupAndLabel_MalformedResponse(t *testing.T) {
 	terms := []TermScore{{Term: "test", Score: 5.0}}
 
 	clusters, err := g.GroupAndLabel(context.Background(), terms)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error on malformed response, got nil")
 	}
-	if len(clusters) != 1 {
-		t.Fatalf("expected 1 fallback cluster, got %d", len(clusters))
-	}
-	if clusters[0].Keywords[0] != "test" {
-		t.Errorf("expected fallback keyword 'test', got %q", clusters[0].Keywords[0])
+	if clusters != nil {
+		t.Errorf("expected nil clusters on malformed response (post must be suppressed), got %v", clusters)
 	}
 }
 
@@ -149,11 +143,11 @@ func TestGroupAndLabel_RateLimit(t *testing.T) {
 	}
 
 	clusters, err := g.GroupAndLabel(context.Background(), terms)
-	if err != nil {
-		t.Fatalf("unexpected error on rate-limited call: %v", err)
+	if err == nil {
+		t.Fatal("expected error on rate-limited call, got nil")
 	}
-	if clusters[0].Label != "Test" {
-		t.Errorf("expected fallback label 'Test', got %q", clusters[0].Label)
+	if clusters != nil {
+		t.Errorf("expected nil clusters when rate-limited (post must be suppressed), got %v", clusters)
 	}
 }
 
@@ -226,31 +220,6 @@ func TestGenerateAltText_TruncatesLongResponse(t *testing.T) {
 	alt := g.GenerateAltText(context.Background(), ranked, nil)
 	if len(alt) > 1000 {
 		t.Errorf("expected alt text truncated to 1000 chars, got %d", len(alt))
-	}
-}
-
-func TestFallbackClusters(t *testing.T) {
-	terms := []TermScore{
-		{Term: "trump", Score: 12.5},
-		{Term: "election", Score: 10.3},
-		{Term: "weather", Score: 8.0},
-		{Term: "sports", Score: 7.0},
-		{Term: "music", Score: 6.0},
-		{Term: "movies", Score: 5.0},
-	}
-
-	clusters := fallbackClusters(terms)
-	if len(clusters) != TopTopics {
-		t.Fatalf("expected %d clusters, got %d", TopTopics, len(clusters))
-	}
-	if clusters[0].Label != "Trump" {
-		t.Errorf("expected 'Trump', got %q", clusters[0].Label)
-	}
-	if clusters[0].Keywords[0] != "trump" {
-		t.Errorf("expected keyword 'trump', got %q", clusters[0].Keywords[0])
-	}
-	if len(clusters[0].Synonyms) != 0 {
-		t.Errorf("expected empty synonyms, got %v", clusters[0].Synonyms)
 	}
 }
 
