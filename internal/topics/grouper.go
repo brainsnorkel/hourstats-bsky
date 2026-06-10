@@ -3,6 +3,7 @@ package topics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,26 +21,42 @@ const (
 
 // Grouper calls Google Gemini Flash to group TF-IDF terms into topic clusters.
 type Grouper struct {
-	apiKey     string
-	endpoint   string
-	httpClient *http.Client
-	mu         sync.Mutex
-	dailyCalls int
-	lastReset  time.Time
+	apiKey string
+	// endpoint is the primary grouping model's generateContent URL.
+	endpoint string
+	// fallbackEndpoint is a cheaper model tried when the primary fails with a
+	// retryable error (429/5xx/empty/unparseable). Empty disables the tier.
+	fallbackEndpoint string
+	httpClient       *http.Client
+	mu               sync.Mutex
+	dailyCalls       int
+	lastReset        time.Time
 }
 
-func NewGrouper(apiKey, model string) *Grouper {
+// groupingEndpoint builds the Gemini generateContent URL for a model name.
+func groupingEndpoint(model string) string {
+	return geminiBaseURL + model + ":generateContent"
+}
+
+// NewGrouper creates a Grouper for the given primary model. When fallbackModel
+// is non-empty and differs from the primary, GroupAndLabel retries a failed
+// primary call against it before giving up.
+func NewGrouper(apiKey, model, fallbackModel string) *Grouper {
 	if model == "" {
 		model = DefaultGeminiModel
 	}
-	return &Grouper{
+	g := &Grouper{
 		apiKey:   apiKey,
-		endpoint: geminiBaseURL + model + ":generateContent",
+		endpoint: groupingEndpoint(model),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 		lastReset: time.Now(),
 	}
+	if fallbackModel != "" && fallbackModel != model {
+		g.fallbackEndpoint = groupingEndpoint(fallbackModel)
+	}
+	return g
 }
 
 // NewGrouperWithEndpoint creates a Grouper with a custom endpoint (for testing).
@@ -52,6 +69,14 @@ func NewGrouperWithEndpoint(apiKey, endpoint string) *Grouper {
 		},
 		lastReset: time.Now(),
 	}
+}
+
+// NewGrouperWithEndpoints creates a Grouper with custom primary and fallback
+// endpoints (for testing the model-tier fallback path).
+func NewGrouperWithEndpoints(apiKey, endpoint, fallbackEndpoint string) *Grouper {
+	g := NewGrouperWithEndpoint(apiKey, endpoint)
+	g.fallbackEndpoint = fallbackEndpoint
+	return g
 }
 
 // geminiRequest is the request body for Gemini Flash.
@@ -105,8 +130,29 @@ type geminiCandidate struct {
 	Content geminiContent `json:"content"`
 }
 
-// GroupAndLabel sends the top TF-IDF terms to Gemini Flash and returns grouped clusters.
-// Falls back to single-keyword clusters if the API call fails or is rate-limited.
+// retryableError marks a grouping failure that may succeed on a different
+// model tier: transport errors, HTTP 429/5xx, or empty/unparseable output.
+// Construction failures (marshal/request build) are deterministic and are
+// returned unwrapped so they do not trigger a pointless fallback attempt.
+type retryableError struct{ err error }
+
+func (e *retryableError) Error() string { return e.err.Error() }
+func (e *retryableError) Unwrap() error { return e.err }
+
+func retryablef(format string, a ...any) error {
+	return &retryableError{fmt.Errorf(format, a...)}
+}
+
+func isRetryable(err error) bool {
+	var r *retryableError
+	return errors.As(err, &r)
+}
+
+// GroupAndLabel sends the top TF-IDF terms to Gemini and returns grouped
+// clusters. It tries the primary model first; on a retryable failure it retries
+// once against the fallback model (if configured). If every tier fails it
+// returns an error so the caller suppresses the trending post rather than
+// publishing degraded topics.
 func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]TopicCluster, error) {
 	if len(terms) == 0 {
 		return nil, nil
@@ -119,6 +165,35 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 	headlines := FetchHeadlines(ctx)
 	prompt := buildPrompt(terms, headlines)
 
+	clusters, err := g.requestClusters(ctx, g.endpoint, prompt)
+	if err != nil {
+		if g.fallbackEndpoint == "" || !isRetryable(err) {
+			return nil, err
+		}
+		slog.Warn("grouper: primary model failed, retrying with fallback model", "error", err)
+		clusters, err = g.requestClusters(ctx, g.fallbackEndpoint, prompt)
+		if err != nil {
+			return nil, fmt.Errorf("grouper: fallback model also failed: %w", err)
+		}
+		slog.Info("grouper: served by fallback model")
+	}
+
+	for _, c := range clusters {
+		slog.Info("grouper: topic", "label", c.Label, "justification", c.Justification)
+	}
+
+	if len(clusters) > MaxLLMGroups {
+		clusters = clusters[:MaxLLMGroups]
+	}
+
+	clusters = filterGenericClusters(clusters)
+	return clusters, nil
+}
+
+// requestClusters performs one Gemini grouping call against the given endpoint
+// and returns the parsed clusters (before post-processing). Failures that may
+// succeed on a different model are wrapped via retryablef.
+func (g *Grouper) requestClusters(ctx context.Context, endpoint, prompt string) ([]TopicCluster, error) {
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
 			{Parts: []geminiPart{{Text: prompt}}},
@@ -135,7 +210,7 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 		return nil, fmt.Errorf("grouper: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
 	if err != nil {
 		return nil, fmt.Errorf("grouper: create request: %w", err)
 	}
@@ -144,48 +219,43 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("grouper: API call failed: %w", err)
+		return nil, retryablef("grouper: API call failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("grouper: API returned status %d: %s", resp.StatusCode, string(respBody))
+		statusErr := fmt.Errorf("grouper: API returned status %d: %s", resp.StatusCode, string(respBody))
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return nil, &retryableError{statusErr}
+		}
+		return nil, statusErr
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("grouper: read response failed: %w", err)
+		return nil, retryablef("grouper: read response failed: %w", err)
 	}
 
 	var gemResp geminiResponse
 	if err := json.Unmarshal(respBody, &gemResp); err != nil {
-		return nil, fmt.Errorf("grouper: unmarshal response failed: %w", err)
+		return nil, retryablef("grouper: unmarshal response failed: %w", err)
 	}
 
 	if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("grouper: empty response from Gemini")
+		return nil, retryablef("grouper: empty response from Gemini")
 	}
 
 	jsonText := extractResponseText(gemResp.Candidates[0].Content.Parts)
 	if jsonText == "" {
-		return nil, fmt.Errorf("grouper: no response text in Gemini output")
+		return nil, retryablef("grouper: no response text in Gemini output")
 	}
 
 	var clusters []TopicCluster
 	if err := json.Unmarshal([]byte(jsonText), &clusters); err != nil {
-		return nil, fmt.Errorf("grouper: parse clusters JSON failed: %w", err)
+		return nil, retryablef("grouper: parse clusters JSON failed: %w", err)
 	}
 
-	for _, c := range clusters {
-		slog.Info("grouper: topic", "label", c.Label, "justification", c.Justification)
-	}
-
-	if len(clusters) > MaxLLMGroups {
-		clusters = clusters[:MaxLLMGroups]
-	}
-
-	clusters = filterGenericClusters(clusters)
 	return clusters, nil
 }
 

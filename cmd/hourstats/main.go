@@ -34,6 +34,7 @@ func main() {
 	trendingEnabled := envBool("TRENDING_ENABLED", false)
 	geminiAPIKey := os.Getenv("GOOGLE_AI_API_KEY")
 	geminiModel := envOr("GEMINI_MODEL", "gemini-2.5-pro")
+	geminiFallbackModel := envOr("GROUP_FALLBACK_MODEL", "gemini-2.5-flash")
 
 	healthChartHours := envInt("HEALTH_CHART_HOURS", 6)
 	healthChartMemoryLimitMB := envInt("HEALTH_CHART_MEMORY_LIMIT_MB", 512)
@@ -121,8 +122,8 @@ func main() {
 
 	var topicAnalyzer *topics.Analyzer
 	if trendingEnabled {
-		topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey, geminiModel)
-		slog.Info("trending topics enabled (runs with sentiment cycle)")
+		topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey, geminiModel, geminiFallbackModel)
+		slog.Info("trending topics enabled (runs with sentiment cycle)", "model", geminiModel, "fallback_model", geminiFallbackModel)
 	}
 
 	var s3Cfg *store.S3BackupConfig

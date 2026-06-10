@@ -50,6 +50,7 @@ fly ssh console -a hourstats-prod       # SSH into production
 | `TRENDING_ENABLED` | `false` | Enable trending topics |
 | `GOOGLE_AI_API_KEY` | (required if trending) | Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model for topic grouping |
+| `GROUP_FALLBACK_MODEL` | `gemini-2.5-flash` | Cheaper Gemini model tried when the primary grouping call fails (429/5xx/empty). Empty disables the fallback (post is suppressed instead) |
 | `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily backups |
 | `WAL_CHECKPOINT_THRESHOLD_MB` | `50` | WAL size (MB) that triggers TRUNCATE escalation |
 | `HEALTH_CHART_HOURS` | `6` | Default hours for health chart generation |
@@ -67,7 +68,7 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 | **Write Flusher** | 2s ticker / 1500 batch | Batches pending writes to reduce SQLite contention |
 | **Analysis Cycle** | Wall-clock ticker (default 30m, configurable) | Hydrate engagement, VADER sentiment, post summary |
 | **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
-| **Trending Topics** | After sparkline | TF-IDF + Gemini Pro grouping, reply to sparkline (if enabled) |
+| **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled) |
 | **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply |
 | **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile |
 | **Stall Detection** | 5m ticker | Warns if no posts received recently |

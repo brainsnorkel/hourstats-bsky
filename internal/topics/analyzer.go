@@ -37,8 +37,8 @@ type Analyzer struct {
 	hydrator *ExemplarHydrator
 }
 
-func NewAnalyzer(s AnalyzerStore, geminiAPIKey, geminiModel string) *Analyzer {
-	grouper := NewGrouper(geminiAPIKey, geminiModel)
+func NewAnalyzer(s AnalyzerStore, geminiAPIKey, geminiModel, geminiFallbackModel string) *Analyzer {
+	grouper := NewGrouper(geminiAPIKey, geminiModel, geminiFallbackModel)
 	tracker := NewTracker(s)
 	exemplarHydrator := NewExemplarHydrator(s)
 	if geminiAPIKey != "" {
@@ -97,10 +97,16 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 
 	clusters, err := a.grouper.GroupAndLabel(ctx, terms)
 	if err != nil {
-		// A failed LLM grouping call must NOT produce a post. Returning the
-		// error here causes the caller to skip RunTrendingPost entirely, rather
-		// than publishing a degraded post or re-posting a stale snapshot.
-		return fmt.Errorf("topics: grouping failed, skipping trending post: %w", err)
+		// Every Gemini tier (primary -> fallback model) failed. Try offline
+		// co-occurrence grouping before giving up; only suppress the post if
+		// even that yields nothing. This is strictly better than re-posting a
+		// stale snapshot or publishing raw underscore terms.
+		clusters = AlgorithmicGroup(rows, terms)
+		if len(clusters) == 0 {
+			return fmt.Errorf("topics: grouping failed and offline fallback empty, skipping trending post: %w", err)
+		}
+		slog.Warn("topics: Gemini grouping failed, using offline co-occurrence fallback",
+			"error", err, "clusters", len(clusters))
 	}
 	if len(clusters) == 0 {
 		slog.Warn("topics: no clusters produced, skipping")
