@@ -69,7 +69,7 @@ func TestGroupAndLabel_Success(t *testing.T) {
 }
 
 func TestGroupAndLabel_EmptyTerms(t *testing.T) {
-	g := NewGrouper("test-key", "")
+	g := NewGrouper("test-key", "", "")
 	clusters, err := g.GroupAndLabel(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -123,6 +123,91 @@ func TestGroupAndLabel_MalformedResponse(t *testing.T) {
 	}
 	if clusters != nil {
 		t.Errorf("expected nil clusters on malformed response (post must be suppressed), got %v", clusters)
+	}
+}
+
+func TestGroupAndLabel_FallbackOnPrimary429(t *testing.T) {
+	expected := []TopicCluster{
+		{Label: "Donald Trump", Description: "Trump discussion", Keywords: []string{"trump"}, Justification: "j"},
+	}
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte("quota exceeded"))
+	}))
+	defer primary.Close()
+
+	fallbackHit := false
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHit = true
+		geminiMockHandler(expected)(w, r)
+	}))
+	defer fallback.Close()
+
+	g := NewGrouperWithEndpoints("test-key", primary.URL, fallback.URL)
+	terms := []TermScore{{Term: "trump", Score: 12.5}}
+
+	clusters, err := g.GroupAndLabel(context.Background(), terms)
+	if err != nil {
+		t.Fatalf("expected fallback to succeed, got error: %v", err)
+	}
+	if !fallbackHit {
+		t.Error("expected fallback model to be called after primary 429")
+	}
+	if len(clusters) != 1 || clusters[0].Label != "Donald Trump" {
+		t.Fatalf("expected fallback clusters, got %v", clusters)
+	}
+}
+
+func TestGroupAndLabel_BothTiersFail(t *testing.T) {
+	fail := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("boom"))
+	})
+	primary := httptest.NewServer(fail)
+	defer primary.Close()
+	fallback := httptest.NewServer(fail)
+	defer fallback.Close()
+
+	g := NewGrouperWithEndpoints("test-key", primary.URL, fallback.URL)
+	terms := []TermScore{{Term: "trump", Score: 12.5}}
+
+	clusters, err := g.GroupAndLabel(context.Background(), terms)
+	if err == nil {
+		t.Fatal("expected error when both tiers fail, got nil")
+	}
+	if clusters != nil {
+		t.Errorf("expected nil clusters when both tiers fail (post must be suppressed), got %v", clusters)
+	}
+}
+
+func TestGroupAndLabel_PrimarySuccessSkipsFallback(t *testing.T) {
+	expected := []TopicCluster{
+		{Label: "Weather", Description: "Weather discussion", Keywords: []string{"rain"}, Justification: "j"},
+	}
+
+	primary := httptest.NewServer(geminiMockHandler(expected))
+	defer primary.Close()
+
+	fallbackHit := false
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHit = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fallback.Close()
+
+	g := NewGrouperWithEndpoints("test-key", primary.URL, fallback.URL)
+	terms := []TermScore{{Term: "rain", Score: 5.5}}
+
+	clusters, err := g.GroupAndLabel(context.Background(), terms)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fallbackHit {
+		t.Error("fallback model must not be called when primary succeeds")
+	}
+	if len(clusters) != 1 || clusters[0].Label != "Weather" {
+		t.Fatalf("expected primary clusters, got %v", clusters)
 	}
 }
 

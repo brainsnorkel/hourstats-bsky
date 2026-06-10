@@ -145,7 +145,7 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 	ms := &mockAnalyzerStore{tokenCount: 50}
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test", ""),
+		grouper:  NewGrouper("test", "", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
@@ -169,7 +169,7 @@ func TestRunTrendingPost_DryRun(t *testing.T) {
 
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test", ""),
+		grouper:  NewGrouper("test", "", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
@@ -184,7 +184,7 @@ func TestRunTrendingPost_NoSnapshots(t *testing.T) {
 	ms := &mockAnalyzerStore{}
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test", ""),
+		grouper:  NewGrouper("test", "", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
@@ -225,7 +225,7 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 	poster := &mockPoster{}
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test", ""),
+		grouper:  NewGrouper("test", "", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
@@ -250,7 +250,7 @@ func TestRunTrendingPost_AsReply(t *testing.T) {
 	poster := &mockPoster{}
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test", ""),
+		grouper:  NewGrouper("test", "", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
@@ -278,7 +278,7 @@ func TestRunTrendingPost_ReplyFallback(t *testing.T) {
 	poster := &mockPoster{replyErr: fmt.Errorf("reply failed")}
 	a := &Analyzer{
 		store:    ms,
-		grouper:  NewGrouper("test", ""),
+		grouper:  NewGrouper("test", "", ""),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
 	}
