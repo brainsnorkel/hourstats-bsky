@@ -60,13 +60,28 @@ func GenerateHealthChart(snapshots []store.StatsSnapshot, memoryLimitMB int) ([]
 
 	memLimitBytes := float64(memoryLimitMB) * 1024 * 1024
 
-	// Panel 0: Memory
+	// Panel 0: Memory. RSS is what the kernel OOM-killer measures against the
+	// VM limit; Go's Sys misses the ~200 MB of modernc-sqlite page cache and
+	// mmap that lives outside the Go heap (prod: RSS 588 MB vs Sys 388 MB).
+	// Snapshots written before rss_bytes existed store 0, so the series is
+	// omitted entirely rather than flat-lining the panel at zero.
+	haveRSS := false
+	for _, s := range snapshots {
+		if s.RSSBytes > 0 {
+			haveRSS = true
+			break
+		}
+	}
 	p0y := float64(healthPadTop)
 	drawPanel(dc, "Memory", p0y, panelHeight, drawWidth, ts, snapshots, memLimitBytes, func(s store.StatsSnapshot) []panelSeries {
-		return []panelSeries{
-			{value: float64(s.HeapInuseBytes), color: healthBlue, label: "Heap InUse"},
-			{value: float64(s.SysBytes), color: healthGray, label: "Sys"},
+		series := make([]panelSeries, 0, 3)
+		if haveRSS {
+			series = append(series, panelSeries{value: float64(s.RSSBytes), color: healthVermillon, label: "RSS"})
 		}
+		return append(series,
+			panelSeries{value: float64(s.SysBytes), color: healthGray, label: "Sys"},
+			panelSeries{value: float64(s.HeapInuseBytes), color: healthBlue, label: "Heap InUse"},
+		)
 	}, "MB", memLimitBytes)
 
 	// Panel 1: I/O Pressure (WAL size + write channel depth)
@@ -78,12 +93,17 @@ func GenerateHealthChart(snapshots []store.StatsSnapshot, memoryLimitMB int) ([]
 		}
 	}, "MB", 0)
 
-	// Panel 2: GC (pause delta + CPU fraction)
+	// Panel 2: GC. Both series are per-interval deltas. GCCPUFraction is
+	// deliberately not plotted: it is a cumulative ratio (GC CPU over total
+	// CPU since process start), so neither its level nor its difference
+	// describes the interval — differencing a ratio of two growing totals is
+	// not a rate. GC count carries the same signal per interval and is
+	// additive. The absolute fraction is still exposed via the API and CLI.
 	p2y := p1y + panelHeight + float64(healthPanelGap)
 	drawPanel(dc, "GC", p2y, panelHeight, drawWidth, ts, snapshots, 0, func(s store.StatsSnapshot) []panelSeries {
 		return []panelSeries{
 			{value: float64(s.GCPauseTotalNs) / 1e6, color: healthBlue, label: "Pause (ms)"},
-			{value: s.GCCPUFraction * 100, color: healthVermillon, label: "CPU %", rightAxis: true},
+			{value: float64(s.GCCount), color: healthVermillon, label: "GC Count", rightAxis: true},
 		}
 	}, "ms", 0)
 

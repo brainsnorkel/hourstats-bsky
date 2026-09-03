@@ -22,6 +22,7 @@ type StatsSnapshot struct {
 	EventsSkipped           int       `json:"events_skipped"`
 	ConsumerErrors          int       `json:"consumer_errors"`
 	TotalFirehosePosts      int       `json:"total_firehose_posts"`
+	EarlyRejectedNonEnglish int       `json:"early_rejected_non_english"`
 	EnglishPostsStored      int       `json:"english_posts_stored"`
 	RootPosts               int       `json:"root_posts"`
 	ReplyPosts              int       `json:"reply_posts"`
@@ -36,6 +37,9 @@ type StatsSnapshot struct {
 	HeapInuseBytes          int64     `json:"heap_inuse_bytes"`
 	HeapSysBytes            int64     `json:"heap_sys_bytes"`
 	SysBytes                int64     `json:"sys_bytes"`
+	RSSBytes                int64     `json:"rss_bytes"`
+	HeapReleasedBytes       int64     `json:"heap_released_bytes"`
+	StackInuseBytes         int64     `json:"stack_inuse_bytes"`
 	GCPauseTotalNs          int64     `json:"gc_pause_total_ns"`
 	GCCount                 int64     `json:"gc_count"`
 	GCCPUFraction           float64   `json:"gc_cpu_fraction"`
@@ -224,8 +228,9 @@ func (s *Store) InsertStatsSnapshot(ctx context.Context, snap *StatsSnapshot) er
 			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
 			dropped_posts, heap_inuse_bytes, heap_sys_bytes, sys_bytes, gc_pause_total_ns, gc_count,
 			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
-			goroutine_count, cycle_duration_ms, trending_duration_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			goroutine_count, cycle_duration_ms, trending_duration_ms, early_rejected_non_english,
+			rss_bytes, heap_released_bytes, stack_inuse_bytes)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		timeToStr(snap.SnapshotTime), snap.ActiveEndpoint, snap.EndpointRotations, snap.ReconnectCount,
 		snap.ConnectionUptimeSeconds, snap.EventsReceived, snap.PostsProcessed, snap.EventsSkipped,
 		snap.ConsumerErrors, snap.TotalFirehosePosts, snap.EnglishPostsStored, snap.RootPosts,
@@ -234,7 +239,8 @@ func (s *Store) InsertStatsSnapshot(ctx context.Context, snap *StatsSnapshot) er
 		snap.DroppedPosts, snap.HeapInuseBytes, snap.HeapSysBytes, snap.SysBytes, snap.GCPauseTotalNs,
 		snap.GCCount, snap.GCCPUFraction, snap.SlowFlushCount, snap.SlowFlushMaxMs,
 		snap.WriteChannelDepth, snap.WALSizeBytes, snap.GoroutineCount, snap.CycleDurationMs,
-		snap.TrendingDurationMs,
+		snap.TrendingDurationMs, snap.EarlyRejectedNonEnglish, snap.RSSBytes,
+		snap.HeapReleasedBytes, snap.StackInuseBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("insert stats snapshot: %w", err)
@@ -270,7 +276,8 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
 			dropped_posts, heap_inuse_bytes, heap_sys_bytes, sys_bytes, gc_pause_total_ns, gc_count,
 			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
-			goroutine_count, cycle_duration_ms, trending_duration_ms
+			goroutine_count, cycle_duration_ms, trending_duration_ms, early_rejected_non_english,
+			rss_bytes, heap_released_bytes, stack_inuse_bytes
 		 FROM stats_snapshots
 		 ORDER BY snapshot_time DESC
 		 LIMIT 1`,
@@ -283,7 +290,8 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 		&snap.DroppedPosts, &snap.HeapInuseBytes, &snap.HeapSysBytes, &snap.SysBytes,
 		&snap.GCPauseTotalNs, &snap.GCCount, &snap.GCCPUFraction, &snap.SlowFlushCount,
 		&snap.SlowFlushMaxMs, &snap.WriteChannelDepth, &snap.WALSizeBytes, &snap.GoroutineCount,
-		&snap.CycleDurationMs, &snap.TrendingDurationMs,
+		&snap.CycleDurationMs, &snap.TrendingDurationMs, &snap.EarlyRejectedNonEnglish,
+		&snap.RSSBytes, &snap.HeapReleasedBytes, &snap.StackInuseBytes,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -305,7 +313,8 @@ func (s *Store) GetSnapshotHistory(ctx context.Context, since time.Time, limit i
 			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
 			dropped_posts, heap_inuse_bytes, heap_sys_bytes, sys_bytes, gc_pause_total_ns, gc_count,
 			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
-			goroutine_count, cycle_duration_ms, trending_duration_ms
+			goroutine_count, cycle_duration_ms, trending_duration_ms, early_rejected_non_english,
+			rss_bytes, heap_released_bytes, stack_inuse_bytes
 		 FROM stats_snapshots
 		 WHERE snapshot_time >= ?
 		 ORDER BY snapshot_time DESC
@@ -330,7 +339,8 @@ func (s *Store) GetSnapshotHistory(ctx context.Context, since time.Time, limit i
 			&snap.DroppedPosts, &snap.HeapInuseBytes, &snap.HeapSysBytes, &snap.SysBytes,
 			&snap.GCPauseTotalNs, &snap.GCCount, &snap.GCCPUFraction, &snap.SlowFlushCount,
 			&snap.SlowFlushMaxMs, &snap.WriteChannelDepth, &snap.WALSizeBytes, &snap.GoroutineCount,
-			&snap.CycleDurationMs, &snap.TrendingDurationMs,
+			&snap.CycleDurationMs, &snap.TrendingDurationMs, &snap.EarlyRejectedNonEnglish,
+			&snap.RSSBytes, &snap.HeapReleasedBytes, &snap.StackInuseBytes,
 		); err != nil {
 			return nil, fmt.Errorf("scan snapshot: %w", err)
 		}
@@ -350,7 +360,8 @@ func (s *Store) GetHealthHistory(ctx context.Context, since time.Time, limit int
 			analysis_ran, posts_considered, posts_hydrated, hydration_errors, sentiment_result, posting_skipped,
 			dropped_posts, heap_inuse_bytes, heap_sys_bytes, sys_bytes, gc_pause_total_ns, gc_count,
 			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
-			goroutine_count, cycle_duration_ms, trending_duration_ms
+			goroutine_count, cycle_duration_ms, trending_duration_ms, early_rejected_non_english,
+			rss_bytes, heap_released_bytes, stack_inuse_bytes
 		 FROM stats_snapshots
 		 WHERE snapshot_time >= ?
 		 ORDER BY snapshot_time ASC
@@ -375,7 +386,8 @@ func (s *Store) GetHealthHistory(ctx context.Context, since time.Time, limit int
 			&snap.DroppedPosts, &snap.HeapInuseBytes, &snap.HeapSysBytes, &snap.SysBytes,
 			&snap.GCPauseTotalNs, &snap.GCCount, &snap.GCCPUFraction, &snap.SlowFlushCount,
 			&snap.SlowFlushMaxMs, &snap.WriteChannelDepth, &snap.WALSizeBytes, &snap.GoroutineCount,
-			&snap.CycleDurationMs, &snap.TrendingDurationMs,
+			&snap.CycleDurationMs, &snap.TrendingDurationMs, &snap.EarlyRejectedNonEnglish,
+			&snap.RSSBytes, &snap.HeapReleasedBytes, &snap.StackInuseBytes,
 		); err != nil {
 			return nil, fmt.Errorf("scan health snapshot: %w", err)
 		}

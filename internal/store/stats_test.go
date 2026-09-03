@@ -166,6 +166,76 @@ func TestHealthFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFirehoseAndRSSFieldsRoundTrip covers the columns added for firehose
+// reconstruction and RSS-aware memory accounting, through all three read
+// paths so a column-order mismatch in any of them fails loudly.
+func TestFirehoseAndRSSFieldsRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	snap := &StatsSnapshot{
+		SnapshotTime:            time.Now().UTC(),
+		ActiveEndpoint:          "test",
+		TotalFirehosePosts:      3308,
+		EarlyRejectedNonEnglish: 71000,
+		EnglishPostsStored:      1500,
+		RSSBytes:                1024 * 1024 * 588,
+		HeapReleasedBytes:       1024 * 1024 * 37,
+		StackInuseBytes:         1024 * 1024 * 3,
+		SysBytes:                1024 * 1024 * 388,
+	}
+	if err := s.InsertStatsSnapshot(ctx, snap); err != nil {
+		t.Fatalf("InsertStatsSnapshot: %v", err)
+	}
+
+	check := func(label string, got *StatsSnapshot) {
+		t.Helper()
+		if got.EarlyRejectedNonEnglish != snap.EarlyRejectedNonEnglish {
+			t.Errorf("%s: EarlyRejectedNonEnglish = %d, want %d", label, got.EarlyRejectedNonEnglish, snap.EarlyRejectedNonEnglish)
+		}
+		if got.TotalFirehosePosts != snap.TotalFirehosePosts {
+			t.Errorf("%s: TotalFirehosePosts = %d, want %d", label, got.TotalFirehosePosts, snap.TotalFirehosePosts)
+		}
+		if got.RSSBytes != snap.RSSBytes {
+			t.Errorf("%s: RSSBytes = %d, want %d", label, got.RSSBytes, snap.RSSBytes)
+		}
+		if got.HeapReleasedBytes != snap.HeapReleasedBytes {
+			t.Errorf("%s: HeapReleasedBytes = %d, want %d", label, got.HeapReleasedBytes, snap.HeapReleasedBytes)
+		}
+		if got.StackInuseBytes != snap.StackInuseBytes {
+			t.Errorf("%s: StackInuseBytes = %d, want %d", label, got.StackInuseBytes, snap.StackInuseBytes)
+		}
+		if got.SysBytes != snap.SysBytes {
+			t.Errorf("%s: SysBytes = %d, want %d", label, got.SysBytes, snap.SysBytes)
+		}
+	}
+
+	latest, err := s.GetLatestSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestSnapshot: %v", err)
+	}
+	check("GetLatestSnapshot", latest)
+
+	since := time.Now().UTC().Add(-time.Hour)
+	history, err := s.GetSnapshotHistory(ctx, since, 10)
+	if err != nil {
+		t.Fatalf("GetSnapshotHistory: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("GetSnapshotHistory returned %d rows, want 1", len(history))
+	}
+	check("GetSnapshotHistory", &history[0])
+
+	health, err := s.GetHealthHistory(ctx, since, 10)
+	if err != nil {
+		t.Fatalf("GetHealthHistory: %v", err)
+	}
+	if len(health) != 1 {
+		t.Fatalf("GetHealthHistory returned %d rows, want 1", len(health))
+	}
+	check("GetHealthHistory", &health[0])
+}
+
 func TestGetHealthHistory(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

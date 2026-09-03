@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/christophergentle/hourstats-bsky/internal/procmem"
 )
 
 // memTimelineCheckpoints are the elapsed marks at which the sampler records a
@@ -64,9 +64,6 @@ func advanceTick(next, elapsed time.Duration, sched memSchedule) time.Duration {
 	return next
 }
 
-// statmWarnOnce ensures the "no procfs" warning is emitted at most once.
-var statmWarnOnce sync.Once
-
 // memPeak holds the high-water marks observed during one sampler run.
 type memPeak struct {
 	RSSPeakBytes         int64
@@ -92,43 +89,6 @@ func (p memPeak) eventDetails(label string) string {
 		bytesToMB(p.StackInuseMaxBytes),
 		p.GoroutinesPeak,
 	)
-}
-
-// parseStatmRSS extracts the resident-pages field (the second whitespace
-// separated value of /proc/self/statm) and converts it to bytes.
-func parseStatmRSS(content string, pageSize int) (int64, error) {
-	fields := strings.Fields(content)
-	if len(fields) < 2 {
-		return 0, fmt.Errorf("statm: expected at least 2 fields, got %d", len(fields))
-	}
-	pages, err := strconv.ParseInt(fields[1], 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("statm: parse resident pages: %w", err)
-	}
-	if pages < 0 {
-		return 0, fmt.Errorf("statm: negative resident pages %d", pages)
-	}
-	return pages * int64(pageSize), nil
-}
-
-// readRSSBytes returns the process resident set size in bytes. It returns 0 on
-// platforms without procfs (macOS dev boxes), warning at most once.
-func readRSSBytes() int64 {
-	data, err := os.ReadFile("/proc/self/statm")
-	if err != nil {
-		statmWarnOnce.Do(func() {
-			slog.Warn("rss sampling unavailable", "error", err)
-		})
-		return 0
-	}
-	rss, err := parseStatmRSS(string(data), os.Getpagesize())
-	if err != nil {
-		statmWarnOnce.Do(func() {
-			slog.Warn("rss sampling unavailable", "error", err)
-		})
-		return 0
-	}
-	return rss
 }
 
 // startMemSampler polls RSS and runtime memory stats every interval until the
@@ -158,7 +118,7 @@ func startMemSamplerWithSchedule(ctx context.Context, interval time.Duration, la
 	}
 
 	sample := func(final bool) {
-		rss := readRSSBytes()
+		rss := procmem.RSSBytes()
 		var ms runtime.MemStats
 		runtime.ReadMemStats(&ms)
 		goroutines := runtime.NumGoroutine()

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -371,10 +372,39 @@ func (s *Store) walFileSize() int64 {
 }
 
 // RunVacuum reclaims freelist pages from high-churn tables (post_buffer, topic_tokens).
-// This rewrites the entire database file, briefly blocking all readers.
-// Call during low-traffic periods (e.g. weekly at midnight UTC).
+// This rewrites the entire database file, briefly blocking all readers, so it
+// only runs when the freelist is actually large enough to be worth the stall:
+// on prod an unconditional weekly VACUUM rewrote 644 MB to reclaim ~10 MB and
+// blocked writes for 160 s. VACUUM_FREELIST_PCT (default 20) is the share of
+// total pages the freelist must exceed. Call during low-traffic periods.
 func (s *Store) RunVacuum(ctx context.Context) error {
-	slog.Info("vacuum: starting")
+	var freelistPages, pageCount int64
+	if err := s.writeDB.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&freelistPages); err != nil {
+		return fmt.Errorf("vacuum: freelist_count: %w", err)
+	}
+	if err := s.writeDB.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
+		return fmt.Errorf("vacuum: page_count: %w", err)
+	}
+
+	thresholdPct := envInt("VACUUM_FREELIST_PCT", 20)
+	var freelistPct float64
+	if pageCount > 0 {
+		freelistPct = float64(freelistPages) / float64(pageCount) * 100
+	}
+	if freelistPct <= float64(thresholdPct) {
+		slog.Info("vacuum: skipped, freelist below threshold",
+			"freelist_pages", freelistPages,
+			"page_count", pageCount,
+			"freelist_pct", math.Round(freelistPct*10)/10,
+			"threshold_pct", thresholdPct)
+		return nil
+	}
+
+	slog.Info("vacuum: starting",
+		"freelist_pages", freelistPages,
+		"page_count", pageCount,
+		"freelist_pct", math.Round(freelistPct*10)/10,
+		"threshold_pct", thresholdPct)
 	start := time.Now()
 	if _, err := s.writeDB.ExecContext(ctx, "VACUUM"); err != nil {
 		return fmt.Errorf("vacuum: %w", err)
@@ -564,6 +594,12 @@ func (s *Store) migrate() error {
 		`ALTER TABLE stats_snapshots ADD COLUMN goroutine_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stats_snapshots ADD COLUMN cycle_duration_ms INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stats_snapshots ADD COLUMN trending_duration_ms INTEGER NOT NULL DEFAULT 0`,
+
+		// Firehose reconstruction and RSS-aware memory accounting
+		`ALTER TABLE stats_snapshots ADD COLUMN early_rejected_non_english INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN rss_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN heap_released_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN stack_inuse_bytes INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, stmt := range stmts {
