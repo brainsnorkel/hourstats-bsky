@@ -7,6 +7,10 @@ import (
 )
 
 // InsertPost inserts a single post into the buffer (upsert on URI).
+//
+// As in FlushPostBatch, author_handle/likes/reposts/replies are absent from the
+// conflict SET list: they are owned by the hydrator, and a re-insert of an
+// already-hydrated URI carries only the zero values an ingest event supplies.
 func (s *Store) InsertPost(ctx context.Context, post Post) error {
 	const q = `INSERT INTO post_buffer (uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, inserted_at, is_reply)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -14,10 +18,6 @@ func (s *Store) InsertPost(ctx context.Context, post Post) error {
 			cid=excluded.cid,
 			text=excluded.text,
 			author_did=excluded.author_did,
-			author_handle=excluded.author_handle,
-			likes=excluded.likes,
-			reposts=excluded.reposts,
-			replies=excluded.replies,
 			sentiment=excluded.sentiment,
 			engagement_score=excluded.engagement_score,
 			is_reply=excluded.is_reply`
@@ -39,6 +39,7 @@ func (s *Store) InsertPost(ctx context.Context, post Post) error {
 }
 
 // InsertPostsBatch inserts multiple posts in a single transaction.
+// Hydrated columns are preserved on conflict; see InsertPost.
 func (s *Store) InsertPostsBatch(ctx context.Context, posts []Post) error {
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -52,10 +53,6 @@ func (s *Store) InsertPostsBatch(ctx context.Context, posts []Post) error {
 			cid=excluded.cid,
 			text=excluded.text,
 			author_did=excluded.author_did,
-			author_handle=excluded.author_handle,
-			likes=excluded.likes,
-			reposts=excluded.reposts,
-			replies=excluded.replies,
 			sentiment=excluded.sentiment,
 			engagement_score=excluded.engagement_score,
 			is_reply=excluded.is_reply`)

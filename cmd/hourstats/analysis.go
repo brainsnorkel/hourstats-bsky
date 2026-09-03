@@ -193,21 +193,26 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		)
 	}
 
-	// A timed-out hydration abandons batches silently. If it cost us more than
-	// HYDRATION_MAX_UNHYDRATED_PCT of the window, the surviving sample is not
+	// If too much of the window never got hydrated, the surviving sample is not
 	// representative, so take the low-confidence path: record sentiment, skip
-	// posting. Runs that finished hydration are unaffected — posts legitimately
-	// go missing (deleted, blocked, suspended) and that is not a truncated run.
-	if hydrationTimedOut && windowPosts > 0 {
+	// posting. This applies however the posts were lost — a timeout, a
+	// non-retryable 4xx storm, or retries exhausted early all leave the same
+	// hole, and only the timeout used to be caught here.
+	//
+	// The default of 10% clears prod's routine exclusion rate (~3.6%, from posts
+	// deleted or moderated between ingest and hydration) with room to spare, so
+	// healthy cycles are unaffected.
+	if windowPosts > 0 {
 		maxUnhydratedPct := envInt("HYDRATION_MAX_UNHYDRATED_PCT", 10)
 		unhydratedPct := float64(unhydrated) * 100 / float64(windowPosts)
 		if unhydratedPct > float64(maxUnhydratedPct) {
 			lowConfidence = true
-			slog.Warn("hydration timeout dropped too much of the window — posting skipped",
+			slog.Warn("too much of the window went unhydrated — posting skipped",
 				"unhydrated", unhydrated,
 				"window_posts", windowPosts,
 				"unhydrated_pct", fmt.Sprintf("%.1f%%", unhydratedPct),
 				"max_pct", maxUnhydratedPct,
+				"hydration_timed_out", hydrationTimedOut,
 			)
 		}
 	}
@@ -274,7 +279,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		slog.Error("create run failed", "error", err)
 	}
 
-	firehoseSnapshot := int(collector.SwapFirehoseCount())
+	firehoseSnapshot := int(collector.FirehoseSinceAnalysis())
 
 	avgCompound := netSentimentPct / 100.0
 	sdp := store.SentimentDataPoint{
@@ -318,6 +323,19 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 				slog.Warn("topic analysis failed (dry run cycle)", "error", outcome.err)
 			}
 		}
+	} else if ctx.Err() != nil {
+		// Shutdown landed after hydration. The run and sentiment rows above
+		// have already failed with "context canceled", so publishing now would
+		// leave an orphan post and a hole in sentiment_history.
+		slog.Warn("shutdown in progress, skipping all posts for this cycle",
+			"run_id", runID,
+			"error", ctx.Err(),
+		)
+		if topicAnalysisDone != nil {
+			if outcome := <-topicAnalysisDone; outcome.err != nil {
+				slog.Warn("topic analysis failed (shutdown cycle)", "error", outcome.err)
+			}
+		}
 	} else {
 		postedURI, postedCID := postSummary(ctx, bskyClient, top5, overallSentiment, netSentimentPct, analysisMinutes, len(posts))
 		if postedURI != "" {
@@ -340,6 +358,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 				"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 			if outcome.err != nil {
 				slog.Error("topic analysis cycle failed", "error", outcome.err)
+			} else if ctx.Err() != nil {
+				// Cancellation can land mid-chain; RunTrendingPost's own DB read
+				// would fail anyway, but say why rather than log a bare error.
+				slog.Warn("shutdown in progress, skipping trending post", "run_id", runID, "error", ctx.Err())
 			} else {
 				// Reply under the sparkline when we have one, otherwise post
 				// standalone. Either way the snapshot must be this cycle's.
