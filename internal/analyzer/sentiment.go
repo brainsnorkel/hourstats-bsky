@@ -2,7 +2,6 @@ package analyzer
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/jonreiter/govader"
 )
@@ -11,7 +10,6 @@ type AnalyzedPost struct {
 	Post
 	Sentiment       string
 	SentimentScore  float64
-	Topics          []string
 	EngagementScore float64
 }
 
@@ -39,7 +37,7 @@ func New() *SentimentAnalyzer {
 }
 
 func (sa *SentimentAnalyzer) AnalyzePosts(posts []Post) ([]AnalyzedPost, error) {
-	var analyzedPosts []AnalyzedPost
+	analyzedPosts := make([]AnalyzedPost, 0, len(posts))
 
 	for _, post := range posts {
 		analyzedPost, err := sa.analyzePost(post)
@@ -55,14 +53,12 @@ func (sa *SentimentAnalyzer) AnalyzePosts(posts []Post) ([]AnalyzedPost, error) 
 func (sa *SentimentAnalyzer) analyzePost(post Post) (AnalyzedPost, error) {
 	sentiment := sa.analyzer.PolarityScores(post.Text)
 	sentimentCategory := sa.categorizeSentiment(sentiment)
-	topics := sa.extractTopics(post.Text)
 	engagementScore := sa.calculateEngagementScore(post, sentiment.Compound)
 
 	return AnalyzedPost{
 		Post:            post,
 		Sentiment:       sentimentCategory,
 		SentimentScore:  sentiment.Compound,
-		Topics:          topics,
 		EngagementScore: engagementScore,
 	}, nil
 }
@@ -78,65 +74,6 @@ func (sa *SentimentAnalyzer) categorizeSentiment(sentiment govader.Sentiment) st
 		return "negative"
 	}
 	return "neutral"
-}
-
-func (sa *SentimentAnalyzer) extractTopics(text string) []string {
-	// Simple topic extraction based on hashtags and common keywords
-	// In a more sophisticated implementation, we'd use NLP libraries
-	// or machine learning models for better topic extraction
-
-	// Clean the text and split into words
-	cleaned := strings.ToLower(text)
-	words := strings.Fields(cleaned)
-	var topics []string
-
-	// Extract common topic keywords (simplified)
-	topicKeywords := map[string]string{
-		"tech":     "technology",
-		"ai":       "artificial intelligence",
-		"crypto":   "cryptocurrency",
-		"climate":  "climate change",
-		"politics": "politics",
-		"news":     "news",
-		"music":    "music",
-		"art":      "art",
-		"science":  "science",
-		"health":   "health",
-	}
-
-	// Extract hashtags and their keyword equivalents
-	for _, word := range words {
-		if strings.HasPrefix(word, "#") {
-			topics = append(topics, word)
-			// Also check if the hashtag content matches a keyword
-			hashtagContent := strings.TrimLeft(word, "#")
-			cleanHashtag := strings.TrimRight(hashtagContent, ".,!?;:")
-			if topic, exists := topicKeywords[cleanHashtag]; exists {
-				topics = append(topics, topic)
-			}
-		}
-	}
-
-	for _, word := range words {
-		// Remove punctuation from the end of words
-		cleanWord := strings.TrimRight(word, ".,!?;:")
-		if topic, exists := topicKeywords[cleanWord]; exists {
-			topics = append(topics, topic)
-		}
-	}
-
-	// Remove duplicates
-	seen := make(map[string]bool)
-	var uniqueTopics []string
-	for _, topic := range topics {
-		if !seen[topic] {
-			seen[topic] = true
-			uniqueTopics = append(uniqueTopics, topic)
-		}
-	}
-	topics = uniqueTopics
-
-	return topics
 }
 
 func (sa *SentimentAnalyzer) calculateEngagementScore(post Post, sentimentScore float64) float64 {

@@ -123,10 +123,15 @@ func (s *Store) GetPostCount(ctx context.Context, since time.Time) (int, error) 
 }
 
 // UpdatePostEngagement updates engagement metrics and author handle for a post.
-func (s *Store) UpdatePostEngagement(ctx context.Context, uri string, likes, reposts, replies int, authorHandle, sentiment string, engagementScore float64) error {
+//
+// The sentiment and engagement_score columns are deliberately not touched: the
+// hydrator only ever wrote the zero values the ingest INSERT already stored, and
+// nothing reads them back (GetPostsSince scans them, but toAnalyzerPosts drops
+// them). Rewriting them made every hydration UPDATE wider than it needed to be.
+func (s *Store) UpdatePostEngagement(ctx context.Context, uri string, likes, reposts, replies int, authorHandle string) error {
 	_, err := s.writeDB.ExecContext(ctx,
-		`UPDATE post_buffer SET likes=?, reposts=?, replies=?, author_handle=?, sentiment=?, engagement_score=? WHERE uri=?`,
-		likes, reposts, replies, authorHandle, sentiment, engagementScore, uri,
+		`UPDATE post_buffer SET likes=?, reposts=?, replies=?, author_handle=? WHERE uri=?`,
+		likes, reposts, replies, authorHandle, uri,
 	)
 	if err != nil {
 		return fmt.Errorf("update engagement: %w", err)

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,7 +116,61 @@ type WeeklyPostTotal struct {
 	TotalFirehosePosts int
 }
 
+// envInt reads an integer environment variable, returning fallback if the
+// variable is unset or fails to parse as an integer. Invalid values are
+// logged as a warning and fall back to the default.
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		slog.Warn("invalid env value, using default", "key", key, "value", v, "default", fallback)
+		return fallback
+	}
+	return n
+}
+
+// envString reads a string environment variable, validating it
+// case-insensitively against allowed. Returns the matching entry from
+// allowed, or fallback if the variable is unset or matches nothing.
+func envString(key, fallback string, allowed []string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	for _, a := range allowed {
+		if strings.EqualFold(v, a) {
+			return a
+		}
+	}
+	slog.Warn("invalid env value, using default", "key", key, "value", v, "default", fallback, "allowed", allowed)
+	return fallback
+}
+
+// clampInt restricts n to [lo, hi], logging a warning if clamping occurred.
+func clampInt(key string, n, lo, hi int) int {
+	if n < lo {
+		slog.Warn("env value below minimum, clamping", "key", key, "value", n, "clamped_to", lo)
+		return lo
+	}
+	if n > hi {
+		slog.Warn("env value above maximum, clamping", "key", key, "value", n, "clamped_to", hi)
+		return hi
+	}
+	return n
+}
+
 // New opens (or creates) a SQLite database at dbPath with separate read/write pools.
+//
+// The read pool's memory footprint is tunable via environment variables so
+// operators can fit it within constrained VM memory without a rebuild. All
+// default to today's hardcoded values:
+//   - SQLITE_MMAP_MB (default 128): mmap_size in MB; 0 disables mmap (set explicitly).
+//   - SQLITE_READ_CONNS (default 4, clamped to 1..8): max/idle read connections.
+//   - SQLITE_READ_CACHE_MB (default 20): per-connection page cache size in MB.
+//   - SQLITE_TEMP_STORE (default "MEMORY"): "MEMORY" or "FILE".
 func New(dbPath string) (*Store, error) {
 	writeParams := url.Values{}
 	writeParams.Add("_pragma", "busy_timeout(30000)")
@@ -131,14 +186,21 @@ func New(dbPath string) (*Store, error) {
 	writeDB.SetMaxOpenConns(1)
 	writeDB.SetMaxIdleConns(1)
 
+	mmapMB := envInt("SQLITE_MMAP_MB", 128)
+	readConns := clampInt("SQLITE_READ_CONNS", envInt("SQLITE_READ_CONNS", 4), 1, 8)
+	readCacheMB := envInt("SQLITE_READ_CACHE_MB", 20)
+	tempStore := envString("SQLITE_TEMP_STORE", "MEMORY", []string{"MEMORY", "FILE"})
+
 	readParams := url.Values{}
 	readParams.Add("_pragma", "busy_timeout(30000)")
 	readParams.Add("_pragma", "journal_mode(WAL)")
 	readParams.Add("_pragma", "foreign_keys(ON)")
 	readParams.Add("_pragma", "query_only(ON)")
-	readParams.Add("_pragma", "cache_size(-20000)")
-	readParams.Add("_pragma", "temp_store(MEMORY)")
-	readParams.Add("_pragma", "mmap_size(134217728)")
+	readParams.Add("_pragma", fmt.Sprintf("cache_size(-%d)", readCacheMB*1024))
+	readParams.Add("_pragma", fmt.Sprintf("temp_store(%s)", tempStore))
+	// Always set mmap_size explicitly (0 disables) so the effective value does
+	// not depend on the library's compiled-in default.
+	readParams.Add("_pragma", fmt.Sprintf("mmap_size(%d)", mmapMB*1048576))
 	readDSN := fmt.Sprintf("file:%s?%s", dbPath, readParams.Encode())
 
 	readDB, err := sql.Open("sqlite", readDSN)
@@ -146,9 +208,14 @@ func New(dbPath string) (*Store, error) {
 		writeDB.Close()
 		return nil, fmt.Errorf("open read db: %w", err)
 	}
-	readDB.SetMaxOpenConns(4)
-	readDB.SetMaxIdleConns(4)
-	slog.Info("readDB pragmas set", "cache_size", "-20000 (20MB)", "temp_store", "MEMORY", "mmap_size", "128MB")
+	readDB.SetMaxOpenConns(readConns)
+	readDB.SetMaxIdleConns(readConns)
+	slog.Info("readDB pragmas set",
+		"cache_size_mb", readCacheMB,
+		"temp_store", tempStore,
+		"mmap_size_mb", mmapMB,
+		"read_conns", readConns,
+	)
 
 	maintParams := url.Values{}
 	maintParams.Add("_pragma", "busy_timeout(1000)")

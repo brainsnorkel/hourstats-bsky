@@ -55,6 +55,7 @@ cmd/*/main
 /dynamodb-restore
 /graph-lab
 /hourstats
+/hourstats-stats
 /import-dynamodb
 /force-trending
 /cleanup-kv

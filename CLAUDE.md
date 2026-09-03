@@ -55,6 +55,10 @@ fly ssh console -a hourstats-prod       # SSH into production
 | `WAL_CHECKPOINT_THRESHOLD_MB` | `50` | WAL size (MB) that triggers TRUNCATE escalation |
 | `HEALTH_CHART_HOURS` | `6` | Default hours for health chart generation |
 | `HEALTH_CHART_MEMORY_LIMIT_MB` | `512` | Memory limit line on health charts |
+| `SQLITE_MMAP_MB` | `128` | Read pool mmap_size in MB; `0` disables mmap entirely |
+| `SQLITE_READ_CONNS` | `4` | Read pool max/idle connections (clamped to 1-8) |
+| `SQLITE_READ_CACHE_MB` | `20` | Read pool per-connection page cache size in MB |
+| `SQLITE_TEMP_STORE` | `MEMORY` | Read pool temp_store mode: `MEMORY` or `FILE` |
 
 ## Architecture
 
@@ -66,7 +70,7 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 |-----------|---------|-------------|
 | **Jetstream Consumer** | Always running | WebSocket firehose, filter English posts, write to SQLite |
 | **Write Flusher** | 2s ticker / 1500 batch | Batches pending writes to reduce SQLite contention |
-| **Analysis Cycle** | Wall-clock ticker (default 30m, configurable) | Hydrate engagement, VADER sentiment, post summary |
+| **Analysis Cycle** | Wall-clock ticker (default 30m, configurable; prod runs 60m at :55 via `ANALYSIS_INTERVAL_MINUTES`/`ANALYSIS_OFFSET_MINUTES`) | Hydrate engagement, VADER sentiment, post summary |
 | **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
 | **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled) |
 | **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply |
@@ -153,7 +157,7 @@ Key tables: `post_buffer` (2h retention), `runs` (48h), `sentiment_history` (8 d
 ## Deployment
 
 - **Production**: `hourstats-prod` -- shared-cpu-1x, 1024MB RAM, SJC region
-- **Staging**: `hourstats-staging` -- shared-cpu-1x, 512MB RAM, SJC region
+- **Staging**: `hourstats-staging` -- shared-cpu-1x, 1024MB RAM, SJC region
 - **Container**: Multi-stage Docker build (golang:1.24-alpine to alpine:3.21)
 - **Secrets**: `fly secrets set KEY=value -a hourstats-prod`
 - **Config files**: `fly.prod.toml`, `fly.staging.toml`

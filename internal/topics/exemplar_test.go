@@ -3,6 +3,7 @@ package topics
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -12,11 +13,11 @@ type mockCandidateStore struct {
 	candidatesFn func(keywords []string) []store.ExemplarCandidate
 	candidates   map[string][]store.ExemplarCandidate
 	err          error
-	callCount    int
+	callCount    atomic.Int64
 }
 
 func (m *mockCandidateStore) GetExemplarCandidates(_ context.Context, keywords []string, _ string, limit int) ([]store.ExemplarCandidate, error) {
-	m.callCount++
+	m.callCount.Add(1)
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -190,8 +191,8 @@ func TestHydrateExemplars_SkipsMemeTopics(t *testing.T) {
 	if result[1].ExemplarHandle != "alice.bsky.social" {
 		t.Errorf("non-meme topic should get exemplar, got %q", result[1].ExemplarHandle)
 	}
-	if s.callCount != 1 {
-		t.Errorf("expected 1 DB query (meme skipped), got %d", s.callCount)
+	if got := s.callCount.Load(); got != 1 {
+		t.Errorf("expected 1 DB query (meme skipped), got %d", got)
 	}
 }
 

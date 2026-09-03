@@ -2,6 +2,7 @@ app = "hourstats-staging"
 primary_region = "sjc"
 kill_signal = "SIGTERM"
 kill_timeout = 15
+swap_size_mb = 512
 
 [build]
   dockerfile = "Dockerfile"
@@ -12,13 +13,15 @@ kill_timeout = 15
   HOURSTATS_PROFILE = "staging"
   DRY_RUN = "false"
   ANALYSIS_INTERVAL_MINUTES = "60"
-  ANALYSIS_OFFSET_MINUTES = "55"
+  ANALYSIS_OFFSET_MINUTES = "25"
   TRENDING_ENABLED = "true"
   S3_BACKUP_BUCKET = "hourstats-sqlite-backups"
   S3_BACKUP_REGION = "us-west-2"
   BACKUP_RETAIN_DAYS = "7"
-  GOMEMLIMIT = "400MiB"
+  GOMEMLIMIT = "800MiB"
   GOGC = "75"
+  SQLITE_MMAP_MB = "0"
+  SQLITE_READ_CONNS = "3"
 
 [mounts]
   source = "data"

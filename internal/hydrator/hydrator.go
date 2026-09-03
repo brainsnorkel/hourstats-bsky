@@ -24,7 +24,7 @@ type PostFetcher interface {
 
 // PostUpdater abstracts the store write for testability.
 type PostUpdater interface {
-	UpdatePostEngagement(ctx context.Context, uri string, likes, reposts, replies int, authorHandle, sentiment string, engagementScore float64) error
+	UpdatePostEngagement(ctx context.Context, uri string, likes, reposts, replies int, authorHandle string) error
 }
 
 // BlueskyFetcher is the real PostFetcher backed by the indigo client.
@@ -126,82 +126,105 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 		filtered atomic.Int64
 		errCount atomic.Int64
 		wg       sync.WaitGroup
-		sem      = make(chan struct{}, h.cfg.MaxConcurrency)
 		limiter  = rate.NewLimiter(rate.Limit(h.cfg.RateLimit), 1)
 	)
 
-	for i, batch := range batches {
-		// Check context before launching.
-		if ctx.Err() != nil {
-			break
+	// Bounded worker pool. Launching one goroutine per batch peaked at ~4,500
+	// live goroutines on a full window; a fixed pool of MaxConcurrency workers
+	// pulling batch indices does the same work with the same concurrency limit.
+	batchCh := make(chan int)
+	go func() {
+		defer close(batchCh)
+		for i := range batches {
+			select {
+			case batchCh <- i:
+			case <-ctx.Done():
+				// Every remaining batch will never be attempted, so charge it
+				// as failed. Without this the caller sees Errors=0 on a
+				// deadline-exceeded run and cannot tell a truncated hydration
+				// from a complete one. Batch i was not handed to a worker, so
+				// this range cannot double-count with the worker-side charge.
+				for j := i; j < len(batches); j++ {
+					errCount.Add(int64(len(batches[j])))
+				}
+				return
+			}
 		}
+	}()
 
-		wg.Add(1)
-		go func(batchIdx int, batchURIs []string) {
+	workers := h.cfg.MaxConcurrency
+	if workers > len(batches) {
+		workers = len(batches)
+	}
+
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
 			defer wg.Done()
 
-			// Acquire semaphore.
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				errCount.Add(int64(len(batchURIs)))
-				return
-			}
+			for batchIdx := range batchCh {
+				batchURIs := batches[batchIdx]
 
-			// Rate limit.
-			if err := limiter.Wait(ctx); err != nil {
-				errCount.Add(int64(len(batchURIs)))
-				return
-			}
-
-			views, err := h.fetcher.GetPosts(ctx, batchURIs)
-			if err != nil {
-				slog.Error("hydrator batch failed", "batch", fmt.Sprintf("%d/%d", batchIdx+1, len(batches)), "error", err)
-				errCount.Add(int64(len(batchURIs)))
-				return
-			}
-
-			for _, v := range views {
-				if v == nil {
+				// Context already cancelled: charge the batch as failed, as the
+				// old semaphore-acquisition path did.
+				if ctx.Err() != nil {
+					errCount.Add(int64(len(batchURIs)))
 					continue
 				}
 
-				if hasAdultContent(v.Labels) {
-					filtered.Add(1)
+				// Rate limit.
+				if err := limiter.Wait(ctx); err != nil {
+					errCount.Add(int64(len(batchURIs)))
 					continue
 				}
 
-				likes, reposts, replies := counters(v)
-				handle := ""
-				if v.Author != nil {
-					handle = v.Author.Handle
-				}
-
-				// Sentiment and engagement score are left zero — the analyzer fills them later.
-				if err := h.updater.UpdatePostEngagement(ctx, v.Uri, likes, reposts, replies, handle, "", 0); err != nil {
-					slog.Error("hydrator update failed", "uri", v.Uri, "error", err)
-					errCount.Add(1)
+				views, err := h.fetcher.GetPosts(ctx, batchURIs)
+				if err != nil {
+					slog.Error("hydrator batch failed", "batch", fmt.Sprintf("%d/%d", batchIdx+1, len(batches)), "error", err)
+					errCount.Add(int64(len(batchURIs)))
 					continue
 				}
 
-				// Mirror the DB write to the in-memory slice so callers don't
-				// need a second GetPostsSince to see post-hydration state.
-				if i, ok := idx[v.Uri]; ok {
-					posts[i].AuthorHandle = handle
-					posts[i].Likes = likes
-					posts[i].Reposts = reposts
-					posts[i].Replies = replies
-				}
-				hydrated.Add(1)
-			}
+				for _, v := range views {
+					if v == nil {
+						continue
+					}
 
-			// Progress log every few batches.
-			h2 := hydrated.Load()
-			if h2 > 0 && h2%500 < int64(h.cfg.BatchSize) {
-				slog.Info("hydrator progress", "hydrated", h2, "total", len(posts))
+					if hasAdultContent(v.Labels) {
+						filtered.Add(1)
+						continue
+					}
+
+					likes, reposts, replies := counters(v)
+					handle := ""
+					if v.Author != nil {
+						handle = v.Author.Handle
+					}
+
+					if err := h.updater.UpdatePostEngagement(ctx, v.Uri, likes, reposts, replies, handle); err != nil {
+						slog.Error("hydrator update failed", "uri", v.Uri, "error", err)
+						errCount.Add(1)
+						continue
+					}
+
+					// Mirror the DB write to the in-memory slice so callers don't
+					// need a second GetPostsSince to see post-hydration state.
+					if pi, ok := idx[v.Uri]; ok {
+						posts[pi].AuthorHandle = handle
+						posts[pi].Likes = likes
+						posts[pi].Reposts = reposts
+						posts[pi].Replies = replies
+					}
+					hydrated.Add(1)
+				}
+
+				// Progress log every few batches.
+				h2 := hydrated.Load()
+				if h2 > 0 && h2%500 < int64(h.cfg.BatchSize) {
+					slog.Info("hydrator progress", "hydrated", h2, "total", len(posts))
+				}
 			}
-		}(i, batch)
+		}()
 	}
 
 	wg.Wait()
