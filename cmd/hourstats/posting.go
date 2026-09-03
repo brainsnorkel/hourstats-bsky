@@ -41,7 +41,22 @@ func filterHighConfidence(points []store.SentimentDataPoint) []store.SentimentDa
 // Posting helpers
 // ---------------------------------------------------------------------------
 
-func postSummary(ctx context.Context, bskyClient *client.BlueskyClient, top5 []analyzer.AnalyzedPost, overallSentiment string, netPct float64, analysisMinutes, totalPosts int) (string, string) {
+// summaryPoster is the slice of the Bluesky client that postSummary needs,
+// narrowed to one method so the shutdown guard below can be tested.
+type summaryPoster interface {
+	PostTrendingSummary(posts []client.Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentimentPercentage float64) (string, string, error)
+}
+
+func postSummary(ctx context.Context, bskyClient summaryPoster, top5 []analyzer.AnalyzedPost, overallSentiment string, netPct float64, analysisMinutes, totalPosts int) (string, string) {
+	// PostTrendingSummary takes no context and builds its own
+	// context.Background(), so a ctx already cancelled by SIGTERM would still
+	// publish while the surrounding DB writes fail with "context canceled" —
+	// an orphan post plus a hole in sentiment_history. Refuse to publish.
+	if err := ctx.Err(); err != nil {
+		slog.Warn("shutdown in progress, skipping summary post", "error", err)
+		return "", ""
+	}
+
 	clientPosts := make([]client.Post, len(top5))
 	for i, ap := range top5 {
 		clientPosts[i] = client.Post{
