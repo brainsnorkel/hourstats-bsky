@@ -109,10 +109,8 @@ func buildYearlyPostText(points []state.YearlySparklineDataPoint) string {
 	endDate := points[len(points)-1].Timestamp.Format("2006-01-02")
 	text := fmt.Sprintf("Bluesky Sentiment %s - %s", startDate, endDate)
 
-	var minSent, maxSent float64
-	var minDate, maxDate string
-	minSent = points[0].AverageSentiment
-	maxSent = points[0].AverageSentiment
+	minSent, maxSent := points[0].AverageSentiment, points[0].AverageSentiment
+	minDate, maxDate := points[0].Date, points[0].Date
 	for _, p := range points {
 		if p.AverageSentiment < minSent {
 			minSent = p.AverageSentiment
@@ -135,31 +133,6 @@ func buildYearlyPostText(points []state.YearlySparklineDataPoint) string {
 		text += "\n\n" + strings.Join(extremes, "\n")
 	}
 	return text
-}
-
-func buildYearlyAltText(points []state.YearlySparklineDataPoint) string {
-	if len(points) == 0 {
-		return "Yearly Bluesky sentiment chart"
-	}
-	var sum, minS, maxS float64
-	var minDate, maxDate string
-	minS = points[0].AverageSentiment
-	maxS = points[0].AverageSentiment
-	for _, p := range points {
-		sum += p.AverageSentiment
-		if p.AverageSentiment < minS {
-			minS = p.AverageSentiment
-			minDate = p.Date
-		}
-		if p.AverageSentiment > maxS {
-			maxS = p.AverageSentiment
-			maxDate = p.Date
-		}
-	}
-	avg := sum / float64(len(points))
-	latest := points[len(points)-1]
-	return fmt.Sprintf("Yearly Bluesky sentiment trend. Current: %.1f%% (%s). High: %.1f%% (%s). Low: %.1f%% (%s). Average: %.1f%%.",
-		latest.AverageSentiment, latest.Date, maxS, maxDate, minS, minDate, avg)
 }
 
 func buildEventDates(points []state.YearlySparklineDataPoint) []client.EventDate {

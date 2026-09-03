@@ -22,6 +22,9 @@ import (
 // Bluesky and charting are skipped to avoid misleading output from tiny samples.
 const minPostsRequired = 500
 
+// topPostCount is how many top-engagement posts are listed in the summary post.
+const topPostCount = 3
+
 var (
 	sentimentAnalyzerOnce sync.Once
 	sentimentAnalyzer     *analyzer.SentimentAnalyzer
@@ -232,23 +235,23 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	sort.Slice(analyzed, func(i, j int) bool {
 		return analyzed[i].EngagementScore > analyzed[j].EngagementScore
 	})
-	// Select top 5 posts, deduplicating by author so the same handle
+	// Select the top posts, deduplicating by author so the same handle
 	// doesn't appear multiple times (which breaks facet linking).
-	var top5 []analyzer.AnalyzedPost
+	var topPosts []analyzer.AnalyzedPost
 	seenAuthors := make(map[string]bool)
 	for _, ap := range analyzed {
 		if seenAuthors[ap.Author] {
 			continue
 		}
 		seenAuthors[ap.Author] = true
-		top5 = append(top5, ap)
-		if len(top5) >= 5 {
+		topPosts = append(topPosts, ap)
+		if len(topPosts) >= topPostCount {
 			break
 		}
 	}
 
-	topStorePosts := make([]store.Post, len(top5))
-	for i, ap := range top5 {
+	topStorePosts := make([]store.Post, len(topPosts))
+	for i, ap := range topPosts {
 		topStorePosts[i] = store.Post{
 			URI: ap.URI, CID: ap.CID, Text: ap.Text,
 			AuthorHandle: ap.Author,
@@ -315,7 +318,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		slog.Info("DRY_RUN: would post summary",
 			"sentiment", overallSentiment,
 			"net_pct", netSentimentPct,
-			"top_count", len(top5),
+			"top_count", len(topPosts),
 			"total_posts", len(posts),
 		)
 		if topicAnalysisDone != nil {
@@ -337,7 +340,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			}
 		}
 	} else {
-		postedURI, postedCID := postSummary(ctx, bskyClient, top5, overallSentiment, netSentimentPct, analysisMinutes, len(posts))
+		postedURI, postedCID := postSummary(ctx, bskyClient, topPosts, overallSentiment, netSentimentPct, analysisMinutes, len(posts))
 		if postedURI != "" {
 			runState.TopPostURI = postedURI
 			runState.TopPostCID = postedCID

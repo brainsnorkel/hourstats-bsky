@@ -464,19 +464,58 @@ func TestBuildYearlyAltText(t *testing.T) {
 			{Date: "2026-01-31", AverageSentiment: 10.0},
 		}
 		got := buildYearlyAltText(points)
-		if !strings.HasPrefix(got, "Yearly Bluesky sentiment trend") {
-			t.Errorf("unexpected prefix: %q", got)
-		}
-		if !strings.Contains(got, "Current: 10.0%") {
-			t.Errorf("missing current value in: %q", got)
-		}
-		if !strings.Contains(got, "High: 10.0%") {
-			t.Errorf("missing high value in: %q", got)
-		}
-		if !strings.Contains(got, "Low: -3.0%") {
-			t.Errorf("missing low value in: %q", got)
+		for _, want := range []string{
+			"daily averages from 1 Jan 2026 to 31 Jan 2026",
+			"Year average +4.0% over 3 days",
+			"Latest +10.0% on 31 Jan",
+			"6.0 points above the year average of +4.0%",
+			"in the neutral zone",
+			"High +10.0% on 31 Jan",
+			"low -3.0% on 15 Jan",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in: %q", want, got)
+			}
 		}
 	})
+
+	t.Run("extreme on the first day is dated", func(t *testing.T) {
+		points := []state.YearlySparklineDataPoint{
+			{Date: "2026-01-01", AverageSentiment: 20.0},
+			{Date: "2026-01-02", AverageSentiment: 5.0},
+		}
+		got := buildYearlyAltText(points)
+		if !strings.Contains(got, "High +20.0% on 1 Jan") {
+			t.Errorf("first-day high should carry its date, got: %q", got)
+		}
+	})
+}
+
+func TestGenerateSparklineAltText(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	var points []state.SentimentDataPoint
+	for i := 0; i < 168; i++ {
+		v := 9.0 + float64(i)/167.0*3.0 // rises from +9 to +12 over the week
+		points = append(points, state.SentimentDataPoint{Timestamp: base.Add(time.Duration(i) * time.Hour), NetSentimentPercent: v})
+	}
+	got := generateSparklineAltText(points)
+	for _, want := range []string{
+		"hourly readings from Fri 28 Aug to Thu 3 Sep UTC",
+		"Latest +12.0%",
+		"above the 7-day average of +10.5%",
+		"in the positive zone",
+		"High +12.0% on Thu 23:00",
+		"low +9.0% on Fri 00:00",
+		"Over the week the trend rose from about +9.4% to +11.6%",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in: %q", want, got)
+		}
+	}
+
+	if got := generateSparklineAltText(points[:1]); got != "Seven day sentiment trend chart" {
+		t.Errorf("single point fallback: %q", got)
+	}
 }
 
 func TestBuildEventDates(t *testing.T) {
