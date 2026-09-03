@@ -90,11 +90,13 @@ func TestCalculateYearlyYRange(t *testing.T) {
 		t.Errorf("Expected min < max, got min=%f, max=%f", yRange.Min, yRange.Max)
 	}
 
-	// Test that padding is applied
-	expectedMin = -5.2 - 5.0 // min - padding (minimum 5%)
-	expectedMax = 15.5 + 5.0 // max + padding (minimum 5%)
-	if yRange.Min > expectedMin || yRange.Max < expectedMax {
-		t.Errorf("Expected range to include padding, got [%f, %f]", yRange.Min, yRange.Max)
+	// Test that padding is applied: the range hugs the data but never touches it
+	dataMin, dataMax := -5.2, 15.5
+	if yRange.Min >= dataMin || yRange.Max <= dataMax {
+		t.Errorf("Expected range to pad beyond [%f, %f], got [%f, %f]", dataMin, dataMax, yRange.Min, yRange.Max)
+	}
+	if yRange.Max-yRange.Min > 2*(dataMax-dataMin) {
+		t.Errorf("Expected range to hug the data, got [%f, %f] for data [%f, %f]", yRange.Min, yRange.Max, dataMin, dataMax)
 	}
 }
 

@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
-	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
@@ -47,7 +45,7 @@ type summaryPoster interface {
 	PostTrendingSummary(posts []client.Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentimentPercentage float64) (string, string, error)
 }
 
-func postSummary(ctx context.Context, bskyClient summaryPoster, top5 []analyzer.AnalyzedPost, overallSentiment string, netPct float64, analysisMinutes, totalPosts int) (string, string) {
+func postSummary(ctx context.Context, bskyClient summaryPoster, topPosts []analyzer.AnalyzedPost, overallSentiment string, netPct float64, analysisMinutes, totalPosts int) (string, string) {
 	// PostTrendingSummary takes no context and builds its own
 	// context.Background(), so a ctx already cancelled by SIGTERM would still
 	// publish while the surrounding DB writes fail with "context canceled" —
@@ -57,8 +55,8 @@ func postSummary(ctx context.Context, bskyClient summaryPoster, top5 []analyzer.
 		return "", ""
 	}
 
-	clientPosts := make([]client.Post, len(top5))
-	for i, ap := range top5 {
+	clientPosts := make([]client.Post, len(topPosts))
+	for i, ap := range topPosts {
 		clientPosts[i] = client.Post{
 			URI: ap.URI, CID: ap.CID, Text: ap.Text, Author: ap.Author,
 			Likes: ap.Likes, Reposts: ap.Reposts, Replies: ap.Replies,
@@ -132,26 +130,4 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 	}
 	slog.Info("sparkline posted", "points", len(history))
 	return sparkURI, sparkCID
-}
-
-func generateSparklineAltText(points []state.SentimentDataPoint) string {
-	if len(points) < 2 {
-		return "Seven day sentiment trend chart"
-	}
-	latest := points[len(points)-1]
-	var sum, lo, hi float64
-	lo = points[0].NetSentimentPercent
-	hi = points[0].NetSentimentPercent
-	for _, p := range points {
-		sum += p.NetSentimentPercent
-		if p.NetSentimentPercent < lo {
-			lo = p.NetSentimentPercent
-		}
-		if p.NetSentimentPercent > hi {
-			hi = p.NetSentimentPercent
-		}
-	}
-	avg := sum / float64(len(points))
-	return fmt.Sprintf("Seven day Bluesky sentiment. Latest: %.1f%%. High: %.1f%%. Low: %.1f%%. Average: %.1f%%.",
-		latest.NetSentimentPercent, hi, lo, avg)
 }

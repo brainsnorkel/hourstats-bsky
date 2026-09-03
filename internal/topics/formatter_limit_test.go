@@ -1,6 +1,7 @@
 package topics
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -46,11 +47,27 @@ func TestFormatTrendingPost_DropsTopicsWhenExemplarsExhausted(t *testing.T) {
 		t.Errorf("lowest-ranked topic should have been dropped: %q", text)
 	}
 	// Dropping whole topics must be preferred over hard truncation, which would
-	// cut a label mid-word and take the hashtag with it.
-	if !strings.HasSuffix(text, "#hstrend") {
-		t.Errorf("text should still end with the hashtag, got: %q", text)
+	// cut a label mid-word: the last line must be a complete topic line.
+	if strings.Contains(text, "#") {
+		t.Errorf("text should not carry a hashtag, got: %q", text)
 	}
+	assertLastLineIsCompleteTopic(t, text, ranked)
 	assertFacetsInBounds(t, text, facets)
+}
+
+// assertLastLineIsCompleteTopic fails if the final line of text is not one of
+// the ranked topics' full "N. label" lines (optionally followed by an exemplar
+// suffix), i.e. if the text was hard-truncated mid-label.
+func assertLastLineIsCompleteTopic(t *testing.T, text string, ranked []IdentifiedTopic) {
+	t.Helper()
+	lastLine := text[strings.LastIndex(text, "\n")+1:]
+	for _, topic := range ranked {
+		base := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)
+		if lastLine == base || strings.HasPrefix(lastLine, base+" ") {
+			return
+		}
+	}
+	t.Errorf("last line is not a complete topic line (truncated mid-label?): %q", lastLine)
 }
 
 // TestFormatTrendingPost_HardTruncatesOversizeSingleTopic covers the last
@@ -99,8 +116,8 @@ func TestFormatTrendingPost_ManyTopicsAlwaysFits(t *testing.T) {
 	if got := utf8.RuneCountInString(text); got > maxGraphemes {
 		t.Errorf("text is %d runes, want <= %d", got, maxGraphemes)
 	}
-	if !strings.HasSuffix(text, "#hstrend") {
-		t.Errorf("text should still end with the hashtag, got: %q", text)
+	if strings.Contains(text, "#") {
+		t.Errorf("text should not carry a hashtag, got: %q", text)
 	}
 	assertFacetsInBounds(t, text, facets)
 }

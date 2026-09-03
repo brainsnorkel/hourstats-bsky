@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-HourStats is a Go-based Bluesky bot that monitors the firehose in real time via Jetstream, performs VADER sentiment analysis on English posts, and publishes 30-minute summaries with the top 5 most engaged posts, sparkline charts, trending topics, and yearly sentiment visualizations.
+HourStats is a Go-based Bluesky bot that monitors the firehose in real time via Jetstream, performs VADER sentiment analysis on English posts, and publishes 30-minute summaries with the top 3 most engaged posts, sparkline charts, trending topics, and yearly sentiment visualizations.
 
 **Live bot:** [@hourstats.bsky.social](https://bsky.app/profile/hourstats.bsky.social)
 
@@ -92,7 +92,7 @@ Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
                                                        |
 30-min ticker -> Read posts -> Hydrate engagement (25 URIs/batch, 10 concurrent)
                                     |
-                            VADER sentiment -> Top 5 by engagement -> Post summary
+                            VADER sentiment -> Top 3 by engagement -> Post summary
                                     |
                             Sparkline reply -> Trending topics reply
 ```
