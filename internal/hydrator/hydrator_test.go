@@ -2,6 +2,7 @@ package hydrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -270,6 +271,11 @@ func TestHydrateContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected context error, got nil")
 	}
+	// The caller cancelled us; this is not the hydrator's own deadline, and the
+	// caller must be able to tell those apart.
+	if errors.Is(err, ErrHydrationTimedOut) {
+		t.Errorf("err = %v, want plain context error (parent cancellation is not a hydration timeout)", err)
+	}
 	// Partial results — not all 50 should be hydrated.
 	if res.Hydrated >= 50 {
 		t.Errorf("expected partial hydration, got %d", res.Hydrated)
@@ -306,6 +312,14 @@ func TestHydrateDeadlineAccountsEveryBatch(t *testing.T) {
 	res, err := h.Hydrate(context.Background(), posts)
 	if err == nil {
 		t.Fatal("expected deadline error, got nil")
+	}
+	// The caller must be able to detect this without string matching: a
+	// timed-out hydration silently drops posts from the analysis window.
+	if !errors.Is(err, ErrHydrationTimedOut) {
+		t.Errorf("err = %v, want it to wrap ErrHydrationTimedOut", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
 	}
 	if res.Total != 500 {
 		t.Errorf("Total = %d, want 500", res.Total)

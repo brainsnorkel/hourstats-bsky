@@ -37,16 +37,18 @@ func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) error
 	}
 	defer tx.Rollback()
 
+	// author_handle, likes, reposts and replies are deliberately absent from the
+	// SET list. This is the ingest path: Jetstream events carry none of them
+	// (see the store.Post built in cmd/hourstats/jetstream_consumer.go), so an
+	// at-least-once re-delivery — routine after a firehose reconnect replays the
+	// cursor — used to overwrite the hydrator's engagement counts with zeros and
+	// blank the handle. Trending exemplar selection reads those columns.
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO post_buffer (uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, inserted_at, is_reply)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(uri) DO UPDATE SET
 			cid=excluded.cid,
 			text=excluded.text,
 			author_did=excluded.author_did,
-			author_handle=excluded.author_handle,
-			likes=excluded.likes,
-			reposts=excluded.reposts,
-			replies=excluded.replies,
 			sentiment=excluded.sentiment,
 			engagement_score=excluded.engagement_score,
 			is_reply=excluded.is_reply`)

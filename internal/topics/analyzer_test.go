@@ -128,7 +128,7 @@ func TestRunAnalysisCycle_Success(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunAnalysisCycle(context.Background())
+	snapshotTime, err := a.RunAnalysisCycle(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,6 +138,12 @@ func TestRunAnalysisCycle_Success(t *testing.T) {
 	}
 	if !ms.purgedTokens {
 		t.Error("expected tokens to be purged")
+	}
+	if snapshotTime == "" {
+		t.Error("expected a snapshot time for the cycle that just wrote snapshots")
+	}
+	if got := ms.insertedSnapshots[0].SnapshotTime; got != snapshotTime {
+		t.Errorf("returned snapshot time = %q, want the inserted one %q", snapshotTime, got)
 	}
 }
 
@@ -150,12 +156,15 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunAnalysisCycle(context.Background())
+	snapshotTime, err := a.RunAnalysisCycle(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(ms.insertedSnapshots) != 0 {
 		t.Error("expected no snapshots for insufficient corpus")
+	}
+	if snapshotTime != "" {
+		t.Errorf("snapshot time = %q, want empty so no trending post is published", snapshotTime)
 	}
 }
 
@@ -174,7 +183,7 @@ func TestRunTrendingPost_DryRun(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), nil, true, "", "", "", "")
+	err := a.RunTrendingPost(context.Background(), nil, true, "2026-01-01T06:00:00Z", "", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -189,7 +198,7 @@ func TestRunTrendingPost_NoSnapshots(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), nil, false, "", "", "", "")
+	err := a.RunTrendingPost(context.Background(), nil, false, "2026-01-01T06:00:00Z", "", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,19 +207,22 @@ func TestRunTrendingPost_NoSnapshots(t *testing.T) {
 type mockPoster struct {
 	posted      bool
 	postedReply bool
+	text        string
 	replyErr    error
 }
 
-func (m *mockPoster) PostWithFacets(_ context.Context, _ string, _ []*bsky.RichtextFacet) error {
+func (m *mockPoster) PostWithFacets(_ context.Context, text string, _ []*bsky.RichtextFacet) error {
 	m.posted = true
+	m.text = text
 	return nil
 }
 
-func (m *mockPoster) PostWithFacetsAsReply(_ context.Context, _ string, _ []*bsky.RichtextFacet, _, _, _, _ string) (string, string, error) {
+func (m *mockPoster) PostWithFacetsAsReply(_ context.Context, text string, _ []*bsky.RichtextFacet, _, _, _, _ string) (string, string, error) {
 	if m.replyErr != nil {
 		return "", "", m.replyErr
 	}
 	m.postedReply = true
+	m.text = text
 	return "at://reply/uri", "replycid", nil
 }
 
@@ -230,7 +242,7 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), poster, false, "", "", "", "")
+	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -255,7 +267,7 @@ func TestRunTrendingPost_AsReply(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), poster, false, "at://root/uri", "rootcid", "at://spark/uri", "sparkcid")
+	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "at://root/uri", "rootcid", "at://spark/uri", "sparkcid")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -283,7 +295,7 @@ func TestRunTrendingPost_ReplyFallback(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), poster, false, "at://root/uri", "rootcid", "at://spark/uri", "sparkcid")
+	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "at://root/uri", "rootcid", "at://spark/uri", "sparkcid")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
