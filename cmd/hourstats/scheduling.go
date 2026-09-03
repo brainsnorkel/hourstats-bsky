@@ -2,8 +2,174 @@ package main
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 )
+
+// ---------------------------------------------------------------------------
+// Analysis cycle re-entrancy guard
+// ---------------------------------------------------------------------------
+
+// cycleGuard runs at most one analysis cycle at a time off the main scheduler
+// loop, and lets other schedulers (the daily branch, shutdown) wait for an
+// in-flight cycle. Running cycles in the main select blocked the WAL
+// checkpoint, stats snapshot and stall-detection tickers for the 5-18 minutes
+// a cycle takes.
+type cycleGuard struct {
+	mu   sync.Mutex
+	done chan struct{} // non-nil while a cycle is in flight
+}
+
+// TryStart runs fn in its own goroutine and reports true. It reports false
+// without running fn when a cycle is already in flight.
+func (g *cycleGuard) TryStart(fn func()) bool {
+	g.mu.Lock()
+	if g.done != nil {
+		g.mu.Unlock()
+		return false
+	}
+	done := make(chan struct{})
+	g.done = done
+	g.mu.Unlock()
+
+	go func() {
+		defer func() {
+			g.mu.Lock()
+			g.done = nil
+			g.mu.Unlock()
+			close(done)
+		}()
+		fn()
+	}()
+	return true
+}
+
+// Running reports whether a cycle is currently in flight.
+func (g *cycleGuard) Running() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.done != nil
+}
+
+// Wait blocks until the cycle in flight when Wait was called has finished, or
+// until timeout elapses. It reports true when no cycle is left in flight.
+func (g *cycleGuard) Wait(timeout time.Duration) bool {
+	g.mu.Lock()
+	done := g.done
+	g.mu.Unlock()
+	if done == nil {
+		return true
+	}
+	if timeout <= 0 {
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// waitClosed reports whether ch was closed within timeout.
+func waitClosed(ch <-chan struct{}, timeout time.Duration) bool {
+	if timeout <= 0 {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shutdown sequencing
+// ---------------------------------------------------------------------------
+
+const (
+	// shutdownBudget is Fly's kill_timeout (15s) minus a margin. Overrunning it
+	// means SIGKILL, which skips every step below.
+	shutdownBudget = 12 * time.Second
+
+	// The step budgets must sum to no more than shutdownBudget; see
+	// TestShutdownBudgetsFitKillTimeout.
+	shutdownFlusherBudget  = 5 * time.Second
+	shutdownConsumerBudget = 3 * time.Second
+	shutdownCycleBudget    = 2 * time.Second
+	shutdownSnapshotBudget = 1 * time.Second
+	shutdownStatsAPIBudget = 1 * time.Second
+
+	// dailyCycleWait bounds how long the daily branch waits for an in-flight
+	// analysis cycle before aggregating without it.
+	dailyCycleWait = 15 * time.Minute
+)
+
+// shutdownHooks are the shutdown steps, injected so the ordering can be tested
+// without a real store, consumer or flusher.
+type shutdownHooks struct {
+	Cancel       func()                   // stop producers and in-flight work
+	WaitFlusher  func(time.Duration) bool // drain buffered writes into the open store
+	WaitConsumer func(time.Duration) bool // let the consumer persist its cursor
+	WaitCycle    func(time.Duration) bool // let an in-flight analysis cycle bail out
+	Snapshot     func()                   // final stats snapshot
+	StopStatsAPI func()                   // stop serving /stats
+	CloseStore   func() error             // MUST be last
+}
+
+// runShutdown executes the shutdown steps in the only safe order: cancel
+// producers, then let the write flusher drain and the consumer persist its
+// cursor while the store is still open, then give an in-flight analysis cycle a
+// bounded moment to observe cancellation, and only then close the store.
+// Closing the store first is what produced "database is closed" on every
+// rolling deploy, losing the buffered posts and the cursor.
+func runShutdown(h shutdownHooks) {
+	start := time.Now()
+	deadline := start.Add(shutdownBudget)
+
+	// remaining caps a step's budget by what is left of the overall budget, so
+	// a slow early step cannot push the total past kill_timeout.
+	remaining := func(step time.Duration) time.Duration {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return 0
+		}
+		if step < left {
+			return step
+		}
+		return left
+	}
+
+	h.Cancel()
+
+	if !h.WaitFlusher(remaining(shutdownFlusherBudget)) {
+		slog.Warn("shutdown: write flusher did not finish draining in time, buffered posts may be lost")
+	}
+	if !h.WaitConsumer(remaining(shutdownConsumerBudget)) {
+		slog.Warn("shutdown: jetstream consumer did not exit in time, cursor may be stale")
+	}
+	if !h.WaitCycle(remaining(shutdownCycleBudget)) {
+		slog.Warn("shutdown: analysis cycle still in flight, closing store anyway")
+	}
+
+	h.Snapshot()
+	h.StopStatsAPI()
+
+	if err := h.CloseStore(); err != nil {
+		slog.Warn("shutdown: store close failed", "error", err)
+	}
+	slog.Info("shutdown complete", "elapsed", time.Since(start).Round(time.Millisecond))
+}
 
 // newWallClockTicker returns a channel that fires at wall-clock aligned UTC
 // boundaries. For example, a 30m interval fires at :00 and :30 past the hour;

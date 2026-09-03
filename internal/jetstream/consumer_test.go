@@ -295,9 +295,12 @@ func TestConsumer_EndpointRotation(t *testing.T) {
 }
 
 func TestConsumer_BuildURL(t *testing.T) {
+	// Rewind disabled so this stays a test of URL assembly; the rewind itself
+	// is covered by TestBuildURLUsesRewoundCursor.
 	c := NewConsumer(ConsumerConfig{
-		Endpoint:    "wss://jetstream2.us-east.bsky.network/subscribe",
-		Collections: []string{"app.bsky.feed.post"},
+		Endpoint:     "wss://jetstream2.us-east.bsky.network/subscribe",
+		Collections:  []string{"app.bsky.feed.post"},
+		CursorRewind: -1,
 	})
 
 	u := c.buildURL()
