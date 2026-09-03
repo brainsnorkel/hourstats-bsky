@@ -13,8 +13,8 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 
 	text, facets := FormatTrendingPost(ranked, nil, 2)
 
-	if !strings.Contains(text, "Trending topics (2h)") {
-		t.Errorf("expected header 'Trending topics (2h)', text: %q", text)
+	if !strings.HasPrefix(text, "Trending topics exemplar posts:\n\n") {
+		t.Errorf("expected exemplar posts header, text: %q", text)
 	}
 	if !strings.Contains(text, "1. Politics") {
 		t.Errorf("expected '1. Politics', text: %q", text)
@@ -25,8 +25,11 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 	if !strings.Contains(text, "2. Weather") {
 		t.Errorf("expected '2. Weather', text: %q", text)
 	}
-	if !strings.Contains(text, "#hstrend") {
-		t.Errorf("expected hashtag, text: %q", text)
+	if strings.Contains(text, "#hstrend") {
+		t.Errorf("hashtag should be removed, text: %q", text)
+	}
+	if strings.HasSuffix(text, "\n") {
+		t.Errorf("text should not end with trailing newline, text: %q", text)
 	}
 
 	tagCount := 0
@@ -39,8 +42,8 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 			linkCount++
 		}
 	}
-	if tagCount != 1 {
-		t.Errorf("expected 1 tag facet, got %d", tagCount)
+	if tagCount != 0 {
+		t.Errorf("expected no tag facets, got %d", tagCount)
 	}
 	if linkCount != 1 {
 		t.Errorf("expected 1 link facet (exemplar), got %d", linkCount)
@@ -71,20 +74,44 @@ func TestFormatTrendingPost_NoMovementIndicators(t *testing.T) {
 	}
 }
 
-func TestFormatTrendingPost_HashtagFacetByteOffsets(t *testing.T) {
+func TestFormatTrendingPost_CapsAtThreeTopics(t *testing.T) {
+	var ranked []IdentifiedTopic
+	for i, label := range []string{"A", "B", "C", "D", "E"} {
+		ranked = append(ranked, IdentifiedTopic{
+			RankedTopic:    RankedTopic{Cluster: TopicCluster{Label: label}},
+			TopicID:        "t" + label,
+			Rank:           i + 1,
+			ExemplarHandle: strings.ToLower(label) + ".bsky.social",
+			ExemplarURI:    "at://did:plc:" + label + "/app.bsky.feed.post/1",
+		})
+	}
+
+	text, facets := FormatTrendingPost(ranked, nil, 2)
+
+	if !strings.Contains(text, "3. C") {
+		t.Errorf("expected third topic, text: %q", text)
+	}
+	if strings.Contains(text, "4. D") || strings.Contains(text, "5. E") {
+		t.Errorf("expected at most three topics, text: %q", text)
+	}
+	if len(facets) != 3 {
+		t.Errorf("expected 3 exemplar link facets, got %d", len(facets))
+	}
+}
+
+func TestFormatTrendingPost_NoTagFacets(t *testing.T) {
 	ranked := []IdentifiedTopic{
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Test"}}, TopicID: "t1", Rank: 1},
 	}
 
 	text, facets := FormatTrendingPost(ranked, nil, 2)
 
+	if strings.Contains(text, "#") {
+		t.Errorf("trending post should contain no hashtags, text: %q", text)
+	}
 	for _, f := range facets {
-		if f.Type != FacetTag {
-			continue
-		}
-		extracted := text[f.ByteStart:f.ByteEnd]
-		if extracted != "#"+f.Value {
-			t.Errorf("facet byte offset mismatch: expected %q, extracted %q", "#"+f.Value, extracted)
+		if f.Type == FacetTag {
+			t.Errorf("unexpected tag facet %+v", f)
 		}
 	}
 }

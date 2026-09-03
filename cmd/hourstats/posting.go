@@ -41,9 +41,9 @@ func filterHighConfidence(points []store.SentimentDataPoint) []store.SentimentDa
 // Posting helpers
 // ---------------------------------------------------------------------------
 
-func postSummary(ctx context.Context, bskyClient *client.BlueskyClient, top5 []analyzer.AnalyzedPost, overallSentiment string, netPct float64, analysisMinutes, totalPosts int) (string, string) {
-	clientPosts := make([]client.Post, len(top5))
-	for i, ap := range top5 {
+func postSummary(ctx context.Context, bskyClient *client.BlueskyClient, topPosts []analyzer.AnalyzedPost, overallSentiment string, netPct float64, analysisMinutes, totalPosts int) (string, string) {
+	clientPosts := make([]client.Post, len(topPosts))
+	for i, ap := range topPosts {
 		clientPosts[i] = client.Post{
 			URI: ap.URI, CID: ap.CID, Text: ap.Text, Author: ap.Author,
 			Likes: ap.Likes, Reposts: ap.Reposts, Replies: ap.Replies,

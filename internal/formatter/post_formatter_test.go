@@ -5,28 +5,6 @@ import (
 	"testing"
 )
 
-func TestGetSentimentSymbol(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"positive", "+"},
-		{"negative", "-"},
-		{"neutral", "x"},
-		{"", "x"},
-		{"unknown", "x"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := getSentimentSymbol(tt.input)
-			if result != tt.expected {
-				t.Errorf("getSentimentSymbol(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestFormatPostContent_EmptyPosts(t *testing.T) {
 	result := FormatPostContent(nil, "positive", 30, 1000, 12.0)
 	// Should contain the mood hashtag and sentiment line but no numbered posts
@@ -36,8 +14,8 @@ func TestFormatPostContent_EmptyPosts(t *testing.T) {
 	if !strings.Contains(result, "% sentiment") {
 		t.Errorf("expected sentiment percentage, got %q", result)
 	}
-	if strings.Contains(result, "1.") {
-		t.Errorf("should have no numbered posts, got %q", result)
+	if strings.Contains(result, "1.") || strings.Contains(result, "Top recent posts") {
+		t.Errorf("should have no numbered posts or list header, got %q", result)
 	}
 }
 
@@ -46,35 +24,27 @@ func TestFormatPostContent_SinglePost(t *testing.T) {
 		{Author: "alice.bsky.social", Sentiment: "positive"},
 	}
 	result := FormatPostContent(posts, "positive", 30, 1000, 12.0)
-	if !strings.Contains(result, "1. @alice.bsky.social +") {
-		t.Errorf("expected numbered post with + symbol, got %q", result)
+	if !strings.Contains(result, "\nTop recent posts\n1. @alice.bsky.social\n") {
+		t.Errorf("expected list header and numbered post without sentiment symbol, got %q", result)
 	}
 }
 
-func TestFormatPostContent_FivePosts(t *testing.T) {
+func TestFormatPostContent_ThreePosts(t *testing.T) {
 	posts := []Post{
 		{Author: "a", Sentiment: "positive"},
 		{Author: "b", Sentiment: "negative"},
 		{Author: "c", Sentiment: "neutral"},
-		{Author: "d", Sentiment: "positive"},
-		{Author: "e", Sentiment: "negative"},
 	}
 	result := FormatPostContent(posts, "neutral", 30, 5000, 11.0)
 
-	if !strings.Contains(result, "1. @a +") {
-		t.Errorf("missing post 1")
+	want := "Bluesky is #" + getMoodWord100(11.0) + " +11.0% sentiment\n\nTop recent posts\n1. @a\n2. @b\n3. @c\n"
+	if result != want {
+		t.Errorf("unexpected content:\n got %q\nwant %q", result, want)
 	}
-	if !strings.Contains(result, "2. @b -") {
-		t.Errorf("missing post 2")
-	}
-	if !strings.Contains(result, "3. @c x") {
-		t.Errorf("missing post 3")
-	}
-	if !strings.Contains(result, "4. @d +") {
-		t.Errorf("missing post 4")
-	}
-	if !strings.Contains(result, "5. @e -") {
-		t.Errorf("missing post 5")
+	for _, sym := range []string{" +\n", " -\n", " x\n"} {
+		if strings.Contains(result, sym) {
+			t.Errorf("sentiment indicator %q should be removed, got %q", sym, result)
+		}
 	}
 }
 
