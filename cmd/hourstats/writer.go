@@ -14,6 +14,11 @@ import (
 // Write buffer flusher — batches firehose writes to reduce SQLite contention
 // ---------------------------------------------------------------------------
 
+// drainBudget bounds the shutdown drain. It must stay under
+// shutdownFlusherBudget so main's shutdown sequence observes this goroutine
+// returning rather than timing out on it and closing the store underneath.
+const drainBudget = 4 * time.Second
+
 func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.PendingWrite, collector *stats.Collector) {
 	const (
 		maxBatch  = 1500
@@ -61,7 +66,9 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 			// Drain remaining items from channel before exiting.
 			// ctx is already cancelled here, so use a fresh bounded context
 			// so that the final FlushPostBatch call actually reaches SQLite.
-			drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// main's shutdown sequence waits for this goroutine to return
+			// before closing the store, so these writes always land.
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), drainBudget)
 			defer drainCancel()
 
 			drainFlush := func() {
@@ -80,14 +87,22 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 
 			drained := 0
 			for {
+				// Checked before the select: a select with a default clause
+				// only picks drainCtx.Done() when it happens to be ready at
+				// the same instant, so the budget needs an explicit test.
+				if drainCtx.Err() != nil {
+					drainFlush()
+					slog.Warn("shutdown drain budget exceeded, some posts may be lost",
+						"shutdown_drain_count", drained, "queued", len(ch))
+					return
+				}
 				select {
 				case w := <-ch:
 					batch = append(batch, w)
 					drained++
-				case <-drainCtx.Done():
-					slog.Warn("shutdown drain budget exceeded, some posts may be lost",
-						"remaining_batch", len(batch))
-					return
+					if len(batch) >= maxBatch {
+						drainFlush()
+					}
 				default:
 					drainFlush()
 					slog.Info("shutdown drain complete", "shutdown_drain_count", drained)
