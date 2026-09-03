@@ -78,8 +78,8 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 | **Analysis Cycle** | Wall-clock ticker (default 30m, configurable; prod runs 60m at :55 via `ANALYSIS_INTERVAL_MINUTES`/`ANALYSIS_OFFSET_MINUTES`) | Hydrate engagement, VADER sentiment, post summary. Runs in its own goroutine so the other tickers keep firing; an overlapping tick is skipped and logged as `cycle_overlap_skipped` |
 | **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
 | **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled) |
-| **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply |
-| **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile |
+| **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply. Runs in its own goroutine, after waiting up to 15m for an in-flight analysis cycle so the aggregate includes the day's last cycle |
+| **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile. Same goroutine/guard as the daily cycle, so chart rendering never overlaps a cycle or a daily run; a skipped tick logs `job_overlap_skipped` |
 | **Stall Detection** | 5m ticker | Warns if no posts received in 5m and force-closes the WebSocket so the consumer reconnects |
 | **WAL Checkpoint** | 5m ticker | Pressure-based WAL checkpoint: PASSIVE under threshold, TRUNCATE over threshold (default 50MB) |
 
