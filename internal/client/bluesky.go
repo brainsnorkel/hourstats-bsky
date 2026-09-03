@@ -26,6 +26,11 @@ type Post struct {
 	CreatedAt       string
 	Sentiment       string // "positive", "negative", or "neutral"
 	EngagementScore float64
+	// QuoteControlled is set when the author disabled quoting for this post
+	// (an app.bsky.feed.postgate with a disableRule). Quote-embedding such a
+	// post renders as app.bsky.embed.record#viewDetached — "Removed by
+	// author" — so the summary must drop the embed instead.
+	QuoteControlled bool
 }
 
 // APIBatchStats contains statistics about the raw API response before filtering
@@ -335,6 +340,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 			Replies:         post.Replies,
 			Sentiment:       post.Sentiment,
 			EngagementScore: post.EngagementScore,
+			QuoteControlled: post.QuoteControlled,
 		}
 	}
 
@@ -342,6 +348,19 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 
 	// Use shared formatter to generate the post content
 	summaryText := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, totalPosts, netSentimentPercentage)
+
+	quoteControlled := len(posts) > 0 && posts[0].QuoteControlled
+
+	// The quote-control note is the first thing to drop if the summary
+	// overflows: truncating instead would cut a handle in half and leave its
+	// facet pointing at a fragment. The embed stays suppressed either way.
+	if quoteControlled && len([]rune(summaryText)) > 300 {
+		for i := range formatterPosts {
+			formatterPosts[i].QuoteControlled = false
+		}
+		summaryText = formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, totalPosts, netSentimentPercentage)
+		slog.Warn("dropped quote-control note to fit the 300-grapheme limit", "uri", posts[0].URI)
+	}
 
 	// Check if we need to truncate, but try to keep all listed posts
 	if len([]rune(summaryText)) > 300 {
@@ -355,9 +374,13 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	// Create facets for clickable links (user handles to posts)
 	facets := createUserHandleFacets(summaryText, posts)
 
-	// Create embed card for the first post if available (skip posts with invalid URIs)
+	// Create embed card for the first post if available (skip posts with invalid URIs).
+	// A quote-controlled #1 gets no embed at all: falling through to #2 would
+	// contradict the note the text now carries.
 	var embed *bsky.FeedPost_Embed
-	if len(posts) > 0 {
+	if quoteControlled {
+		slog.Info("skipping quote embed, top post is quote-controlled", "uri", posts[0].URI)
+	} else if len(posts) > 0 {
 		for _, post := range posts {
 			if post.URI != "" && post.CID != "" && !strings.HasPrefix(post.URI, "at://post-") {
 				slog.Debug("creating embed card for post", "uri", post.URI)
@@ -394,6 +417,48 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 
 	slog.Info("successfully posted to Bluesky", "uri", postedURI, "cid", postedCID)
 	return postedURI, postedCID, nil
+}
+
+// maxGetPostsURIs is Bluesky's per-call limit for app.bsky.feed.getPosts.
+const maxGetPostsURIs = 25
+
+// EmbeddingDisabled reports, per URI, whether the author disabled quoting.
+//
+// The answer lives in the post's viewer state, which the AppView only
+// populates for authenticated requests, so this deliberately uses the
+// authenticated client rather than the public hydration host. URIs missing
+// from the response (deleted, blocked, never existed) map to false: a post we
+// cannot see is not a post we know to be quote-controlled.
+func (c *BlueskyClient) EmbeddingDisabled(ctx context.Context, uris []string) (map[string]bool, error) {
+	if c.client == nil {
+		return nil, fmt.Errorf("client not authenticated")
+	}
+	if len(uris) == 0 {
+		return map[string]bool{}, nil
+	}
+	if len(uris) > maxGetPostsURIs {
+		return nil, fmt.Errorf("too many URIs for getPosts: got %d, limit %d", len(uris), maxGetPostsURIs)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	out, err := bsky.FeedGetPosts(ctx, c.client, uris)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get posts for quote-control check: %w", err)
+	}
+
+	disabled := make(map[string]bool, len(uris))
+	for _, uri := range uris {
+		disabled[uri] = false
+	}
+	for _, postView := range out.Posts {
+		if postView == nil || postView.Viewer == nil || postView.Viewer.EmbeddingDisabled == nil {
+			continue
+		}
+		disabled[postView.Uri] = *postView.Viewer.EmbeddingDisabled
+	}
+	return disabled, nil
 }
 
 // createEmbedCard creates an embed card for a post

@@ -14,7 +14,14 @@ type Post struct {
 	Replies         int
 	Sentiment       string
 	EngagementScore float64
+	// QuoteControlled marks a post whose author disabled quoting. Only the
+	// first listed post is checked, and only it carries quoteControlNote.
+	QuoteControlled bool
 }
+
+// quoteControlNote is appended to the first listed post when its author
+// disabled quoting, explaining why the summary carries no quote embed.
+const quoteControlNote = " · no embed, post is quote controlled"
 
 // FormatPostContent generates the post content that will be posted to Bluesky.
 //
@@ -26,6 +33,9 @@ type Post struct {
 //	1. @handle
 //	2. @handle
 //	3. @handle
+//
+// When the first post is QuoteControlled its line gains quoteControlNote,
+// because the summary cannot quote-embed it.
 func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentiment float64) string {
 	// Get descriptive word for sentiment using 100-word scale with normal curve
 	moodWord := getMoodWord100(netSentiment)
@@ -44,7 +54,11 @@ func FormatPostContent(topPosts []Post, overallSentiment string, analysisInterva
 	content += "\nTop recent posts\n"
 	for i, post := range topPosts {
 		// Just show the handle - facets will handle the linking
-		content += fmt.Sprintf("%d. @%s\n", i+1, post.Author)
+		content += fmt.Sprintf("%d. @%s", i+1, post.Author)
+		if i == 0 && post.QuoteControlled {
+			content += quoteControlNote
+		}
+		content += "\n"
 	}
 
 	return content

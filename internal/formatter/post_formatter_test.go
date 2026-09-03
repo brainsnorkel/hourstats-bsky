@@ -84,3 +84,40 @@ func TestFormatPostContent_HeaderFormat(t *testing.T) {
 		t.Errorf("first line should contain sentiment percentage, got %q", lines[0])
 	}
 }
+
+func TestFormatPostContent_QuoteControlledTopPost(t *testing.T) {
+	posts := []Post{
+		{Author: "alice.bsky.social", Sentiment: "positive", QuoteControlled: true},
+		{Author: "bob.bsky.social", Sentiment: "negative"},
+	}
+	result := FormatPostContent(posts, "positive", 30, 1000, 11.0)
+
+	want := "Bluesky is #" + getMoodWord100(11.0) + " +11.0% sentiment\n\nTop recent posts\n" +
+		"1. @alice.bsky.social · no embed, post is quote controlled\n2. @bob.bsky.social\n"
+	if result != want {
+		t.Errorf("unexpected content:\n got %q\nwant %q", result, want)
+	}
+}
+
+// The note must never break the handle it follows: facets are matched on
+// "@handle", so a separator glued to the handle would shift the byte range.
+func TestFormatPostContent_QuoteControlNoteFollowsHandleWithSeparator(t *testing.T) {
+	posts := []Post{{Author: "alice.bsky.social", QuoteControlled: true}}
+	result := FormatPostContent(posts, "positive", 30, 1000, 11.0)
+
+	if !strings.Contains(result, "1. @alice.bsky.social · ") {
+		t.Errorf("note should follow the bare handle after a separator, got %q", result)
+	}
+}
+
+func TestFormatPostContent_QuoteControlledOnlyAnnotatesFirstPost(t *testing.T) {
+	posts := []Post{
+		{Author: "alice.bsky.social"},
+		{Author: "bob.bsky.social", QuoteControlled: true},
+	}
+	result := FormatPostContent(posts, "positive", 30, 1000, 11.0)
+
+	if strings.Contains(result, "quote controlled") {
+		t.Errorf("only the quote-embedded #1 post carries the note, got %q", result)
+	}
+}
