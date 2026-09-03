@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -24,7 +25,32 @@ const minPostsRequired = 500
 var (
 	sentimentAnalyzerOnce sync.Once
 	sentimentAnalyzer     *analyzer.SentimentAnalyzer
+
+	hydrationFetcherOnce sync.Once
+	hydrationFetcher     hydrator.PostFetcher // nil when HYDRATION_HOST=pds
+	hydrationHost        string
 )
+
+// sharedHydrationFetcher returns the process-wide fetcher used for engagement
+// hydration, or nil when HYDRATION_HOST=pds selects the authenticated PDS
+// client instead.
+//
+// app.bsky.feed.getPosts is a public read, so it is routed to the cached
+// appview host by default; that keeps hydration off bsky.social's per-IP
+// budget. The fetcher (and therefore its connection pool) is built once: a
+// per-cycle http.Transport would leak idle connections between cycles.
+func sharedHydrationFetcher() (hydrator.PostFetcher, string) {
+	hydrationFetcherOnce.Do(func() {
+		hydrationHost = envOr("HYDRATION_HOST", hydrator.DefaultPublicHost)
+		if hydrationHost == "pds" {
+			slog.Info("hydration client configured", "host", "pds (authenticated)")
+			return
+		}
+		hydrationFetcher = hydrator.NewPublicFetcher(hydrationHost)
+		slog.Info("hydration client configured", "host", hydrationHost, "request_timeout", "15s")
+	})
+	return hydrationFetcher, hydrationHost
+}
 
 // sharedAnalyzer returns the process-wide VADER analyzer.
 //
@@ -39,6 +65,14 @@ func sharedAnalyzer() *analyzer.SentimentAnalyzer {
 		sentimentAnalyzer = analyzer.New()
 	})
 	return sentimentAnalyzer
+}
+
+// topicAnalysisOutcome carries the result of the parallel topic analysis
+// goroutine. snapshotTime is the snapshot this cycle wrote (empty when none was
+// produced) and gates whether a trending post may be published.
+type topicAnalysisOutcome struct {
+	snapshotTime string
+	err          error
 }
 
 // ---------------------------------------------------------------------------
@@ -82,43 +116,67 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 	// RunAnalysisCycle reads topic_tokens (no dependency on hydration).
 	// Starting here overlaps Gemini latency with the hydration pipeline.
-	var topicAnalysisDone <-chan error
+	// It hands back the snapshot time it wrote so the trending post can only
+	// publish this cycle's topics, never a stale snapshot.
+	var topicAnalysisDone <-chan topicAnalysisOutcome
 	if topicAnalyzer != nil {
-		ch := make(chan error, 1)
+		ch := make(chan topicAnalysisOutcome, 1)
 		topicAnalysisDone = ch
 		slog.Info("topics: analysis goroutine started (parallel with hydration)")
 		go func() {
 			trendStart := time.Now()
-			err := topicAnalyzer.RunAnalysisCycle(ctx)
+			snapshotTime, err := topicAnalyzer.RunAnalysisCycle(ctx)
 			collector.RecordTrendingDuration(time.Since(trendStart).Milliseconds())
-			ch <- err
+			ch <- topicAnalysisOutcome{snapshotTime: snapshotTime, err: err}
 		}()
 	}
 
-	fetcher := hydrator.NewBlueskyFetcher(bskyClient.APIClient())
+	fetcher, host := sharedHydrationFetcher()
+	if fetcher == nil {
+		fetcher = hydrator.NewBlueskyFetcher(bskyClient.APIClient())
+	}
 	h := hydrator.New(fetcher, db, hydrator.Config{})
 	result, err := h.Hydrate(ctx, posts)
 	if err != nil && ctx.Err() != nil {
 		return
 	}
+	hydrationTimedOut := errors.Is(err, hydrator.ErrHydrationTimedOut)
+	if hydrationTimedOut {
+		slog.Error("hydration timed out",
+			"host", host,
+			"total", result.Total,
+			"hydrated", result.Hydrated,
+			"filtered", result.Filtered,
+			"errors", result.Errors,
+			"error", err,
+		)
+		_ = collector.LogEvent(ctx, "hydration_timeout",
+			fmt.Sprintf("run_id=%s total=%d hydrated=%d filtered=%d errors=%d retries=%d rate_limited=%d",
+				runID, result.Total, result.Hydrated, result.Filtered, result.Errors, result.Retries, result.RateLimited))
+	}
 	slog.Info("hydration complete",
+		"host", host,
 		"total", result.Total,
 		"hydrated", result.Hydrated,
 		"filtered", result.Filtered,
 		"errors", result.Errors,
+		"retries", result.Retries,
+		"rate_limited", result.RateLimited,
 	)
 
 	// Exclude posts that failed hydration (no author handle means the
 	// hydrator could not resolve them — deleted, private, or API error).
 	// Including them would skew sentiment with un-engageable ghost posts.
+	windowPosts := len(posts)
 	hydrated := make([]store.Post, 0, len(posts))
 	for _, p := range posts {
 		if p.AuthorHandle != "" {
 			hydrated = append(hydrated, p)
 		}
 	}
-	if dropped := len(posts) - len(hydrated); dropped > 0 {
-		slog.Info("excluded unhydrated posts from analysis", "dropped", dropped, "remaining", len(hydrated))
+	unhydrated := windowPosts - len(hydrated)
+	if unhydrated > 0 {
+		slog.Info("excluded unhydrated posts from analysis", "dropped", unhydrated, "remaining", len(hydrated))
 	}
 	posts = hydrated
 
@@ -133,6 +191,25 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"posts", len(posts),
 			"min_required", minPostsRequired,
 		)
+	}
+
+	// A timed-out hydration abandons batches silently. If it cost us more than
+	// HYDRATION_MAX_UNHYDRATED_PCT of the window, the surviving sample is not
+	// representative, so take the low-confidence path: record sentiment, skip
+	// posting. Runs that finished hydration are unaffected — posts legitimately
+	// go missing (deleted, blocked, suspended) and that is not a truncated run.
+	if hydrationTimedOut && windowPosts > 0 {
+		maxUnhydratedPct := envInt("HYDRATION_MAX_UNHYDRATED_PCT", 10)
+		unhydratedPct := float64(unhydrated) * 100 / float64(windowPosts)
+		if unhydratedPct > float64(maxUnhydratedPct) {
+			lowConfidence = true
+			slog.Warn("hydration timeout dropped too much of the window — posting skipped",
+				"unhydrated", unhydrated,
+				"window_posts", windowPosts,
+				"unhydrated_pct", fmt.Sprintf("%.1f%%", unhydratedPct),
+				"max_pct", maxUnhydratedPct,
+			)
+		}
 	}
 
 	analyzerPosts := toAnalyzerPosts(posts)
@@ -225,8 +302,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"net_pct", fmt.Sprintf("%.1f%%", netSentimentPct),
 		)
 		if topicAnalysisDone != nil {
-			if err := <-topicAnalysisDone; err != nil {
-				slog.Warn("topic analysis failed (low confidence cycle)", "error", err)
+			if outcome := <-topicAnalysisDone; outcome.err != nil {
+				slog.Warn("topic analysis failed (low confidence cycle)", "error", outcome.err)
 			}
 		}
 	} else if dryRun {
@@ -237,8 +314,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"total_posts", len(posts),
 		)
 		if topicAnalysisDone != nil {
-			if err := <-topicAnalysisDone; err != nil {
-				slog.Warn("topic analysis failed (dry run cycle)", "error", err)
+			if outcome := <-topicAnalysisDone; outcome.err != nil {
+				slog.Warn("topic analysis failed (dry run cycle)", "error", outcome.err)
 			}
 		}
 	} else {
@@ -257,20 +334,20 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 		if topicAnalyzer != nil {
 			topicWait := time.Now()
-			topicErr := <-topicAnalysisDone
+			outcome := <-topicAnalysisDone
 			slog.Info("timing: topic analysis goroutine collected",
 				"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
 				"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
-			if topicErr != nil {
-				slog.Error("topic analysis cycle failed", "error", topicErr)
-			} else if sparkURI != "" && sparkCID != "" {
-				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, rootURI, rootCID, sparkURI, sparkCID); err != nil {
-					slog.Error("trending post failed", "error", err)
-				} else {
-					slog.Info("timing: trending post complete", "cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
-				}
+			if outcome.err != nil {
+				slog.Error("topic analysis cycle failed", "error", outcome.err)
 			} else {
-				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, "", "", "", ""); err != nil {
+				// Reply under the sparkline when we have one, otherwise post
+				// standalone. Either way the snapshot must be this cycle's.
+				trendRoot, trendRootCID, trendParent, trendParentCID := rootURI, rootCID, sparkURI, sparkCID
+				if sparkURI == "" || sparkCID == "" {
+					trendRoot, trendRootCID, trendParent, trendParentCID = "", "", "", ""
+				}
+				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, outcome.snapshotTime, trendRoot, trendRootCID, trendParent, trendParentCID); err != nil {
 					slog.Error("trending post failed", "error", err)
 				} else {
 					slog.Info("timing: trending post complete", "cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))

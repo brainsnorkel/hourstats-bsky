@@ -4,18 +4,38 @@ package hydrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
+	"math/rand/v2"
+	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
+	"github.com/bluesky-social/indigo/atproto/client"
 	"github.com/bluesky-social/indigo/lex/util"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 	"golang.org/x/time/rate"
 )
+
+// DefaultPublicHost is Bluesky's cached, unauthenticated read host.
+// app.bsky.feed.getPosts needs no auth, so hydrating from here leaves the
+// authenticated PDS per-IP budget (3,000 requests / 5 minutes on bsky.social)
+// free for posting instead of spending ~83% of it on hydration.
+const DefaultPublicHost = "https://public.api.bsky.app"
+
+// ErrHydrationTimedOut is returned, wrapped, alongside a partial HydrateResult
+// when the hydrator's own Config.Timeout fires. Callers must distinguish this
+// from parent-context cancellation: a timed-out hydration leaves posts
+// unhydrated, and publishing that window as if it were complete silently drops
+// every abandoned post from the analysis.
+var ErrHydrationTimedOut = errors.New("hydration timed out")
 
 // PostFetcher abstracts the Bluesky getPosts API call for testability.
 type PostFetcher interface {
@@ -35,6 +55,29 @@ type BlueskyFetcher struct {
 // NewBlueskyFetcher wraps an authenticated indigo LexClient.
 func NewBlueskyFetcher(client util.LexClient) *BlueskyFetcher {
 	return &BlueskyFetcher{client: client}
+}
+
+// NewPublicFetcher builds a fetcher against an unauthenticated atproto host.
+//
+// indigo's client.NewAPIClient hands the APIClient http.DefaultClient, which
+// has no per-request timeout and the default (small) connection pool, so a
+// hung response could occupy a hydration worker until the cycle deadline.
+// APIClient.Client is documented as customisable after construction, so we swap
+// in a client with an explicit request timeout and a pool sized for the
+// hydrator's concurrency. The transport is cloned from http.DefaultTransport so
+// dial/TLS/HTTP2 defaults are preserved.
+func NewPublicFetcher(host string) *BlueskyFetcher {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 64
+	transport.MaxIdleConnsPerHost = 16
+	transport.IdleConnTimeout = 90 * time.Second
+
+	api := client.NewAPIClient(host)
+	api.Client = &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: transport,
+	}
+	return &BlueskyFetcher{client: api}
 }
 
 // GetPosts calls app.bsky.feed.getPosts and returns the PostView slice.
@@ -72,10 +115,12 @@ func (c Config) withDefaults() Config {
 
 // HydrateResult summarises one hydration pass.
 type HydrateResult struct {
-	Total    int // total posts attempted
-	Hydrated int // successfully hydrated
-	Filtered int // filtered out (adult content)
-	Errors   int // API or update errors
+	Total       int // total posts attempted
+	Hydrated    int // successfully hydrated
+	Filtered    int // filtered out (adult content)
+	Errors      int // API or update errors
+	Retries     int // batch fetches re-attempted after a retryable failure
+	RateLimited int // batch fetches that came back HTTP 429
 }
 
 // Hydrator fetches engagement data from the Bluesky API and writes it to the store.
@@ -94,14 +139,100 @@ func New(fetcher PostFetcher, updater PostUpdater, cfg Config) *Hydrator {
 	}
 }
 
+// Retry policy for a single batch fetch. Bluesky returns transient 429/5xx
+// under load; without a retry one bad response discards a whole 25-post batch.
+const (
+	maxRetries       = 2 // extra attempts after the first
+	retryBaseBackoff = 250 * time.Millisecond
+	retryJitterFrac  = 0.2
+)
+
+// backoffFor returns the delay before retry attempt n (1-based): 250ms then
+// 500ms, each jittered by ±20% so concurrent workers don't retry in lockstep.
+func backoffFor(attempt int) time.Duration {
+	base := float64(retryBaseBackoff) * math.Pow(2, float64(attempt-1))
+	jitter := 1 + (rand.Float64()*2-1)*retryJitterFrac
+	return time.Duration(base * jitter)
+}
+
+// apiStatusCode returns the HTTP status carried by an indigo API error, or 0.
+func apiStatusCode(err error) int {
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode
+	}
+	return 0
+}
+
+// isRetryable reports whether a getPosts failure is worth another attempt.
+//
+// indigo surfaces HTTP failures as *client.APIError, which carries StatusCode
+// but no response headers, so Retry-After / RateLimit-Reset cannot be honoured;
+// backoff is driven by the status code alone. Transport failures (dial errors,
+// resets, request timeouts) arrive wrapped in *url.Error, which satisfies
+// net.Error.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if status := apiStatusCode(err); status != 0 {
+		return status == http.StatusTooManyRequests || status >= 500
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// fetchBatch calls the fetcher, retrying transient failures with jittered
+// exponential backoff. Retries pass through the shared rate limiter so the
+// configured request budget still holds. Non-retryable errors (4xx other than
+// 429) return immediately, as before.
+func (h *Hydrator) fetchBatch(ctx context.Context, uris []string, limiter *rate.Limiter, retries, rateLimited *atomic.Int64) ([]*bsky.FeedDefs_PostView, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			retries.Add(1)
+			select {
+			case <-ctx.Done():
+				return nil, lastErr
+			case <-time.After(backoffFor(attempt)):
+			}
+			if err := limiter.Wait(ctx); err != nil {
+				return nil, lastErr
+			}
+		}
+
+		views, err := h.fetcher.GetPosts(ctx, uris)
+		if err == nil {
+			return views, nil
+		}
+		lastErr = err
+
+		if apiStatusCode(err) == http.StatusTooManyRequests {
+			rateLimited.Add(1)
+		}
+		if ctx.Err() != nil || !isRetryable(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
 // Hydrate fetches engagement metrics for posts and writes them to the store.
 // It returns partial results if the context is cancelled or the deadline is exceeded.
+//
+// When the hydrator's own Config.Timeout fires (rather than the caller's
+// context being cancelled) the returned error wraps ErrHydrationTimedOut.
 func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateResult, error) {
 	if len(posts) == 0 {
 		return &HydrateResult{}, nil
 	}
 
-	// Apply timeout if configured.
+	// Apply timeout if configured. parentCtx is kept so the deadline that fired
+	// can be attributed to us rather than to the caller.
+	parentCtx := ctx
 	if h.cfg.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, h.cfg.Timeout)
@@ -122,11 +253,13 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 	batches := splitBatches(uris, h.cfg.BatchSize)
 
 	var (
-		hydrated atomic.Int64
-		filtered atomic.Int64
-		errCount atomic.Int64
-		wg       sync.WaitGroup
-		limiter  = rate.NewLimiter(rate.Limit(h.cfg.RateLimit), 1)
+		hydrated    atomic.Int64
+		filtered    atomic.Int64
+		errCount    atomic.Int64
+		retries     atomic.Int64
+		rateLimited atomic.Int64
+		wg          sync.WaitGroup
+		limiter     = rate.NewLimiter(rate.Limit(h.cfg.RateLimit), 1)
 	)
 
 	// Bounded worker pool. Launching one goroutine per batch peaked at ~4,500
@@ -178,9 +311,12 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 					continue
 				}
 
-				views, err := h.fetcher.GetPosts(ctx, batchURIs)
+				views, err := h.fetchBatch(ctx, batchURIs, limiter, &retries, &rateLimited)
 				if err != nil {
-					slog.Error("hydrator batch failed", "batch", fmt.Sprintf("%d/%d", batchIdx+1, len(batches)), "error", err)
+					slog.Error("hydrator batch failed",
+						"batch", fmt.Sprintf("%d/%d", batchIdx+1, len(batches)),
+						"status", apiStatusCode(err),
+						"error", err)
 					errCount.Add(int64(len(batchURIs)))
 					continue
 				}
@@ -230,13 +366,21 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 	wg.Wait()
 
 	result := &HydrateResult{
-		Total:    len(posts),
-		Hydrated: int(hydrated.Load()),
-		Filtered: int(filtered.Load()),
-		Errors:   int(errCount.Load()),
+		Total:       len(posts),
+		Hydrated:    int(hydrated.Load()),
+		Filtered:    int(filtered.Load()),
+		Errors:      int(errCount.Load()),
+		Retries:     int(retries.Load()),
+		RateLimited: int(rateLimited.Load()),
 	}
 
 	if ctx.Err() != nil {
+		// Our own deadline fired while the caller's context is still live:
+		// report it as such so the caller can decide whether the window is
+		// still worth publishing.
+		if parentCtx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return result, fmt.Errorf("%w after %s: %w", ErrHydrationTimedOut, h.cfg.Timeout, ctx.Err())
+		}
 		return result, ctx.Err()
 	}
 	return result, nil
