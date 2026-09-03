@@ -16,41 +16,36 @@ type Post struct {
 	EngagementScore float64
 }
 
-// FormatPostContent generates the post content that will be posted to Bluesky
+// FormatPostContent generates the post content that will be posted to Bluesky.
+//
+// Layout:
+//
+//	Bluesky is #<mood> +X.X% sentiment
+//
+//	Top recent posts
+//	1. @handle
+//	2. @handle
+//	3. @handle
 func FormatPostContent(topPosts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentiment float64) string {
 	// Get descriptive word for sentiment using 100-word scale with normal curve
 	moodWord := getMoodWord100(netSentiment)
 
-	// Generate the post content with new format (mood word as hashtag + debug info)
-	// Always show + or - sign for sentiment percentage
+	// Show a + sign for positive sentiment; negatives carry their own sign
 	var sentimentSign string
 	if netSentiment > 0 {
 		sentimentSign = "+"
-	} else {
-		sentimentSign = ""
 	}
-	content := fmt.Sprintf("Bluesky is #%s %s%.1f%% sentiment\n\n", moodWord, sentimentSign, netSentiment)
+	content := fmt.Sprintf("Bluesky is #%s %s%.1f%% sentiment\n", moodWord, sentimentSign, netSentiment)
 
+	if len(topPosts) == 0 {
+		return content
+	}
+
+	content += "\nTop recent posts\n"
 	for i, post := range topPosts {
-		sentimentSymbol := getSentimentSymbol(post.Sentiment)
-
-		// Just show the handle and sentiment - facets will handle the linking
-		content += fmt.Sprintf("%d. @%s %s\n", i+1, post.Author, sentimentSymbol)
+		// Just show the handle - facets will handle the linking
+		content += fmt.Sprintf("%d. @%s\n", i+1, post.Author)
 	}
 
 	return content
-}
-
-// getSentimentSymbol returns the symbol for sentiment (+ for positive, - for negative, x for neutral)
-func getSentimentSymbol(sentiment string) string {
-	switch sentiment {
-	case "positive":
-		return "+"
-	case "negative":
-		return "-"
-	case "neutral":
-		return "x"
-	default:
-		return "x" // fallback to neutral
-	}
 }

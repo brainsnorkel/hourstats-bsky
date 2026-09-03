@@ -69,6 +69,7 @@ func generateSparklineCharts(seed int64) {
 		name string
 		data func(*rand.Rand) []state.SentimentDataPoint
 	}{
+		{"prod-like", syntheticSparkline7dProdLike},
 		{"baseline", syntheticSparkline7dNormal},
 		{"volatile", syntheticSparkline7dVolatile},
 		{"trending-positive", syntheticSparkline7dTrendUp},
@@ -95,6 +96,31 @@ func generateSparklineCharts(seed int64) {
 		}
 		fmt.Printf("  [OK] %s -> %s (%d bytes)\n", sc.name, path, len(img))
 	}
+
+	// Comparison: raw samples as a thin line rather than dots.
+	lineCfg := sparkline.DefaultConfig()
+	lineCfg.RawAsDots = false
+	lineGen := sparkline.NewSparklineGenerator(lineCfg)
+	for _, sc := range scenarios[:2] {
+		rng := rand.New(rand.NewSource(seed))
+		img, err := lineGen.GenerateSentimentSparkline(sc.data(rng))
+		if err != nil {
+			log.Printf("  [FAIL] %s-line: %v", sc.name, err)
+			continue
+		}
+		path := filepath.Join(outputDir, fmt.Sprintf("sparkline-%s-line.png", sc.name))
+		if err := os.WriteFile(path, img, 0644); err != nil {
+			log.Printf("  [FAIL] %s-line: %v", sc.name, err)
+			continue
+		}
+		fmt.Printf("  [OK] %s-line -> %s (%d bytes)\n", sc.name, path, len(img))
+	}
+}
+
+// syntheticSparkline7dProdLike mirrors production: hourly readings, sentiment
+// sitting around +10% with a couple of points of daily swing.
+func syntheticSparkline7dProdLike(rng *rand.Rand) []state.SentimentDataPoint {
+	return generateSparklineData(rng, 168, time.Hour, 10.5, 2.5)
 }
 
 // syntheticSparkline7dNormal generates a typical 7-day dataset with moderate swings.
@@ -178,6 +204,7 @@ func generateYearlyCharts(seed int64) {
 		name string
 		data func(*rand.Rand) []state.YearlySparklineDataPoint
 	}{
+		{"prod-like", syntheticYearlyProdLike},
 		{"baseline", syntheticYearlyNormal},
 		{"volatile", syntheticYearlyVolatile},
 		{"seasonal", syntheticYearlySeasonal},
@@ -204,6 +231,12 @@ func generateYearlyCharts(seed int64) {
 		}
 		fmt.Printf("  [OK] %s -> %s (%d bytes)\n", sc.name, path, len(img))
 	}
+}
+
+// syntheticYearlyProdLike mirrors production: daily averages around +9% with
+// a few points of swing.
+func syntheticYearlyProdLike(rng *rand.Rand) []state.YearlySparklineDataPoint {
+	return generateYearlyData(rng, 365, 9.0, 3.0)
 }
 
 // syntheticYearlyNormal generates a typical year of daily sentiment.

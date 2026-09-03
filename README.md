@@ -13,7 +13,7 @@ Bluesky HourStats is an automated bot that:
 - Ranks posts by engagement (replies + likes + reposts)
 - Hydrates engagement metrics (likes, reposts, replies) via Bluesky API
 - Performs sentiment analysis using VADER and keyword matching
-- Posts summaries with the top 5 posts and overall community sentiment
+- Posts summaries with the top 3 posts and overall community sentiment
 - Generates 7-day sentiment sparklines
 - Creates yearly sentiment charts (monthly posts)
 - Tracks trending topics (TF-IDF + Gemini Pro)
@@ -32,10 +32,10 @@ Bluesky is #satisfied
 ```
 
 - **Mood Hashtag**: Descriptive sentiment word from 100-word vocabulary
-- **Top 5 posts**: Ranked by engagement with clickable links
+- **Top 3 posts**: Ranked by engagement with clickable links
 - **Sentiment indicators**: + (positive), - (negative), x (neutral)
 - **7-day sparklines**: Visual sentiment trends posted with each summary
-- **Trending topics**: Top 5 topic list with exemplar post links, posted each analysis cycle as reply to sparkline
+- **Trending topics**: Top 3 topic list with exemplar post links, posted each analysis cycle as reply to sparkline
 - **Yearly charts**: Monthly posts showing 365 days of sentiment data
 
 ## Architecture
@@ -43,9 +43,9 @@ Bluesky is #satisfied
 The bot runs as a single Go binary on [Fly.io](https://fly.io) with the following goroutines:
 
 - **Jetstream Consumer**: Connects to the Bluesky Jetstream WebSocket firehose, filters English posts, and writes them to a local SQLite database. Auto-restarts with exponential backoff (1s → 60s) on disconnect.
-- **Analysis Cycle**: At each wall-clock-aligned interval (configurable, default 30 minutes), reads posts from the window, hydrates engagement via the Bluesky API, runs VADER sentiment analysis, and posts a summary with the top 5 most engaged posts.
+- **Analysis Cycle**: At each wall-clock-aligned interval (configurable, default 30 minutes), reads posts from the window, hydrates engagement via the Bluesky API, runs VADER sentiment analysis, and posts a summary with the top 3 most engaged posts.
 - **Sparkline Poster**: Generates and posts a 7-day sentiment sparkline chart as a reply to each summary.
-- **Trending Topics**: After the sparkline (same analysis cycle), identifies top 5 topics using TF-IDF analysis (2-hour window) grouped by Gemini Pro, posts a text summary as a reply to the sparkline.
+- **Trending Topics**: After the sparkline (same analysis cycle), identifies the top topics using TF-IDF analysis (2-hour window) grouped by Gemini Pro, posts the top 3 as a text summary as a reply to the sparkline.
 - **Daily Cycle**: Aggregates daily sentiment averages, creates local + S3 backups, posts a daily top-post quote reply to the yearly thread.
 - **Yearly Poster**: On the 1st of each month at 01:00 UTC, generates and posts a yearly sentiment chart.
 
@@ -114,7 +114,7 @@ export GEMINI_MODEL="gemini-2.5-pro"  # optional, defaults to gemini-2.5-pro
 2. **Engagement Hydration**: Fetches likes, reposts, and reply counts for each post via the Bluesky API
 3. **Sentiment Analysis**: Uses VADER sentiment analysis on post text
 4. **Engagement Ranking**: Ranks posts by total engagement (replies + likes + reposts)
-5. **Posting**: Publishes top 5 posts with sentiment indicators and mood hashtag
+5. **Posting**: Publishes the top 3 posts and mood hashtag
 6. **Visualizations**: Generates sparklines and yearly charts
 7. **Trending Topics**: TF-IDF extraction + Gemini Pro grouping → text reply to sparkline with exemplar links
 
@@ -138,9 +138,9 @@ export GEMINI_MODEL="gemini-2.5-pro"  # optional, defaults to gemini-2.5-pro
 
 ### Trending Topics
 
-Each analysis cycle, the bot identifies the top 5 trending topics on Bluesky and posts them as a reply to the sparkline chart (threaded under the sentiment summary). Topics are extracted using TF-IDF analysis (2-hour window) of root posts (filtered for spam and adult content), grouped by Google Gemini Pro for semantic understanding, and tracked with persistent identities across ranking cycles.
+Each analysis cycle, the bot ranks the top 5 trending topics on Bluesky and posts the top 3 as a reply to the sparkline chart (threaded under the sentiment summary). Topics are extracted using TF-IDF analysis (2-hour window) of root posts (filtered for spam and adult content), grouped by Google Gemini Pro for semantic understanding, and tracked with persistent identities across ranking cycles.
 
-Each topic includes a link to the highest-engagement exemplar post. Spam is filtered at three layers: adult content labels at ingestion, multi-hashtag posts at ingestion, and zero-engagement posts at TF-IDF query time. Users can mute trending posts via `#hstrend` without affecting the sentiment feed.
+Each topic includes a link to the highest-engagement exemplar post. Spam is filtered at three layers: adult content labels at ingestion, multi-hashtag posts at ingestion, and zero-engagement posts at TF-IDF query time.
 
 See [docs/TRENDING_TOPICS.md](docs/TRENDING_TOPICS.md) for a detailed technical walkthrough.
 

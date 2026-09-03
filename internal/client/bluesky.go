@@ -338,12 +338,12 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 		}
 	}
 
-	// Use the pre-calculated sentiment data from all posts, not just the top 5
+	// Use the pre-calculated sentiment data from all posts, not just the listed top posts
 
 	// Use shared formatter to generate the post content
 	summaryText := formatter.FormatPostContent(formatterPosts, overallSentiment, analysisIntervalMinutes, totalPosts, netSentimentPercentage)
 
-	// Check if we need to truncate, but try to keep all 5 posts
+	// Check if we need to truncate, but try to keep all listed posts
 	if len([]rune(summaryText)) > 300 {
 		// If still too long, truncate but preserve the structure
 		summaryText = truncateText(summaryText, 300)

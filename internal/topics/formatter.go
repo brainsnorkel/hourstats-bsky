@@ -23,7 +23,15 @@ type Facet struct {
 
 const maxGraphemes = 300
 
+// maxPostedTopics caps how many ranked topics appear in the trending post.
+// Ranking and identity tracking still keep TopTopics entries; only the
+// published list is shortened.
+const maxPostedTopics = 3
+
 func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, analysisHours int) (string, []Facet) {
+	if len(ranked) > maxPostedTopics {
+		ranked = ranked[:maxPostedTopics]
+	}
 	showExemplar := make([]bool, len(ranked))
 	for i := range ranked {
 		showExemplar[i] = true
@@ -61,7 +69,7 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, an
 
 func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Trending topics (%dh)\n\n", analysisHours)
+	b.WriteString("Trending topics exemplar posts:\n\n")
 
 	for i, topic := range ranked {
 		line := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)
@@ -76,8 +84,7 @@ func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHo
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n#hstrend")
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
@@ -122,19 +129,6 @@ func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
 			ByteEnd:   byteEnd,
 			Type:      FacetLink,
 			Value:     webURL,
-		})
-	}
-
-	for _, tag := range []string{"#hstrend"} {
-		idx := strings.LastIndex(text, tag)
-		if idx < 0 {
-			continue
-		}
-		facets = append(facets, Facet{
-			ByteStart: idx,
-			ByteEnd:   idx + len([]byte(tag)),
-			Type:      FacetTag,
-			Value:     tag[1:],
 		})
 	}
 
