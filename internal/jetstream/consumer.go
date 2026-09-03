@@ -429,6 +429,17 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 				return
 			case <-ticker.C:
 				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingWriteTimeout)); err != nil {
+					// A routine reconnect, a stall-triggered ForceReconnect or
+					// shutdown closes the connection underneath this goroutine.
+					// That is not a ping failure and must not be logged as one,
+					// nor closed again — the reconnect is already in progress.
+					select {
+					case <-pingStop:
+						return
+					case <-ctx.Done():
+						return
+					default:
+					}
 					slog.Warn("jetstream ping failed, forcing reconnect", "error", err)
 					_ = conn.Close() // unblocks ReadMessage; the caller reconnects
 					return
