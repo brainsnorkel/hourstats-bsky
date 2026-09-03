@@ -167,10 +167,14 @@ func main() {
 
 	runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 
-	// The analysis cycle runs off this loop so that the WAL checkpoint, stats
-	// snapshot and stall-detection tickers keep firing during the 5-18 minutes
-	// a cycle takes.
+	// Everything long-running is dispatched off this loop so that the WAL
+	// checkpoint, stats snapshot and stall-detection tickers keep firing, and
+	// SIGTERM is still read, during the minutes a cycle or daily job takes.
+	// cycles guards the analysis cycle; jobs guards the daily and yearly work,
+	// which also must not overlap each other — rendering the 365-day chart
+	// beside a daily aggregation is a peak-RSS risk on a 1GB VM.
 	cycles := &cycleGuard{}
+	jobs := &cycleGuard{}
 
 	slog.Info("scheduler started, wall-clock aligned",
 		"analysis_every", fmt.Sprintf("%dm", analysisMinutes),
@@ -185,7 +189,10 @@ func main() {
 				Cancel:       cancel,
 				WaitFlusher:  func(d time.Duration) bool { return waitClosed(flusherDone, d) },
 				WaitConsumer: func(d time.Duration) bool { return waitClosed(consumerDone, d) },
-				WaitCycle:    cycles.Wait,
+				// ctx is already cancelled by this point, so these waits use a
+				// live context: they are bounded by their own budgets.
+				WaitCycle: func(d time.Duration) bool { return cycles.Wait(context.Background(), d) },
+				WaitJob:   func(d time.Duration) bool { return jobs.Wait(context.Background(), d) },
 				Snapshot: func() {
 					snapCtx, snapCancel := context.WithTimeout(context.Background(), shutdownSnapshotBudget)
 					defer snapCancel()
@@ -217,22 +224,12 @@ func main() {
 
 		case <-backupCh:
 			// The daily aggregate must include the final cycle of the day
-			// (prod runs cycles at :55, this branch at 00:00), so wait for an
-			// in-flight cycle before aggregating.
-			if cycles.Running() {
-				waitStart := time.Now()
-				slog.Info("daily cycle waiting for in-flight analysis cycle",
-					"max_wait", dailyCycleWait)
-				if !cycles.Wait(dailyCycleWait) {
-					slog.Error("daily cycle wait timed out, aggregating without the final analysis cycle",
-						"waited", time.Since(waitStart).Round(time.Second))
-				} else {
-					slog.Info("daily cycle resumed", "waited", time.Since(waitStart).Round(time.Second))
-				}
-			}
-			// Wrapped so the sampler is stopped and its peak recorded even if a
-			// daily step panics.
-			func() {
+			// (prod runs cycles at :55, this branch at 00:00), so the job waits
+			// for an in-flight cycle — inside its own goroutine, so this loop
+			// keeps serving SIGTERM and the tickers meanwhile.
+			started := startAfterCycle(ctx, jobs, cycles, "daily", jobCycleWait, func() {
+				// The sampler is stopped and its peak recorded even if a daily
+				// step panics.
 				stopDailyMemSampler := startMemSampler(ctx, 500*time.Millisecond, "daily")
 				defer func() {
 					peak := stopDailyMemSampler()
@@ -249,10 +246,22 @@ func main() {
 						slog.Error("weekly vacuum failed", "error", err)
 					}
 				}
-			}()
+			})
+			if !started {
+				slog.Error("background job still running at daily tick, skipping daily cycle")
+				_ = collector.LogEvent(ctx, "job_overlap_skipped", "job=daily")
+			}
 
 		case <-yearlyPostCh:
-			runYearlyPosting(ctx, db, handle, password, dryRun)
+			// Rendering the 365-day chart beside a running analysis cycle
+			// stacks two memory peaks on a VM that has already OOMed.
+			started := startAfterCycle(ctx, jobs, cycles, "yearly", jobCycleWait, func() {
+				runYearlyPosting(ctx, db, handle, password, dryRun)
+			})
+			if !started {
+				slog.Error("background job still running at yearly tick, skipping yearly posting")
+				_ = collector.LogEvent(ctx, "job_overlap_skipped", "job=yearly")
+			}
 
 		case <-statsSnapshotCh:
 			if err := collector.TakeSnapshot(ctx); err != nil {

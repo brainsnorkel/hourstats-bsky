@@ -29,7 +29,7 @@ func TestCycleGuardRunsOffCallerGoroutine(t *testing.T) {
 		t.Fatal("cycle function never ran")
 	}
 
-	if !g.Wait(time.Second) {
+	if !g.Wait(context.Background(), time.Second) {
 		t.Fatal("Wait did not observe the cycle finishing")
 	}
 	if g.Running() {
@@ -64,13 +64,13 @@ func TestCycleGuardRejectsOverlap(t *testing.T) {
 
 	// The guard must not stay latched once the first cycle drains.
 	close(release)
-	if !g.Wait(time.Second) {
+	if !g.Wait(context.Background(), time.Second) {
 		t.Fatal("Wait timed out after the cycle was released")
 	}
 	if !g.TryStart(func() {}) {
 		t.Error("TryStart returned false after the previous cycle finished")
 	}
-	if !g.Wait(time.Second) {
+	if !g.Wait(context.Background(), time.Second) {
 		t.Fatal("Wait timed out on the follow-up cycle")
 	}
 }
@@ -86,19 +86,19 @@ func TestCycleGuardWaitTimesOut(t *testing.T) {
 	})
 	<-started
 
-	if g.Wait(20 * time.Millisecond) {
+	if g.Wait(context.Background(), 20*time.Millisecond) {
 		t.Error("Wait returned true while the cycle was still in flight")
 	}
 
 	close(release)
-	if !g.Wait(time.Second) {
+	if !g.Wait(context.Background(), time.Second) {
 		t.Fatal("Wait timed out after release")
 	}
 }
 
 func TestCycleGuardWaitOnIdleGuard(t *testing.T) {
 	var g cycleGuard
-	if !g.Wait(0) {
+	if !g.Wait(context.Background(), 0) {
 		t.Error("Wait on an idle guard returned false")
 	}
 }
@@ -114,6 +114,7 @@ func recordingHooks(order *[]string, waitResult bool) shutdownHooks {
 		WaitFlusher:  func(time.Duration) bool { add("flusher"); return waitResult },
 		WaitConsumer: func(time.Duration) bool { add("consumer"); return waitResult },
 		WaitCycle:    func(time.Duration) bool { add("cycle"); return waitResult },
+		WaitJob:      func(time.Duration) bool { add("job"); return waitResult },
 		Snapshot:     func() { add("snapshot") },
 		StopStatsAPI: func() { add("statsapi") },
 		CloseStore:   func() error { add("close"); return nil },
@@ -124,7 +125,7 @@ func TestRunShutdownOrder(t *testing.T) {
 	var order []string
 	runShutdown(recordingHooks(&order, true))
 
-	want := []string{"cancel", "flusher", "consumer", "cycle", "snapshot", "statsapi", "close"}
+	want := []string{"cancel", "flusher", "consumer", "cycle", "job", "snapshot", "statsapi", "close"}
 	if !reflect.DeepEqual(order, want) {
 		t.Errorf("shutdown order = %v, want %v", order, want)
 	}
@@ -146,6 +147,7 @@ func TestRunShutdownReportsCloseError(t *testing.T) {
 		WaitFlusher:  func(time.Duration) bool { return true },
 		WaitConsumer: func(time.Duration) bool { return true },
 		WaitCycle:    func(time.Duration) bool { return true },
+		WaitJob:      func(time.Duration) bool { return true },
 		Snapshot:     func() {},
 		StopStatsAPI: func() {},
 		CloseStore:   func() error { return errors.New("boom") },
@@ -195,6 +197,7 @@ func TestRunShutdownDrainsBeforeStoreClose(t *testing.T) {
 		WaitFlusher:  func(d time.Duration) bool { return waitClosed(flusherDone, d) },
 		WaitConsumer: func(d time.Duration) bool { return waitClosed(consumerDone, d) },
 		WaitCycle:    func(time.Duration) bool { return true },
+		WaitJob:      func(time.Duration) bool { return true },
 		Snapshot:     func() {},
 		StopStatsAPI: func() {},
 		CloseStore: func() error {
@@ -216,15 +219,14 @@ func TestRunShutdownDrainsBeforeStoreClose(t *testing.T) {
 }
 
 func TestShutdownBudgetsFitKillTimeout(t *testing.T) {
-	// Fly's kill_timeout is 15s in fly.prod.toml and fly.staging.toml.
-	const flyKillTimeout = 15 * time.Second
-
+	// flyKillTimeout mirrors fly.prod.toml / fly.staging.toml; see its
+	// declaration in scheduling.go.
 	if shutdownBudget >= flyKillTimeout {
 		t.Errorf("shutdownBudget %v leaves no margin under kill_timeout %v", shutdownBudget, flyKillTimeout)
 	}
 
 	steps := shutdownFlusherBudget + shutdownConsumerBudget + shutdownCycleBudget +
-		shutdownSnapshotBudget + shutdownStatsAPIBudget
+		shutdownJobBudget + shutdownSnapshotBudget + shutdownStatsAPIBudget
 	if steps > shutdownBudget {
 		t.Errorf("shutdown step budgets total %v, over the %v overall budget", steps, shutdownBudget)
 	}
