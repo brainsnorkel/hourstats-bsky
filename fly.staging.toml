@@ -22,6 +22,7 @@ swap_size_mb = 512
   GOGC = "75"
   SQLITE_MMAP_MB = "0"
   SQLITE_READ_CONNS = "3"
+  HEALTH_CHART_MEMORY_LIMIT_MB = "1024"
 
 [mounts]
   source = "data"
