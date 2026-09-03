@@ -97,6 +97,13 @@ Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
                             Sparkline reply -> Trending topics reply
 ```
 
+Before posting the summary, the #1 post is checked for quote controls via an
+authenticated `app.bsky.feed.getPosts` (`Viewer.EmbeddingDisabled`; viewer state
+is only populated when authenticated). When quoting is disabled the summary is
+posted without the record embed — which would otherwise render as "Removed by
+author" — and its first line gains `· no embed, post is quote controlled`. The
+check fails open: an API error leaves the embed in place.
+
 ### Internal Packages
 
 | Package | Purpose |

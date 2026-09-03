@@ -340,7 +340,22 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			}
 		}
 	} else {
-		postedURI, postedCID := postSummary(ctx, bskyClient, topPosts, overallSentiment, netSentimentPct, analysisMinutes, len(posts))
+		// The #1 post is the one we quote-embed. If its author disabled
+		// quoting, the embed would render as "Removed by author", so check
+		// first and fall back to an embed-free summary. Fail open: an API
+		// error here should not cost us the whole summary post.
+		var quoteControlled bool
+		if len(topPosts) > 0 {
+			disabled, err := bskyClient.EmbeddingDisabled(ctx, []string{topPosts[0].URI})
+			if err != nil {
+				slog.Warn("quote-control check failed, embedding as usual", "error", err, "uri", topPosts[0].URI)
+			} else if disabled[topPosts[0].URI] {
+				quoteControlled = true
+				slog.Info("top post is quote-controlled, posting without embed", "uri", topPosts[0].URI)
+			}
+		}
+
+		postedURI, postedCID := postSummary(ctx, bskyClient, topPosts, overallSentiment, netSentimentPct, analysisMinutes, len(posts), quoteControlled)
 		if postedURI != "" {
 			runState.TopPostURI = postedURI
 			runState.TopPostCID = postedCID
