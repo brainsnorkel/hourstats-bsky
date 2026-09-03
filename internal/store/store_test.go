@@ -1110,6 +1110,130 @@ func captureWarnLog() (*bytes.Buffer, func()) {
 	return &out, func() { slog.SetDefault(prev) }
 }
 
+// captureInfoLog is captureWarnLog at info level, for assertions on the
+// vacuum skip/run decision.
+func captureInfoLog() (*bytes.Buffer, func()) {
+	var out bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	return &out, func() { slog.SetDefault(prev) }
+}
+
+// freelistCount reads the current freelist size, so the vacuum tests assert
+// against the DB's real state rather than an assumed one.
+func freelistCount(t *testing.T, s *Store) int64 {
+	t.Helper()
+	var n int64
+	if err := s.writeDB.QueryRow("PRAGMA freelist_count").Scan(&n); err != nil {
+		t.Fatalf("PRAGMA freelist_count: %v", err)
+	}
+	return n
+}
+
+// churnFreelist inserts and deletes enough rows to leave free pages behind.
+func churnFreelist(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+	posts := make([]Post, 0, 2000)
+	for i := 0; i < 2000; i++ {
+		posts = append(posts, Post{
+			URI:       fmt.Sprintf("at://did:plc:churn/app.bsky.feed.post/%d", i),
+			CID:       "cid",
+			Text:      strings.Repeat("x", 512),
+			AuthorDID: "did:plc:churn",
+			CreatedAt: timeToStr(time.Now().UTC()),
+		})
+	}
+	if err := s.InsertPostsBatch(ctx, posts); err != nil {
+		t.Fatalf("InsertPostsBatch: %v", err)
+	}
+	if _, err := s.writeDB.ExecContext(ctx, "DELETE FROM post_buffer"); err != nil {
+		t.Fatalf("delete post_buffer: %v", err)
+	}
+}
+
+// TestRunVacuum_SkipsWhenFreelistBelowThreshold covers the reason VACUUM was
+// made conditional: on prod the unconditional weekly run rewrote 644 MB to
+// reclaim ~10 MB and stalled writes for 160 s. A fresh DB has no free pages,
+// so there is nothing to reclaim and VACUUM must not run.
+func TestRunVacuum_SkipsWhenFreelistBelowThreshold(t *testing.T) {
+	s := newTestStore(t)
+
+	if got := freelistCount(t, s); got != 0 {
+		t.Fatalf("fresh store freelist_count = %d, want 0", got)
+	}
+
+	out, restore := captureInfoLog()
+	defer restore()
+
+	if err := s.RunVacuum(context.Background()); err != nil {
+		t.Fatalf("RunVacuum: %v", err)
+	}
+
+	log := out.String()
+	if !strings.Contains(log, "vacuum: skipped") {
+		t.Errorf("expected a skip log, got: %s", log)
+	}
+	if strings.Contains(log, "vacuum: complete") {
+		t.Errorf("VACUUM ran on an empty freelist: %s", log)
+	}
+}
+
+// TestRunVacuum_RunsWhenFreelistAboveThreshold is the other half: once the
+// freelist genuinely exceeds the threshold the rewrite is worth its cost.
+func TestRunVacuum_RunsWhenFreelistAboveThreshold(t *testing.T) {
+	s := newTestStore(t)
+	churnFreelist(t, s)
+
+	if got := freelistCount(t, s); got == 0 {
+		t.Fatal("freelist_count = 0 after churn, test cannot exercise the vacuum path")
+	}
+
+	// Threshold 0: any non-empty freelist qualifies.
+	t.Setenv("VACUUM_FREELIST_PCT", "0")
+
+	out, restore := captureInfoLog()
+	defer restore()
+
+	if err := s.RunVacuum(context.Background()); err != nil {
+		t.Fatalf("RunVacuum: %v", err)
+	}
+
+	log := out.String()
+	if !strings.Contains(log, "vacuum: complete") {
+		t.Errorf("expected VACUUM to run, got: %s", log)
+	}
+	if got := freelistCount(t, s); got != 0 {
+		t.Errorf("freelist_count after vacuum = %d, want 0", got)
+	}
+}
+
+// TestRunVacuum_HighThresholdSkipsRealFreelist pins the threshold to the
+// env var rather than to any hardcoded value.
+func TestRunVacuum_HighThresholdSkipsRealFreelist(t *testing.T) {
+	s := newTestStore(t)
+	churnFreelist(t, s)
+	before := freelistCount(t, s)
+	if before == 0 {
+		t.Fatal("freelist_count = 0 after churn")
+	}
+
+	t.Setenv("VACUUM_FREELIST_PCT", "99")
+
+	out, restore := captureInfoLog()
+	defer restore()
+
+	if err := s.RunVacuum(context.Background()); err != nil {
+		t.Fatalf("RunVacuum: %v", err)
+	}
+	if !strings.Contains(out.String(), "vacuum: skipped") {
+		t.Errorf("expected a skip log at 99%% threshold, got: %s", out.String())
+	}
+	if got := freelistCount(t, s); got != before {
+		t.Errorf("freelist_count = %d, want unchanged %d", got, before)
+	}
+}
+
 func TestEnvInt(t *testing.T) {
 	t.Run("unset returns fallback", func(t *testing.T) {
 		if got := envInt("HOURSTATS_TEST_ENVINT_UNSET", 42); got != 42 {

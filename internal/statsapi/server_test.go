@@ -86,6 +86,49 @@ func TestLatest_OK(t *testing.T) {
 	}
 }
 
+// TestLatest_ExposesFirehoseAndRSSFields pins the JSON keys the CLI and any
+// external dashboard read for firehose reconstruction and RSS accounting.
+func TestLatest_ExposesFirehoseAndRSSFields(t *testing.T) {
+	snap := &store.StatsSnapshot{
+		ID:                      1,
+		SnapshotTime:            time.Now().UTC(),
+		ActiveEndpoint:          "wss://test",
+		TotalFirehosePosts:      3308,
+		EarlyRejectedNonEnglish: 71000,
+		RSSBytes:                1024 * 1024 * 588,
+		HeapReleasedBytes:       1024 * 1024 * 37,
+		StackInuseBytes:         1024 * 1024 * 3,
+	}
+	s := newTestServer(&mockStore{latestSnap: snap})
+	rr := doRequest(s, "GET", "/stats/latest")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]float64{
+		"total_firehose_posts":       3308,
+		"early_rejected_non_english": 71000,
+		"rss_bytes":                  1024 * 1024 * 588,
+		"heap_released_bytes":        1024 * 1024 * 37,
+		"stack_inuse_bytes":          1024 * 1024 * 3,
+	}
+	for key, wantVal := range want {
+		got, ok := body[key]
+		if !ok {
+			t.Errorf("response is missing %q", key)
+			continue
+		}
+		if got != wantVal {
+			t.Errorf("%s = %v, want %v", key, got, wantVal)
+		}
+	}
+}
+
 func TestLatest_NotFound(t *testing.T) {
 	s := newTestServer(&mockStore{latestSnap: nil})
 	rr := doRequest(s, "GET", "/stats/latest")
