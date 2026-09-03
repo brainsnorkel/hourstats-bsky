@@ -51,6 +51,8 @@ fly ssh console -a hourstats-prod       # SSH into production
 | `GOOGLE_AI_API_KEY` | (required if trending) | Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model for topic grouping |
 | `GROUP_FALLBACK_MODEL` | `gemini-2.5-flash` | Cheaper Gemini model tried when the primary grouping call fails (429/5xx/empty). Empty disables the fallback (post is suppressed instead) |
+| `HYDRATION_HOST` | `https://public.api.bsky.app` | Host for `app.bsky.feed.getPosts` engagement hydration. `app.bsky.feed.getPosts` needs no auth, so the cached public appview keeps hydration off the authenticated PDS rate budget. The literal value `pds` routes hydration back through the authenticated client |
+| `HYDRATION_MAX_UNHYDRATED_PCT` | `10` | If hydration times out and more than this share of the window is left unhydrated, the run is marked `low_confidence` and nothing is posted |
 | `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily backups |
 | `WAL_CHECKPOINT_THRESHOLD_MB` | `50` | WAL size (MB) that triggers TRUNCATE escalation |
 | `HEALTH_CHART_HOURS` | `6` | Default hours for health chart generation |

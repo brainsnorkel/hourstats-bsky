@@ -156,3 +156,58 @@ func TestFlushWriteBatch_Upsert(t *testing.T) {
 		t.Errorf("CID = %q, want cid1-updated (upsert should update)", posts[0].CID)
 	}
 }
+
+// TestFlushWriteBatch_UpsertPreservesHydration covers the at-least-once nature
+// of Jetstream: a reconnect replays the cursor and re-delivers posts we already
+// hydrated. The ingest event carries no engagement and no handle, so the upsert
+// must leave those columns alone rather than zeroing them.
+func TestFlushWriteBatch_UpsertPreservesHydration(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	uri := "at://did:plc:a/app.bsky.feed.post/1"
+
+	ingest := []PendingWrite{{
+		Post: Post{
+			URI: uri, CID: "cid1", Text: "original",
+			AuthorDID: "did:plc:a", CreatedAt: now.Format(time.RFC3339),
+		},
+		CreatedAt: now.Format(time.RFC3339),
+	}}
+	if err := s.FlushWriteBatch(ctx, ingest); err != nil {
+		t.Fatalf("first flush: %v", err)
+	}
+
+	if err := s.UpdatePostEngagement(ctx, uri, 42, 7, 3, "alice.bsky.social"); err != nil {
+		t.Fatalf("UpdatePostEngagement: %v", err)
+	}
+
+	// Jetstream re-delivers the same post: same zero-valued engagement fields.
+	redelivery := []PendingWrite{{
+		Post: Post{
+			URI: uri, CID: "cid1", Text: "original",
+			AuthorDID: "did:plc:a", CreatedAt: now.Format(time.RFC3339),
+		},
+		CreatedAt: now.Format(time.RFC3339),
+	}}
+	if err := s.FlushWriteBatch(ctx, redelivery); err != nil {
+		t.Fatalf("redelivery flush: %v", err)
+	}
+
+	posts, err := s.GetPostsSince(ctx, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("GetPostsSince: %v", err)
+	}
+	if len(posts) != 1 {
+		t.Fatalf("expected 1 post (upsert), got %d", len(posts))
+	}
+	got := posts[0]
+	if got.AuthorHandle != "alice.bsky.social" {
+		t.Errorf("AuthorHandle = %q, want alice.bsky.social (re-delivery must not blank it)", got.AuthorHandle)
+	}
+	if got.Likes != 42 || got.Reposts != 7 || got.Replies != 3 {
+		t.Errorf("engagement = likes:%d reposts:%d replies:%d, want 42/7/3 (re-delivery must not zero it)",
+			got.Likes, got.Reposts, got.Replies)
+	}
+}
