@@ -2,6 +2,7 @@ package stats
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -73,18 +74,107 @@ func TestIncrementFirehosePost(t *testing.T) {
 	}
 }
 
-func TestSwapFirehoseCount(t *testing.T) {
+func TestFirehoseSinceAnalysis(t *testing.T) {
 	c := New(&mockStatsStore{}, "")
 
 	c.IncrementFirehosePost()
 	c.IncrementFirehosePost()
 
-	got := c.SwapFirehoseCount()
-	if got != 2 {
-		t.Fatalf("SwapFirehoseCount = %d, want 2", got)
+	if got := c.FirehoseSinceAnalysis(); got != 2 {
+		t.Fatalf("FirehoseSinceAnalysis = %d, want 2", got)
 	}
-	if after := c.GetFirehoseCount(); after != 0 {
-		t.Fatalf("after swap, firehose count = %d, want 0", after)
+	// The underlying counter is cumulative: reading it must not reset it.
+	if after := c.GetFirehoseCount(); after != 2 {
+		t.Fatalf("after analysis read, firehose count = %d, want 2", after)
+	}
+	// A second read with no traffic in between yields nothing.
+	if got := c.FirehoseSinceAnalysis(); got != 0 {
+		t.Fatalf("second FirehoseSinceAnalysis = %d, want 0", got)
+	}
+
+	c.IncrementFirehosePost()
+	if got := c.FirehoseSinceAnalysis(); got != 1 {
+		t.Fatalf("third FirehoseSinceAnalysis = %d, want 1", got)
+	}
+}
+
+// TestSwapFirehoseCountDelegates pins the deprecated wrapper to the new
+// cursor-based behaviour, since cmd/hourstats/analysis.go still calls it.
+func TestSwapFirehoseCountDelegates(t *testing.T) {
+	c := New(&mockStatsStore{}, "")
+
+	for i := 0; i < 5; i++ {
+		c.IncrementFirehosePost()
+	}
+	if got := c.SwapFirehoseCount(); got != 5 {
+		t.Fatalf("SwapFirehoseCount = %d, want 5", got)
+	}
+	if after := c.GetFirehoseCount(); after != 5 {
+		t.Fatalf("after SwapFirehoseCount, firehose count = %d, want 5 (counter must stay cumulative)", after)
+	}
+	if got := c.SwapFirehoseCount(); got != 0 {
+		t.Fatalf("second SwapFirehoseCount = %d, want 0", got)
+	}
+}
+
+// TestFirehoseCounterNoLossAcrossConsumers is the regression test for the bug
+// that made english_posts_stored exceed total_firehose_posts in every
+// cycle-end snapshot: the analysis cycle used to Swap(0) the shared counter,
+// discarding every post counted since the last snapshot. Posts are
+// incremented *between* the snapshot read and the analysis read, which is
+// exactly the window the old code dropped. Both consumers must together
+// account for every increment.
+func TestFirehoseCounterNoLossAcrossConsumers(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+	ctx := context.Background()
+
+	var total, snapshotSum, analysisSum int64
+	increment := func(n int) {
+		for i := 0; i < n; i++ {
+			c.IncrementFirehosePost()
+		}
+		total += int64(n)
+	}
+
+	increment(100)
+	if err := c.TakeSnapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snapshotSum += int64(ms.snapshots[0].TotalFirehosePosts)
+
+	// Posts arriving in the gap the old implementation threw away.
+	increment(30)
+	analysisSum += c.FirehoseSinceAnalysis()
+
+	increment(20)
+	if err := c.TakeSnapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snapshotSum += int64(ms.snapshots[1].TotalFirehosePosts)
+
+	increment(7)
+	analysisSum += c.FirehoseSinceAnalysis()
+	if err := c.TakeSnapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	snapshotSum += int64(ms.snapshots[2].TotalFirehosePosts)
+
+	if total != 157 {
+		t.Fatalf("test setup: total = %d, want 157", total)
+	}
+	if snapshotSum != total {
+		t.Errorf("snapshot deltas sum to %d, want %d (posts lost to the analysis cursor)", snapshotSum, total)
+	}
+	if analysisSum != total {
+		t.Errorf("analysis deltas sum to %d, want %d (posts lost to the snapshot cursor)", analysisSum, total)
+	}
+
+	// Per-snapshot deltas: 100, then 30+20, then 7.
+	for i, want := range []int{100, 50, 7} {
+		if got := ms.snapshots[i].TotalFirehosePosts; got != want {
+			t.Errorf("snapshot[%d].TotalFirehosePosts = %d, want %d", i, got, want)
+		}
 	}
 }
 
@@ -357,11 +447,8 @@ func TestTakeSnapshot_DeltaComputation(t *testing.T) {
 	}
 }
 
-// TestTakeSnapshot_FirehoseCounterReset verifies the collector handles
-// SwapFirehoseCount() being called out-of-band by the analysis cycle.
-// Without the reset-detection, the second snapshot's delta would be
-// current(30) - lastSeen(100) = -70, matching the negative values seen
-// in prod/staging.
+// TestTakeSnapshot_FirehoseCounterReset verifies the snapshot delta is
+// unaffected by the analysis cycle reading the counter out-of-band.
 func TestTakeSnapshot_FirehoseCounterReset(t *testing.T) {
 	ms := &mockStatsStore{}
 	c := New(ms, "")
@@ -387,6 +474,160 @@ func TestTakeSnapshot_FirehoseCounterReset(t *testing.T) {
 	}
 	if got := ms.snapshots[1].TotalFirehosePosts; got != 30 {
 		t.Fatalf("second snapshot TotalFirehosePosts = %d, want 30 (got negative means regression)", got)
+	}
+}
+
+// TestTakeSnapshot_EarlyRejectedNonEnglish covers the counter that makes the
+// true Jetstream post volume reconstructible: total_firehose_posts only counts
+// posts that reach the language filter, so without this the pre-filter
+// rejections were invisible.
+func TestTakeSnapshot_EarlyRejectedNonEnglish(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+	provider := &mockConsumerProvider{
+		report: jetstream.StatsReport{EarlyRejectedNonEnglish: 4000},
+	}
+	c.SetConsumer(provider)
+
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ms.snapshots[0].EarlyRejectedNonEnglish; got != 4000 {
+		t.Errorf("first snapshot EarlyRejectedNonEnglish = %d, want 4000", got)
+	}
+
+	provider.report.EarlyRejectedNonEnglish = 6500
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ms.snapshots[1].EarlyRejectedNonEnglish; got != 2500 {
+		t.Errorf("second snapshot EarlyRejectedNonEnglish = %d, want 2500 (delta)", got)
+	}
+}
+
+// TestTakeSnapshot_PostsPerMinuteUsesElapsedTime pins the rate to the measured
+// interval. The previous code always divided by 30, so an off-schedule
+// snapshot (the analysis cycle takes one right after the ticker's) reported a
+// rate that was wrong by the ratio of the real gap to 30 minutes.
+func TestTakeSnapshot_PostsPerMinuteUsesElapsedTime(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+	ctx := context.Background()
+
+	// First snapshot has no predecessor and falls back to the nominal window.
+	for i := 0; i < 60; i++ {
+		c.IncrementEnglishPost(false)
+	}
+	if err := c.TakeSnapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := ms.snapshots[0].PostsPerMinuteAvg, 60.0/30.0; got != want {
+		t.Errorf("first snapshot PostsPerMinuteAvg = %f, want %f", got, want)
+	}
+
+	// Backdate the cursor so the next snapshot measures a 10-minute gap.
+	c.lastSeen.snapshotAt = time.Now().UTC().Add(-10 * time.Minute)
+	for i := 0; i < 500; i++ {
+		c.IncrementEnglishPost(false)
+	}
+	if err := c.TakeSnapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// 500 posts over ~10 minutes is ~50/min, not the 500/30 = 16.7 the fixed
+	// divisor produced.
+	got := ms.snapshots[1].PostsPerMinuteAvg
+	if got < 49.0 || got > 51.0 {
+		t.Errorf("second snapshot PostsPerMinuteAvg = %f, want ~50 (500 posts / 10 min)", got)
+	}
+}
+
+// TestTakeSnapshot_ConsumerRestartGeneration covers runJetstream rebuilding
+// the Consumer after a fatal error: the new consumer's atomics start at zero,
+// which used to produce large negative deltas for every consumer stat.
+func TestTakeSnapshot_ConsumerRestartGeneration(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+	provider := &mockConsumerProvider{
+		report: jetstream.StatsReport{
+			EventsReceived:          10000,
+			PostsProcessed:          8000,
+			EventsSkipped:           2000,
+			Errors:                  7,
+			Reconnects:              3,
+			EndpointRotations:       2,
+			EarlyRejectedNonEnglish: 5000,
+		},
+	}
+	c.SetConsumer(provider)
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh consumer: every counter restarts from zero and climbs a little.
+	c.SetConsumer(&mockConsumerProvider{
+		report: jetstream.StatsReport{
+			EventsReceived:          120,
+			PostsProcessed:          90,
+			EventsSkipped:           30,
+			Errors:                  1,
+			Reconnects:              1,
+			EndpointRotations:       0,
+			EarlyRejectedNonEnglish: 60,
+		},
+	})
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := ms.snapshots[1]
+	checks := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"EventsReceived", snap.EventsReceived, 120},
+		{"PostsProcessed", snap.PostsProcessed, 90},
+		{"EventsSkipped", snap.EventsSkipped, 30},
+		{"ConsumerErrors", snap.ConsumerErrors, 1},
+		{"ReconnectCount", snap.ReconnectCount, 1},
+		{"EndpointRotations", snap.EndpointRotations, 0},
+		{"EarlyRejectedNonEnglish", snap.EarlyRejectedNonEnglish, 60},
+	}
+	for _, ch := range checks {
+		if ch.got != ch.want {
+			t.Errorf("%s after consumer restart = %d, want %d", ch.name, ch.got, ch.want)
+		}
+	}
+
+	// The third snapshot must resume normal differencing against the new
+	// generation, not against the pre-restart values.
+	c.SetConsumer(&mockConsumerProvider{
+		report: jetstream.StatsReport{EventsReceived: 200, PostsProcessed: 150},
+	})
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ms.snapshots[2].EventsReceived; got != 80 {
+		t.Errorf("third snapshot EventsReceived = %d, want 80", got)
+	}
+}
+
+func TestCounterDelta(t *testing.T) {
+	tests := []struct {
+		name             string
+		current, lastSee int64
+		want             int64
+	}{
+		{"normal increase", 150, 100, 50},
+		{"no change", 100, 100, 0},
+		{"from zero", 42, 0, 42},
+		{"counter restarted", 30, 100, 30},
+		{"restarted to zero", 0, 100, 0},
+	}
+	for _, tt := range tests {
+		if got := counterDelta(tt.current, tt.lastSee); got != tt.want {
+			t.Errorf("%s: counterDelta(%d, %d) = %d, want %d", tt.name, tt.current, tt.lastSee, got, tt.want)
+		}
 	}
 }
 
@@ -500,6 +741,19 @@ func TestTakeSnapshotIncludesHealthMetrics(t *testing.T) {
 
 	if snap.SysBytes == 0 {
 		t.Error("SysBytes should be >0 (runtime.MemStats.Sys)")
+	}
+	if snap.StackInuseBytes == 0 {
+		t.Error("StackInuseBytes should be >0 (runtime.MemStats.StackInuse)")
+	}
+	if snap.HeapReleasedBytes < 0 {
+		t.Errorf("HeapReleasedBytes = %d, want >= 0", snap.HeapReleasedBytes)
+	}
+	// RSS comes from procfs, which only exists on Linux; 0 elsewhere.
+	if snap.RSSBytes < 0 {
+		t.Errorf("RSSBytes = %d, want >= 0", snap.RSSBytes)
+	}
+	if runtime.GOOS == "linux" && snap.RSSBytes == 0 {
+		t.Error("RSSBytes = 0 on linux, want > 0")
 	}
 	if snap.GoroutineCount == 0 {
 		t.Error("GoroutineCount should be >0")

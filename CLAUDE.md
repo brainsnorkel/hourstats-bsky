@@ -53,6 +53,7 @@ fly ssh console -a hourstats-prod       # SSH into production
 | `GROUP_FALLBACK_MODEL` | `gemini-2.5-flash` | Cheaper Gemini model tried when the primary grouping call fails (429/5xx/empty). Empty disables the fallback (post is suppressed instead) |
 | `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily backups |
 | `WAL_CHECKPOINT_THRESHOLD_MB` | `50` | WAL size (MB) that triggers TRUNCATE escalation |
+| `VACUUM_FREELIST_PCT` | `20` | Freelist share of total pages the weekly VACUUM must exceed to run; below it the rewrite is skipped with an info log |
 | `HEALTH_CHART_HOURS` | `6` | Default hours for health chart generation |
 | `HEALTH_CHART_MEMORY_LIMIT_MB` | `512` | Memory limit line on health charts |
 | `SQLITE_MMAP_MB` | `128` | Read pool mmap_size in MB; `0` disables mmap entirely |
@@ -104,6 +105,7 @@ Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
 | `internal/client` | Bluesky AT Protocol client (posting, image upload, facets, pinning) |
 | `internal/formatter` | Post content formatting (character counting, Bluesky limits) |
 | `internal/sparkline` | Chart generation (sparkline, trendline, volume, yearly, bump charts) |
+| `internal/procmem` | Process RSS from `/proc/self/statm` (0 on non-Linux) |
 | `internal/stats` | Runtime statistics collector |
 | `internal/statsapi` | HTTP stats API server (port 9111) |
 | `internal/state` | Type definitions for sentiment data points |

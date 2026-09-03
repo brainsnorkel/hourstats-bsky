@@ -26,6 +26,7 @@ type Snapshot struct {
 	EventsSkipped           int     `json:"events_skipped"`
 	ConsumerErrors          int     `json:"consumer_errors"`
 	TotalFirehosePosts      int     `json:"total_firehose_posts"`
+	EarlyRejectedNonEnglish int     `json:"early_rejected_non_english"`
 	EnglishPostsStored      int     `json:"english_posts_stored"`
 	RootPosts               int     `json:"root_posts"`
 	ReplyPosts              int     `json:"reply_posts"`
@@ -40,6 +41,9 @@ type Snapshot struct {
 	HeapInuseBytes          int64   `json:"heap_inuse_bytes"`
 	HeapSysBytes            int64   `json:"heap_sys_bytes"`
 	SysBytes                int64   `json:"sys_bytes"`
+	RSSBytes                int64   `json:"rss_bytes"`
+	HeapReleasedBytes       int64   `json:"heap_released_bytes"`
+	StackInuseBytes         int64   `json:"stack_inuse_bytes"`
 	GCPauseTotalNs          int64   `json:"gc_pause_total_ns"`
 	GCCount                 int64   `json:"gc_count"`
 	GCCPUFraction           float64 `json:"gc_cpu_fraction"`
@@ -220,8 +224,11 @@ func cmdSummary() {
 	fmt.Printf("Rotations:   %d\n", snap.EndpointRotations)
 	fmt.Printf("Reconnects:  %d\n\n", snap.ReconnectCount)
 
-	fmt.Println("--- Traffic (last 30 min) ---")
-	fmt.Printf("Firehose:    %s posts\n", formatInt(snap.TotalFirehosePosts))
+	fmt.Println("--- Traffic (since previous snapshot) ---")
+	fmt.Printf("Firehose:    %s posts reaching the language filter\n", formatInt(snap.TotalFirehosePosts))
+	fmt.Printf("Pre-filter:  %s rejected as non-English before the filter (%s total from Jetstream)\n",
+		formatInt(snap.EarlyRejectedNonEnglish),
+		formatInt(snap.TotalFirehosePosts+snap.EarlyRejectedNonEnglish))
 	fmt.Printf("English:     %s stored (%s root / %s reply)\n",
 		formatInt(snap.EnglishPostsStored),
 		formatInt(snap.RootPosts),
@@ -312,6 +319,8 @@ func cmdLatest() {
 	fmt.Printf("Events Skipped:            %d\n", snap.EventsSkipped)
 	fmt.Printf("Consumer Errors:           %d\n", snap.ConsumerErrors)
 	fmt.Printf("Total Firehose Posts:      %d\n", snap.TotalFirehosePosts)
+	fmt.Printf("Early Rejected Non-Eng:    %d\n", snap.EarlyRejectedNonEnglish)
+	fmt.Printf("Jetstream Posts (derived): %d\n", snap.TotalFirehosePosts+snap.EarlyRejectedNonEnglish)
 	fmt.Printf("English Posts Stored:      %d\n", snap.EnglishPostsStored)
 	fmt.Printf("Root Posts:                %d\n", snap.RootPosts)
 	fmt.Printf("Reply Posts:               %d\n", snap.ReplyPosts)
@@ -322,6 +331,11 @@ func cmdLatest() {
 	fmt.Printf("Hydration Errors:          %d\n", snap.HydrationErrors)
 	fmt.Printf("Sentiment Result:          %s\n", snap.SentimentResult)
 	fmt.Printf("Posting Skipped:           %t\n", snap.PostingSkipped != 0)
+	fmt.Printf("RSS:                       %s\n", formatBytes(snap.RSSBytes))
+	fmt.Printf("Sys:                       %s\n", formatBytes(snap.SysBytes))
+	fmt.Printf("Heap InUse:                %s\n", formatBytes(snap.HeapInuseBytes))
+	fmt.Printf("Heap Released:             %s\n", formatBytes(snap.HeapReleasedBytes))
+	fmt.Printf("Stack InUse:               %s\n", formatBytes(snap.StackInuseBytes))
 }
 
 func cmdHistory() {
@@ -348,13 +362,14 @@ func cmdHistory() {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TIME\tENDPOINT\tFIREHOSE\tENGLISH\tROOT\tREPLY\tPPM\tERRORS")
+	fmt.Fprintln(w, "TIME\tENDPOINT\tFIREHOSE\tPREFILT\tENGLISH\tROOT\tREPLY\tPPM\tERRORS")
 
 	for _, s := range snaps {
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%.1f\t%d\n",
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.1f\t%d\n",
 			formatTime(s.SnapshotTime),
 			abbreviateEndpoint(s.ActiveEndpoint),
 			s.TotalFirehosePosts,
+			s.EarlyRejectedNonEnglish,
 			s.EnglishPostsStored,
 			s.RootPosts,
 			s.ReplyPosts,
@@ -542,13 +557,20 @@ func cmdPlot() {
 		extract func(Snapshot) float64
 		unit    string
 	}
+	// "GC CPU cum%" is labelled cumulative because runtime.MemStats
+	// GCCPUFraction is a lifetime ratio, unlike every other row here, which
+	// is a per-interval delta.
 	metrics := []metric{
-		{"Heap InUse", func(s Snapshot) float64 { return float64(s.HeapInuseBytes) / (1024 * 1024) }, "MB"},
+		{"RSS", func(s Snapshot) float64 { return float64(s.RSSBytes) / (1024 * 1024) }, "MB"},
 		{"Sys Memory", func(s Snapshot) float64 { return float64(s.SysBytes) / (1024 * 1024) }, "MB"},
+		{"Heap InUse", func(s Snapshot) float64 { return float64(s.HeapInuseBytes) / (1024 * 1024) }, "MB"},
+		{"Stack InUse", func(s Snapshot) float64 { return float64(s.StackInuseBytes) / (1024 * 1024) }, "MB"},
+		{"Heap Rel", func(s Snapshot) float64 { return float64(s.HeapReleasedBytes) / (1024 * 1024) }, "MB"},
 		{"WAL Size", func(s Snapshot) float64 { return float64(s.WALSizeBytes) / (1024 * 1024) }, "MB"},
 		{"Write Queue", func(s Snapshot) float64 { return float64(s.WriteChannelDepth) }, ""},
 		{"GC Pause", func(s Snapshot) float64 { return float64(s.GCPauseTotalNs) / 1e6 }, "ms"},
-		{"GC CPU %", func(s Snapshot) float64 { return s.GCCPUFraction * 100 }, "%"},
+		{"GC Count", func(s Snapshot) float64 { return float64(s.GCCount) }, ""},
+		{"GC CPU cum%", func(s Snapshot) float64 { return s.GCCPUFraction * 100 }, "%"},
 		{"Goroutines", func(s Snapshot) float64 { return float64(s.GoroutineCount) }, ""},
 		{"Cycle Dur", func(s Snapshot) float64 { return float64(s.CycleDurationMs) / 1000 }, "s"},
 		{"Slow Flush", func(s Snapshot) float64 { return float64(s.SlowFlushCount) }, ""},
