@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
-	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
@@ -117,26 +115,4 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 	}
 	slog.Info("sparkline posted", "points", len(history))
 	return sparkURI, sparkCID
-}
-
-func generateSparklineAltText(points []state.SentimentDataPoint) string {
-	if len(points) < 2 {
-		return "Seven day sentiment trend chart"
-	}
-	latest := points[len(points)-1]
-	var sum, lo, hi float64
-	lo = points[0].NetSentimentPercent
-	hi = points[0].NetSentimentPercent
-	for _, p := range points {
-		sum += p.NetSentimentPercent
-		if p.NetSentimentPercent < lo {
-			lo = p.NetSentimentPercent
-		}
-		if p.NetSentimentPercent > hi {
-			hi = p.NetSentimentPercent
-		}
-	}
-	avg := sum / float64(len(points))
-	return fmt.Sprintf("Seven day Bluesky sentiment. Latest: %.1f%%. High: %.1f%%. Low: %.1f%%. Average: %.1f%%.",
-		latest.NetSentimentPercent, hi, lo, avg)
 }
