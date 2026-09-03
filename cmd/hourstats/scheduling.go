@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -52,8 +53,10 @@ func (g *cycleGuard) Running() bool {
 }
 
 // Wait blocks until the cycle in flight when Wait was called has finished, or
-// until timeout elapses. It reports true when no cycle is left in flight.
-func (g *cycleGuard) Wait(timeout time.Duration) bool {
+// until timeout elapses, or until ctx is cancelled. It reports true only when
+// no cycle is left in flight. Honouring ctx matters because a waiter parked on
+// a cycle that will not finish must still release promptly at shutdown.
+func (g *cycleGuard) Wait(ctx context.Context, timeout time.Duration) bool {
 	g.mu.Lock()
 	done := g.done
 	g.mu.Unlock()
@@ -70,7 +73,41 @@ func (g *cycleGuard) Wait(timeout time.Duration) bool {
 		return true
 	case <-timer.C:
 		return false
+	case <-ctx.Done():
+		return false
 	}
+}
+
+// startAfterCycle runs body off the caller's goroutine once any in-flight
+// analysis cycle has finished, reporting false when another background job is
+// already running. The caller must not block: the scheduler loop has to stay
+// responsive to SIGTERM and to the WAL, stats and stall tickers, so both the
+// wait and the work happen inside the spawned goroutine.
+func startAfterCycle(ctx context.Context, jobs, cycles *cycleGuard, name string, maxWait time.Duration, body func()) bool {
+	return jobs.TryStart(func() {
+		if cycles.Running() {
+			waitStart := time.Now()
+			slog.Info("background job waiting for in-flight analysis cycle",
+				"job", name, "max_wait", maxWait)
+			finished := cycles.Wait(ctx, maxWait)
+			waited := time.Since(waitStart).Round(time.Second)
+			switch {
+			case ctx.Err() != nil:
+				slog.Warn("background job abandoned during shutdown", "job", name, "waited", waited)
+				return
+			case !finished:
+				slog.Error("background job wait timed out, running without the final analysis cycle",
+					"job", name, "waited", waited)
+			default:
+				slog.Info("background job resumed", "job", name, "waited", waited)
+			}
+		}
+		if ctx.Err() != nil {
+			slog.Warn("background job skipped during shutdown", "job", name)
+			return
+		}
+		body()
+	})
 }
 
 // waitClosed reports whether ch was closed within timeout.
@@ -98,21 +135,27 @@ func waitClosed(ch <-chan struct{}, timeout time.Duration) bool {
 // ---------------------------------------------------------------------------
 
 const (
-	// shutdownBudget is Fly's kill_timeout (15s) minus a margin. Overrunning it
-	// means SIGKILL, which skips every step below.
+	// flyKillTimeout mirrors `kill_timeout` in fly.prod.toml and
+	// fly.staging.toml. Fly sends SIGKILL after this, so every shutdown step
+	// has to finish inside it. Keep in sync if those files change.
+	flyKillTimeout = 15 * time.Second
+
+	// shutdownBudget is flyKillTimeout minus a margin. Overrunning it means
+	// SIGKILL, which skips every step below.
 	shutdownBudget = 12 * time.Second
 
 	// The step budgets must sum to no more than shutdownBudget; see
 	// TestShutdownBudgetsFitKillTimeout.
 	shutdownFlusherBudget  = 5 * time.Second
-	shutdownConsumerBudget = 3 * time.Second
+	shutdownConsumerBudget = 2 * time.Second
 	shutdownCycleBudget    = 2 * time.Second
+	shutdownJobBudget      = 1 * time.Second
 	shutdownSnapshotBudget = 1 * time.Second
 	shutdownStatsAPIBudget = 1 * time.Second
 
-	// dailyCycleWait bounds how long the daily branch waits for an in-flight
-	// analysis cycle before aggregating without it.
-	dailyCycleWait = 15 * time.Minute
+	// jobCycleWait bounds how long a background job (daily, yearly) waits for
+	// an in-flight analysis cycle before running without it.
+	jobCycleWait = 15 * time.Minute
 )
 
 // shutdownHooks are the shutdown steps, injected so the ordering can be tested
@@ -122,6 +165,7 @@ type shutdownHooks struct {
 	WaitFlusher  func(time.Duration) bool // drain buffered writes into the open store
 	WaitConsumer func(time.Duration) bool // let the consumer persist its cursor
 	WaitCycle    func(time.Duration) bool // let an in-flight analysis cycle bail out
+	WaitJob      func(time.Duration) bool // let an in-flight daily/yearly job bail out
 	Snapshot     func()                   // final stats snapshot
 	StopStatsAPI func()                   // stop serving /stats
 	CloseStore   func() error             // MUST be last
@@ -160,6 +204,11 @@ func runShutdown(h shutdownHooks) {
 	}
 	if !h.WaitCycle(remaining(shutdownCycleBudget)) {
 		slog.Warn("shutdown: analysis cycle still in flight, closing store anyway")
+	}
+	// A daily/yearly job parked on the cycle wait releases as soon as Cancel
+	// runs, so this normally returns immediately.
+	if !h.WaitJob(remaining(shutdownJobBudget)) {
+		slog.Warn("shutdown: background job still in flight, closing store anyway")
 	}
 
 	h.Snapshot()
