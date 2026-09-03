@@ -59,6 +59,8 @@ fly ssh console -a hourstats-prod       # SSH into production
 | `SQLITE_READ_CONNS` | `4` | Read pool max/idle connections (clamped to 1-8) |
 | `SQLITE_READ_CACHE_MB` | `20` | Read pool per-connection page cache size in MB |
 | `SQLITE_TEMP_STORE` | `MEMORY` | Read pool temp_store mode: `MEMORY` or `FILE` |
+| `JETSTREAM_CURSOR_REWIND_SECONDS` | `5` | Seconds subtracted from the cursor on every (re)connect so in-flight events are replayed rather than lost. Negative disables the rewind |
+| `JETSTREAM_MAX_CURSOR_AGE_MINUTES` | `360` | Persisted cursors older than this are discarded at startup and the consumer starts from the live tail, avoiding a wire-speed backlog replay. Negative disables the age check |
 
 ## Architecture
 
@@ -70,12 +72,12 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 |-----------|---------|-------------|
 | **Jetstream Consumer** | Always running | WebSocket firehose, filter English posts, write to SQLite |
 | **Write Flusher** | 2s ticker / 1500 batch | Batches pending writes to reduce SQLite contention |
-| **Analysis Cycle** | Wall-clock ticker (default 30m, configurable; prod runs 60m at :55 via `ANALYSIS_INTERVAL_MINUTES`/`ANALYSIS_OFFSET_MINUTES`) | Hydrate engagement, VADER sentiment, post summary |
+| **Analysis Cycle** | Wall-clock ticker (default 30m, configurable; prod runs 60m at :55 via `ANALYSIS_INTERVAL_MINUTES`/`ANALYSIS_OFFSET_MINUTES`) | Hydrate engagement, VADER sentiment, post summary. Runs in its own goroutine so the other tickers keep firing; an overlapping tick is skipped and logged as `cycle_overlap_skipped` |
 | **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
 | **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled) |
 | **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply |
 | **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile |
-| **Stall Detection** | 5m ticker | Warns if no posts received recently |
+| **Stall Detection** | 5m ticker | Warns if no posts received in 5m and force-closes the WebSocket so the consumer reconnects |
 | **WAL Checkpoint** | 5m ticker | Pressure-based WAL checkpoint: PASSIVE under threshold, TRUNCATE over threshold (default 50MB) |
 
 Wall-clock aligned scheduling: tickers fire at UTC clock boundaries so deploys don't shift the schedule. An optional offset (`ANALYSIS_OFFSET_MINUTES`) shifts the fire point within each interval.

@@ -67,7 +67,9 @@ func main() {
 		slog.Error("failed to open database", "path", dbPath, "error", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	// Deliberately not `defer db.Close()`: the store must outlive the write
+	// flusher drain and the consumer's cursor persist. runShutdown closes it
+	// last, and the signal branch is main's only return path.
 	slog.Info("database opened", "path", dbPath)
 
 	if err := db.RunStartupMaintenance(context.Background()); err != nil {
@@ -111,8 +113,21 @@ func main() {
 
 	writeCh := make(chan store.PendingWrite, 50000)
 	collector.SetWriteChannelFunc(func() int { return len(writeCh) })
-	go runWriteFlusher(ctx, db, writeCh, collector)
-	go runJetstream(ctx, db, trendingEnabled, collector, writeCh)
+
+	// Both goroutines write through the store, so shutdown must wait for them
+	// to return before closing it.
+	flusherDone := make(chan struct{})
+	go func() {
+		defer close(flusherDone)
+		runWriteFlusher(ctx, db, writeCh, collector)
+	}()
+
+	activeConsumer := &consumerHandle{}
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		runJetstream(ctx, db, trendingEnabled, collector, writeCh, activeConsumer)
+	}()
 
 	// Wall-clock aligned tickers: fire at clean UTC clock boundaries
 	// so that deploys/restarts don't shift the schedule.
@@ -140,6 +155,10 @@ func main() {
 
 	statsSnapshotCh := newWallClockTicker(30*time.Minute, 0)
 
+	// stallThreshold is the quiet period after which the firehose connection is
+	// treated as dead and forcibly reconnected.
+	const stallThreshold = 5 * time.Minute
+
 	stallCheckTicker := time.NewTicker(5 * time.Minute)
 	defer stallCheckTicker.Stop()
 
@@ -147,6 +166,11 @@ func main() {
 	defer walCheckpointTicker.Stop()
 
 	runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
+
+	// The analysis cycle runs off this loop so that the WAL checkpoint, stats
+	// snapshot and stall-detection tickers keep firing during the 5-18 minutes
+	// a cycle takes.
+	cycles := &cycleGuard{}
 
 	slog.Info("scheduler started, wall-clock aligned",
 		"analysis_every", fmt.Sprintf("%dm", analysisMinutes),
@@ -157,22 +181,55 @@ func main() {
 		select {
 		case sig := <-sigCh:
 			slog.Info("received signal, shutting down", "signal", sig)
-			cancel()
-			// Take final snapshot and shut down stats API
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := collector.TakeSnapshot(shutdownCtx); err != nil {
-				slog.Warn("final stats snapshot failed", "error", err)
-			}
-			if err := statsServer.Shutdown(shutdownCtx); err != nil {
-				slog.Warn("stats API shutdown error", "error", err)
-			}
-			shutdownCancel()
+			runShutdown(shutdownHooks{
+				Cancel:       cancel,
+				WaitFlusher:  func(d time.Duration) bool { return waitClosed(flusherDone, d) },
+				WaitConsumer: func(d time.Duration) bool { return waitClosed(consumerDone, d) },
+				WaitCycle:    cycles.Wait,
+				Snapshot: func() {
+					snapCtx, snapCancel := context.WithTimeout(context.Background(), shutdownSnapshotBudget)
+					defer snapCancel()
+					if err := collector.TakeSnapshot(snapCtx); err != nil {
+						slog.Warn("final stats snapshot failed", "error", err)
+					}
+				},
+				StopStatsAPI: func() {
+					apiCtx, apiCancel := context.WithTimeout(context.Background(), shutdownStatsAPIBudget)
+					defer apiCancel()
+					if err := statsServer.Shutdown(apiCtx); err != nil {
+						slog.Warn("stats API shutdown error", "error", err)
+					}
+				},
+				CloseStore: db.Close,
+			})
 			return
 
 		case <-analysisCh:
-			runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes, collector, topicAnalyzer)
+			started := cycles.TryStart(func() {
+				runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes, collector, topicAnalyzer)
+			})
+			if !started {
+				slog.Error("analysis cycle still running at next tick, skipping this interval",
+					"analysis_minutes", analysisMinutes)
+				_ = collector.LogEvent(ctx, "cycle_overlap_skipped",
+					fmt.Sprintf("interval_minutes=%d", analysisMinutes))
+			}
 
 		case <-backupCh:
+			// The daily aggregate must include the final cycle of the day
+			// (prod runs cycles at :55, this branch at 00:00), so wait for an
+			// in-flight cycle before aggregating.
+			if cycles.Running() {
+				waitStart := time.Now()
+				slog.Info("daily cycle waiting for in-flight analysis cycle",
+					"max_wait", dailyCycleWait)
+				if !cycles.Wait(dailyCycleWait) {
+					slog.Error("daily cycle wait timed out, aggregating without the final analysis cycle",
+						"waited", time.Since(waitStart).Round(time.Second))
+				} else {
+					slog.Info("daily cycle resumed", "waited", time.Since(waitStart).Round(time.Second))
+				}
+			}
 			// Wrapped so the sampler is stopped and its peak recorded even if a
 			// daily step panics.
 			func() {
@@ -206,12 +263,18 @@ func main() {
 			lastPost := collector.LastPostReceived()
 			if !lastPost.IsZero() {
 				sinceLastPost := time.Since(lastPost)
-				if sinceLastPost > 5*time.Minute {
+				if sinceLastPost > stallThreshold {
+					// Logging alone left a black-holed connection in place;
+					// drop it so the consumer's reconnect path takes over.
+					forced := activeConsumer.forceReconnect()
 					slog.Warn("jetstream stall detected: no posts received recently",
 						"last_post_age", sinceLastPost.Round(time.Second),
 						"firehose_total", collector.GetFirehoseCount(),
+						"forced_reconnect", forced,
 					)
-					_ = collector.LogEvent(ctx, "stall_detected", fmt.Sprintf("last_post_age=%s", time.Since(lastPost).Truncate(time.Second)))
+					_ = collector.LogEvent(ctx, "stall_detected",
+						fmt.Sprintf("last_post_age=%s forced_reconnect=%t",
+							sinceLastPost.Truncate(time.Second), forced))
 				}
 			}
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -20,8 +21,29 @@ const (
 	DefaultCollection     = "app.bsky.feed.post"
 	DefaultCursorInterval = 10 * time.Second
 
+	// DefaultCursorRewind is subtracted from the cursor on every (re)connect.
+	// Jetstream recommends rewinding a few seconds so events in flight at the
+	// moment the connection dropped are replayed rather than lost.
+	DefaultCursorRewind = 5 * time.Second
+
+	// DefaultMaxCursorAge bounds how stale a persisted cursor may be before it
+	// is discarded in favour of the live tail. Replaying many hours of backlog
+	// arrives at wire speed and overruns the downstream write buffer.
+	DefaultMaxCursorAge = 6 * time.Hour
+
 	maxBackoff     = 30 * time.Second
 	initialBackoff = 1 * time.Second
+
+	// backoffJitter is the fraction by which each backoff is randomly scaled
+	// (+/-), so that many instances reconnecting at once spread their retries.
+	backoffJitter = 0.2
+
+	// Liveness: a black-holed TCP connection never returns an error from
+	// ReadMessage, so we bound every read and keep the peer proving liveness
+	// with periodic pings. readTimeout must exceed pingInterval comfortably.
+	readTimeout      = 60 * time.Second
+	pingInterval     = 30 * time.Second
+	pingWriteTimeout = 10 * time.Second
 
 	// Endpoint rotation: if we see this many drops within the window,
 	// rotate to the next endpoint.
@@ -57,6 +79,15 @@ type ConsumerConfig struct {
 	OnPost         PostHandler
 	SaveCursor     CursorSaver
 	LoadCursor     CursorLoader
+
+	// CursorRewind is subtracted from the cursor on every (re)connect.
+	// Zero selects DefaultCursorRewind; a negative value disables rewinding.
+	CursorRewind time.Duration
+
+	// MaxCursorAge discards a persisted cursor older than this at startup and
+	// begins from the live tail instead. Zero selects DefaultMaxCursorAge; a
+	// negative value disables the age check.
+	MaxCursorAge time.Duration
 }
 
 func (c *ConsumerConfig) setDefaults() {
@@ -75,6 +106,12 @@ func (c *ConsumerConfig) setDefaults() {
 	}
 	if c.CursorInterval == 0 {
 		c.CursorInterval = DefaultCursorInterval
+	}
+	if c.CursorRewind == 0 {
+		c.CursorRewind = DefaultCursorRewind
+	}
+	if c.MaxCursorAge == 0 {
+		c.MaxCursorAge = DefaultMaxCursorAge
 	}
 }
 
@@ -95,11 +132,11 @@ type Consumer struct {
 
 // Stats tracks consumer metrics.
 type Stats struct {
-	EventsReceived        atomic.Int64
-	PostsProcessed        atomic.Int64
-	EventsSkipped         atomic.Int64
-	Reconnects            atomic.Int64
-	Errors                atomic.Int64
+	EventsReceived          atomic.Int64
+	PostsProcessed          atomic.Int64
+	EventsSkipped           atomic.Int64
+	Reconnects              atomic.Int64
+	Errors                  atomic.Int64
 	EarlyRejectedNonEnglish atomic.Int64
 }
 
@@ -135,14 +172,34 @@ func (c *Consumer) Run(ctx context.Context) error {
 	if err != nil {
 		slog.Warn("failed to load cursor, starting from live tail", "error", err)
 	}
-	if cursor > 0 {
-		c.cursor.Store(cursor)
-		slog.Info("resuming from cursor", "cursor", cursor)
+	start, age, discarded := resolveStartCursor(cursor, c.cfg.MaxCursorAge, time.Now())
+	switch {
+	case discarded:
+		slog.Warn("persisted cursor too old, starting from live tail",
+			"cursor", cursor,
+			"cursor_age", age.Round(time.Second),
+			"max_cursor_age", c.cfg.MaxCursorAge,
+		)
+	case start > 0:
+		c.cursor.Store(start)
+		slog.Info("resuming from cursor", "cursor", start, "cursor_age", age.Round(time.Second))
 	}
 
 	cursorCtx, cursorCancel := context.WithCancel(ctx)
 	defer cursorCancel()
 	go c.cursorPersistLoop(cursorCtx)
+
+	// conn.ReadMessage does not observe ctx, so cancellation would otherwise
+	// stall for up to readTimeout. Closing the connection unblocks it at once.
+	stopCloser := make(chan struct{})
+	defer close(stopCloser)
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.ForceReconnect()
+		case <-stopCloser:
+		}
+	}()
 
 	backoff := initialBackoff
 	for {
@@ -194,9 +251,10 @@ func (c *Consumer) Run(ctx context.Context) error {
 			)
 		}
 
+		wait := jitterBackoff(backoff)
 		slog.Warn("connection lost, reconnecting",
 			"error", err,
-			"backoff", backoff,
+			"backoff", wait.Round(time.Millisecond),
 			"reconnects", c.stats.Reconnects.Load(),
 			"endpoint", c.ActiveEndpoint(),
 			"rotated", rotated,
@@ -206,7 +264,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			c.persistCursorNow(context.Background())
 			return ctx.Err()
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
 
 		if !rotated {
@@ -256,13 +314,65 @@ func (c *Consumer) ConnectionUptime() time.Duration {
 	return time.Since(c.connectedAt)
 }
 
+// resolveStartCursor decides which persisted cursor to resume from. It returns
+// the cursor to use (0 = live tail), its age, and whether it was discarded for
+// being older than maxAge. A non-positive maxAge disables the age check.
+func resolveStartCursor(cursor int64, maxAge time.Duration, now time.Time) (start int64, age time.Duration, discarded bool) {
+	if cursor <= 0 {
+		return 0, 0, false
+	}
+	age = now.Sub(time.UnixMicro(cursor))
+	if maxAge > 0 && age > maxAge {
+		return 0, age, true
+	}
+	return cursor, age, false
+}
+
+// rewindCursor subtracts rewind from a time_us cursor so that a few seconds of
+// events are replayed across a reconnect instead of being lost. It never
+// returns a value below 1, which would be read as "no cursor".
+func rewindCursor(cursor int64, rewind time.Duration) int64 {
+	if cursor <= 0 || rewind <= 0 {
+		return cursor
+	}
+	rewound := cursor - rewind.Microseconds()
+	if rewound < 1 {
+		return 1
+	}
+	return rewound
+}
+
+// jitterBackoff scales d by a random factor within +/-backoffJitter so that
+// concurrent reconnects do not synchronise on the same retry instants.
+func jitterBackoff(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	factor := 1 - backoffJitter + rand.Float64()*2*backoffJitter
+	return time.Duration(float64(d) * factor)
+}
+
+// ForceReconnect closes the active WebSocket connection, which unblocks the
+// read loop and hands control to the normal reconnect/backoff path. It is safe
+// to call from any goroutine and reports whether a connection was closed.
+func (c *Consumer) ForceReconnect() bool {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn == nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func (c *Consumer) buildURL() string {
 	u, _ := url.Parse(c.ActiveEndpoint())
 	q := u.Query()
 	for _, col := range c.cfg.Collections {
 		q.Add("wantedCollections", col)
 	}
-	cursor := c.cursor.Load()
+	cursor := rewindCursor(c.cursor.Load(), c.cfg.CursorRewind)
 	if cursor > 0 {
 		q.Set("cursor", fmt.Sprintf("%d", cursor))
 	}
@@ -294,6 +404,39 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 		return nil
 	})
 
+	// Liveness. Every read is bounded by readTimeout; the deadline is pushed
+	// out on each frame and on each pong. A peer that stops sending — including
+	// a silently black-holed TCP connection — therefore surfaces as a read
+	// error within readTimeout instead of hanging until the kernel keepalive.
+	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(readTimeout))
+	})
+
+	// WriteControl is safe to call concurrently with the read loop.
+	pingStop := make(chan struct{})
+	defer close(pingStop)
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingStop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingWriteTimeout)); err != nil {
+					slog.Warn("jetstream ping failed, forcing reconnect", "error", err)
+					_ = conn.Close() // unblocks ReadMessage; the caller reconnects
+					return
+				}
+			}
+		}
+	}()
+
 	slog.Info("connected to jetstream")
 
 	for {
@@ -301,6 +444,9 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 			return ctx.Err()
 		}
 
+		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			return fmt.Errorf("set read deadline: %w", err)
+		}
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("read: %w", err)
