@@ -12,73 +12,7 @@ import (
 	"time"
 )
 
-func TestParseStatmRSS(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  string
-		pageSize int
-		want     int64
-		wantErr  bool
-	}{
-		{
-			name:     "realistic statm line",
-			content:  "150000 148000 3000 1 0 120000 0\n",
-			pageSize: 4096,
-			want:     148000 * 4096,
-		},
-		{
-			name:     "16k pages",
-			content:  "150000 148000 3000 1 0 120000 0",
-			pageSize: 16384,
-			want:     148000 * 16384,
-		},
-		{
-			name:     "too few fields",
-			content:  "150000\n",
-			pageSize: 4096,
-			wantErr:  true,
-		},
-		{
-			name:     "empty",
-			content:  "",
-			pageSize: 4096,
-			wantErr:  true,
-		},
-		{
-			name:     "non-numeric resident field",
-			content:  "150000 not-a-number 3000",
-			pageSize: 4096,
-			wantErr:  true,
-		},
-		{
-			name:     "negative resident field",
-			content:  "150000 -5 3000",
-			pageSize: 4096,
-			wantErr:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseStatmRSS(tt.content, tt.pageSize)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("parseStatmRSS(%q) = %d, want error", tt.content, got)
-				}
-				if got != 0 {
-					t.Errorf("parseStatmRSS(%q) = %d on error, want 0", tt.content, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parseStatmRSS(%q) unexpected error: %v", tt.content, err)
-			}
-			if got != tt.want {
-				t.Errorf("parseStatmRSS(%q) = %d, want %d", tt.content, got, tt.want)
-			}
-		})
-	}
-}
+// TestParseStatmRSS moved to internal/procmem alongside the parser itself.
 
 func TestStartMemSampler(t *testing.T) {
 	stop := startMemSampler(context.Background(), 5*time.Millisecond, "test-cycle")

@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"log/slog"
+	"math"
 	"os"
 	"runtime"
 	"sync"
@@ -10,8 +11,13 @@ import (
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/jetstream"
+	"github.com/christophergentle/hourstats-bsky/internal/procmem"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
+
+// defaultSnapshotWindowMinutes is the posts-per-minute divisor used for the
+// first snapshot, before there is a previous snapshot to measure against.
+const defaultSnapshotWindowMinutes = 30.0
 
 // ConsumerStatsProvider is satisfied by *jetstream.Consumer
 type ConsumerStatsProvider interface {
@@ -36,9 +42,14 @@ type Collector struct {
 	rootPosts    atomic.Int64
 	replyPosts   atomic.Int64
 
-	// Firehose counter (replaces the global firehosePostCount in main.go)
-	firehosePosts    atomic.Int64
-	lastPostReceived atomic.Int64 // Unix timestamp of last post received
+	// Firehose counter (replaces the global firehosePostCount in main.go).
+	// Monotonic for the life of the process: nothing ever resets it. Two
+	// independent consumers read it through their own cursor so neither can
+	// steal counts from the other.
+	firehosePosts        atomic.Int64
+	lastSnapshotFirehose atomic.Int64 // cursor for TakeSnapshot
+	lastAnalysisFirehose atomic.Int64 // cursor for FirehoseSinceAnalysis
+	lastPostReceived     atomic.Int64 // Unix timestamp of last post received
 
 	// Dropped-post counter — incremented when the write buffer is full
 	droppedPosts atomic.Int64
@@ -48,6 +59,9 @@ type Collector struct {
 	slowFlushMaxMs atomic.Int64
 	writeChDepthFn func() int // returns len(writeCh); nil-safe
 
+	// lastSeen holds the previous snapshot's raw counter values. It is only
+	// read and written by TakeSnapshot, which the stats ticker calls from a
+	// single goroutine.
 	lastSeen struct {
 		eventsReceived    int64
 		postsProcessed    int64
@@ -55,9 +69,10 @@ type Collector struct {
 		reconnects        int64
 		errors            int64
 		endpointRotations int64
-		firehosePosts     int64
+		earlyRejected     int64
 		gcPauseTotalNs    uint64
 		gcCount           uint32
+		snapshotAt        time.Time // zero until the first snapshot
 	}
 
 	lastAnalysis struct {
@@ -147,10 +162,21 @@ func (c *Collector) GetFirehoseCount() int64 {
 	return c.firehosePosts.Load()
 }
 
-// SwapFirehoseCount returns the current firehose count and resets it to zero.
-// Used by analysis cycle (preserves existing behavior where analysis resets the counter).
+// FirehoseSinceAnalysis returns the number of firehose posts counted since the
+// previous call and advances the analysis cursor. It does not touch the
+// underlying counter, so the snapshot path keeps seeing every post.
+func (c *Collector) FirehoseSinceAnalysis() int64 {
+	current := c.firehosePosts.Load()
+	return current - c.lastAnalysisFirehose.Swap(current)
+}
+
+// SwapFirehoseCount is a deprecated alias for FirehoseSinceAnalysis.
+//
+// Deprecated: the name describes the old behaviour, where the analysis cycle
+// reset the shared counter to zero and silently discarded every post counted
+// between the last snapshot and the reset. Call FirehoseSinceAnalysis instead.
 func (c *Collector) SwapFirehoseCount() int64 {
-	return c.firehosePosts.Swap(0)
+	return c.FirehoseSinceAnalysis()
 }
 
 // LastPostReceived returns the time of the last post received.
@@ -196,18 +222,21 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	var report jetstream.StatsReport
 	var activeEndpoint string
 	var uptimeSeconds int
-	var deltaEvents, deltaPosts, deltaSkipped, deltaReconnects, deltaErrors, deltaRotations int64
+	var deltaEvents, deltaPosts, deltaSkipped, deltaReconnects, deltaErrors, deltaRotations, deltaEarlyRejected int64
 
 	if provider != nil {
 		report = provider.GetStatsReport()
 
-		// Compute deltas from last snapshot
-		deltaEvents = report.EventsReceived - c.lastSeen.eventsReceived
-		deltaPosts = report.PostsProcessed - c.lastSeen.postsProcessed
-		deltaSkipped = report.EventsSkipped - c.lastSeen.eventsSkipped
-		deltaReconnects = report.Reconnects - c.lastSeen.reconnects
-		deltaErrors = report.Errors - c.lastSeen.errors
-		deltaRotations = report.EndpointRotations - c.lastSeen.endpointRotations
+		// Compute deltas from last snapshot. runJetstream builds a fresh
+		// Consumer after a fatal error, so these counters restart at zero
+		// with no warning; counterDelta absorbs that.
+		deltaEvents = counterDelta(report.EventsReceived, c.lastSeen.eventsReceived)
+		deltaPosts = counterDelta(report.PostsProcessed, c.lastSeen.postsProcessed)
+		deltaSkipped = counterDelta(report.EventsSkipped, c.lastSeen.eventsSkipped)
+		deltaReconnects = counterDelta(report.Reconnects, c.lastSeen.reconnects)
+		deltaErrors = counterDelta(report.Errors, c.lastSeen.errors)
+		deltaRotations = counterDelta(report.EndpointRotations, c.lastSeen.endpointRotations)
+		deltaEarlyRejected = counterDelta(report.EarlyRejectedNonEnglish, c.lastSeen.earlyRejected)
 
 		// Update last-seen values
 		c.lastSeen.eventsReceived = report.EventsReceived
@@ -216,6 +245,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		c.lastSeen.reconnects = report.Reconnects
 		c.lastSeen.errors = report.Errors
 		c.lastSeen.endpointRotations = report.EndpointRotations
+		c.lastSeen.earlyRejected = report.EarlyRejectedNonEnglish
 
 		activeEndpoint = report.ActiveEndpoint
 		uptimeSeconds = int(report.ConnectionUptime.Seconds())
@@ -228,17 +258,11 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	rootDelta := c.rootPosts.Swap(0)
 	replyDelta := c.replyPosts.Swap(0)
 
-	// Compute firehose delta. The counter is also Swap(0)'d by the analysis
-	// cycle (cmd/hourstats/analysis.go: SwapFirehoseCount) which resets it
-	// out-of-band. When current < lastSeen, treat it as a generation reset:
-	// lastSeen belongs to the pre-swap generation and the correct delta is
-	// just the raw current value.
+	// Compute firehose delta against this consumer's own cursor. The counter
+	// is monotonic, so the analysis cycle advancing its cursor cannot take
+	// posts away from the snapshot delta.
 	currentFirehose := c.firehosePosts.Load()
-	if currentFirehose < c.lastSeen.firehosePosts {
-		c.lastSeen.firehosePosts = 0
-	}
-	firehoseDelta := currentFirehose - c.lastSeen.firehosePosts
-	c.lastSeen.firehosePosts = currentFirehose
+	firehoseDelta := currentFirehose - c.lastSnapshotFirehose.Swap(currentFirehose)
 
 	// Read and reset dropped-post counter
 	droppedDelta := c.droppedPosts.Swap(0)
@@ -274,8 +298,20 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 
 	goroutineCount := runtime.NumGoroutine()
 
-	// Compute posts per minute (30-minute window)
-	postsPerMinute := float64(englishDelta) / 30.0
+	// Compute posts per minute over the time actually elapsed since the last
+	// snapshot. Snapshots are also taken off-schedule (e.g. at the end of an
+	// analysis cycle), so a fixed 30-minute divisor overstates or understates
+	// the rate. The first snapshot has no predecessor, so it falls back to the
+	// nominal window.
+	now := time.Now().UTC()
+	elapsedMinutes := defaultSnapshotWindowMinutes
+	if !c.lastSeen.snapshotAt.IsZero() {
+		if m := now.Sub(c.lastSeen.snapshotAt).Minutes(); m > 0 {
+			elapsedMinutes = m
+		}
+	}
+	c.lastSeen.snapshotAt = now
+	postsPerMinute := float64(englishDelta) / elapsedMinutes
 
 	// Read last analysis results (with lock)
 	c.mu.RLock()
@@ -291,7 +327,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 
 	// Build snapshot
 	snap := &store.StatsSnapshot{
-		SnapshotTime:            time.Now().UTC(),
+		SnapshotTime:            now,
 		ActiveEndpoint:          activeEndpoint,
 		EndpointRotations:       int(deltaRotations),
 		ReconnectCount:          int(deltaReconnects),
@@ -301,6 +337,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		EventsSkipped:           int(deltaSkipped),
 		ConsumerErrors:          int(deltaErrors),
 		TotalFirehosePosts:      int(firehoseDelta),
+		EarlyRejectedNonEnglish: int(deltaEarlyRejected),
 		EnglishPostsStored:      int(englishDelta),
 		RootPosts:               int(rootDelta),
 		ReplyPosts:              int(replyDelta),
@@ -315,6 +352,9 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		HeapInuseBytes:          int64(memStats.HeapInuse),
 		HeapSysBytes:            int64(memStats.HeapSys),
 		SysBytes:                int64(memStats.Sys),
+		HeapReleasedBytes:       int64(memStats.HeapReleased),
+		StackInuseBytes:         int64(memStats.StackInuse),
+		RSSBytes:                procmem.RSSBytes(),
 		GCPauseTotalNs:          int64(gcPauseDelta),
 		GCCount:                 int64(gcCountDelta),
 		GCCPUFraction:           memStats.GCCPUFraction,
@@ -343,6 +383,8 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		"snapshot_id", snap.ID,
 		"english_posts", englishDelta,
 		"firehose_posts", firehoseDelta,
+		"early_rejected_non_english", deltaEarlyRejected,
+		"elapsed_minutes", math.Round(elapsedMinutes*10)/10,
 		"posts_per_minute", postsPerMinute,
 	)
 
@@ -363,6 +405,18 @@ func (c *Collector) LogEvent(ctx context.Context, eventType, details string) err
 	}
 
 	return nil
+}
+
+// counterDelta returns current-lastSeen for a monotonically increasing
+// counter. A current value below lastSeen means the counter's owner was
+// recreated and restarted at zero, in which case the whole current value is
+// the delta. jetstream.StatsReport carries no generation number, so the
+// ordering is the only signal available.
+func counterDelta(current, lastSeen int64) int64 {
+	if current < lastSeen {
+		return current
+	}
+	return current - lastSeen
 }
 
 // boolToInt converts bool to int (1 for true, 0 for false)
