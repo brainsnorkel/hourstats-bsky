@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
@@ -20,6 +21,26 @@ import (
 // Bluesky and charting are skipped to avoid misleading output from tiny samples.
 const minPostsRequired = 500
 
+var (
+	sentimentAnalyzerOnce sync.Once
+	sentimentAnalyzer     *analyzer.SentimentAnalyzer
+)
+
+// sharedAnalyzer returns the process-wide VADER analyzer.
+//
+// analyzer.New() parses the full govader lexicon and emoji dictionary on every
+// call, which was pure per-cycle overhead. The analyzer is read-only after
+// construction — govader writes Lexicon/EmojiDict/Constants only in
+// NewSentimentIntensityAnalyzer, and PolarityScores only reads them — so one
+// instance can serve every cycle. Analysis cycles are sequential, so concurrent
+// use is not required today; sync.Once keeps initialisation safe regardless.
+func sharedAnalyzer() *analyzer.SentimentAnalyzer {
+	sentimentAnalyzerOnce.Do(func() {
+		sentimentAnalyzer = analyzer.New()
+	})
+	return sentimentAnalyzer
+}
+
 // ---------------------------------------------------------------------------
 // 30-minute analysis cycle
 // ---------------------------------------------------------------------------
@@ -28,6 +49,16 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	cycleStart := time.Now()
 	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102-150405"))
 	slog.Info("analysis cycle starting", "run_id", runID)
+
+	// Sample memory in-process: the stats snapshot ticker cannot fire while the
+	// cycle runs, so the peak is otherwise invisible.
+	stopMemSampler := startMemSampler(ctx, 500*time.Millisecond, runID)
+	defer func() {
+		peak := stopMemSampler()
+		// LogEvent already warns on failure. Detach from ctx so the write still
+		// lands when the cycle is unwinding because ctx was cancelled.
+		_ = collector.LogEvent(context.WithoutCancel(ctx), "cycle_memory_peak", peak.eventDetails(runID))
+	}()
 
 	cutoff := time.Now().UTC().Add(-time.Duration(analysisMinutes) * time.Minute)
 
@@ -105,8 +136,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	}
 
 	analyzerPosts := toAnalyzerPosts(posts)
-	sa := analyzer.New()
-	analyzed, err := sa.AnalyzePosts(analyzerPosts)
+	analyzed, err := sharedAnalyzer().AnalyzePosts(analyzerPosts)
 	if err != nil {
 		slog.Error("sentiment analysis failed", "error", err)
 		return

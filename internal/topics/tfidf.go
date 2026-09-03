@@ -8,71 +8,91 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
-// docEntry records a (capped) term frequency contribution from a single doc.
-type docEntry struct {
-	tf int // already capped at MaxTermFreqPerDoc
-}
-
+// ComputeTFIDF scores corpus terms in two passes over the rows.
+//
+// Pass 1 counts document frequency only, into a single map[string]int.
+// Pass 2 accumulates the capped TF contribution and the unique-author set, but
+// only for terms that already cleared MinDocFrequency. This matters because the
+// term distribution is a long tail of singletons: at ~114k posts the previous
+// single-pass version allocated a postings slice and an author map for every
+// distinct term, then discarded almost all of them at the MinDocFrequency gate.
+//
+// Scoring is unchanged. Per-term contributions are still summed in row order as
+// float64(cappedTF) * idf, so results are bit-for-bit identical to the
+// single-pass version.
 func ComputeTFIDF(rows []store.TopicTokenRow) []TermScore {
 	if len(rows) == 0 {
 		return nil
 	}
 
 	totalDocs := float64(len(rows))
-	// inverted maps term -> per-doc TF contributions (length == DF).
-	inverted := make(map[string][]docEntry)
-	authorFreq := make(map[string]map[string]bool) // term -> set of author DIDs
 
+	// tokens is reused across rows; json.Unmarshal reuses the backing array.
+	var tokens []string
+
+	// Pass 1: document frequency (one increment per term per document).
+	docFreq := make(map[string]int)
+	seen := make(map[string]struct{})
 	for _, row := range rows {
-		var tokens []string
+		if err := json.Unmarshal([]byte(row.Tokens), &tokens); err != nil {
+			continue
+		}
+		clear(seen)
+		for _, tok := range tokens {
+			if _, dup := seen[tok]; dup {
+				continue
+			}
+			seen[tok] = struct{}{}
+			docFreq[tok]++
+		}
+	}
+
+	// IDF for the terms that clear the document-frequency floor. Membership in
+	// this map is also the pass-2 filter.
+	idf := make(map[string]float64)
+	for term, df := range docFreq {
+		if df >= MinDocFrequency {
+			idf[term] = math.Log(totalDocs / float64(df))
+		}
+	}
+
+	// Pass 2: accumulate scores and author sets for surviving terms only.
+	tfidfScores := make(map[string]float64, len(idf))
+	authorFreq := make(map[string]map[string]struct{}, len(idf)) // term -> set of author DIDs
+	tf := make(map[string]int)
+	for _, row := range rows {
 		if err := json.Unmarshal([]byte(row.Tokens), &tokens); err != nil {
 			continue
 		}
 
-		// Count raw TF for this doc.
-		tf := make(map[string]int)
+		// Count raw TF for this doc, ignoring terms below MinDocFrequency.
+		clear(tf)
 		for _, tok := range tokens {
-			tf[tok]++
+			if _, ok := idf[tok]; ok {
+				tf[tok]++
+			}
 		}
 
-		// Append one docEntry per term seen in this doc; update authorFreq.
 		for tok, count := range tf {
 			capped := count
 			if capped > MaxTermFreqPerDoc {
 				capped = MaxTermFreqPerDoc
 			}
-			inverted[tok] = append(inverted[tok], docEntry{tf: capped})
+			tfidfScores[tok] += float64(capped) * idf[tok]
 			if row.AuthorDID != "" {
 				if authorFreq[tok] == nil {
-					authorFreq[tok] = make(map[string]bool)
+					authorFreq[tok] = make(map[string]struct{})
 				}
-				authorFreq[tok][row.AuthorDID] = true
+				authorFreq[tok][row.AuthorDID] = struct{}{}
 			}
 		}
 	}
 
-	// Score: iterate inverted index once; DF == len(entries).
-	tfidfScores := make(map[string]float64, len(inverted))
-	docFreq := make(map[string]int, len(inverted))
-	for term, entries := range inverted {
-		df := len(entries)
-		docFreq[term] = df
-		if df < MinDocFrequency {
-			continue
-		}
+	results := make([]TermScore, 0, len(tfidfScores))
+	for term, score := range tfidfScores {
 		if len(authorFreq[term]) < MinUniqueAuthors {
 			continue
 		}
-		idf := math.Log(totalDocs / float64(df))
-		var totalTFIDF float64
-		for _, e := range entries {
-			totalTFIDF += float64(e.tf) * idf
-		}
-		tfidfScores[term] = totalTFIDF
-	}
-
-	results := make([]TermScore, 0, len(tfidfScores))
-	for term, score := range tfidfScores {
 		results = append(results, TermScore{
 			Term:    term,
 			Score:   score,

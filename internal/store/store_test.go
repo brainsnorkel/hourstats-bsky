@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -777,17 +779,19 @@ func TestUpdatePostEngagement(t *testing.T) {
 	ctx := context.Background()
 
 	post := Post{
-		URI:       "at://did:plc:abc/app.bsky.feed.post/eng1",
-		CID:       "cid-eng",
-		Text:      "engagement test",
-		AuthorDID: "did:plc:abc",
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		URI:             "at://did:plc:abc/app.bsky.feed.post/eng1",
+		CID:             "cid-eng",
+		Text:            "engagement test",
+		AuthorDID:       "did:plc:abc",
+		Sentiment:       "positive",
+		EngagementScore: 42.5,
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := s.InsertPost(ctx, post); err != nil {
 		t.Fatalf("InsertPost: %v", err)
 	}
 
-	if err := s.UpdatePostEngagement(ctx, post.URI, 10, 5, 3, "alice.bsky.social", "positive", 42.5); err != nil {
+	if err := s.UpdatePostEngagement(ctx, post.URI, 10, 5, 3, "alice.bsky.social"); err != nil {
 		t.Fatalf("UpdatePostEngagement: %v", err)
 	}
 
@@ -804,11 +808,19 @@ func TestUpdatePostEngagement(t *testing.T) {
 	if posts[0].Reposts != 5 {
 		t.Errorf("Reposts = %d, want 5", posts[0].Reposts)
 	}
+	if posts[0].Replies != 3 {
+		t.Errorf("Replies = %d, want 3", posts[0].Replies)
+	}
 	if posts[0].AuthorHandle != "alice.bsky.social" {
 		t.Errorf("AuthorHandle = %q, want %q", posts[0].AuthorHandle, "alice.bsky.social")
 	}
+	// UpdatePostEngagement must leave the sentiment and engagement_score
+	// columns exactly as the insert left them.
 	if posts[0].Sentiment != "positive" {
-		t.Errorf("Sentiment = %q, want %q", posts[0].Sentiment, "positive")
+		t.Errorf("Sentiment = %q, want %q (must be untouched by the update)", posts[0].Sentiment, "positive")
+	}
+	if posts[0].EngagementScore != 42.5 {
+		t.Errorf("EngagementScore = %v, want 42.5 (must be untouched by the update)", posts[0].EngagementScore)
 	}
 }
 
@@ -1085,5 +1097,129 @@ func TestGetRecentTopicSnapshots_Empty(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Errorf("expected 0 rows, got %d", len(rows))
+	}
+}
+
+// captureWarnLog swaps the default slog logger for one that writes JSON to a
+// buffer, returning the buffer and a restore func. Used to assert that
+// invalid-env-value fallbacks in envInt/envString/clampInt log a warning.
+func captureWarnLog() (*bytes.Buffer, func()) {
+	var out bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	return &out, func() { slog.SetDefault(prev) }
+}
+
+func TestEnvInt(t *testing.T) {
+	t.Run("unset returns fallback", func(t *testing.T) {
+		if got := envInt("HOURSTATS_TEST_ENVINT_UNSET", 42); got != 42 {
+			t.Errorf("envInt = %d, want 42", got)
+		}
+	})
+
+	t.Run("valid value is parsed", func(t *testing.T) {
+		t.Setenv("HOURSTATS_TEST_ENVINT_VALID", "7")
+		if got := envInt("HOURSTATS_TEST_ENVINT_VALID", 42); got != 7 {
+			t.Errorf("envInt = %d, want 7", got)
+		}
+	})
+
+	t.Run("invalid value falls back to default and warns", func(t *testing.T) {
+		t.Setenv("HOURSTATS_TEST_ENVINT_INVALID", "not-a-number")
+		out, restore := captureWarnLog()
+		defer restore()
+
+		if got := envInt("HOURSTATS_TEST_ENVINT_INVALID", 42); got != 42 {
+			t.Errorf("envInt = %d, want fallback 42", got)
+		}
+		if !strings.Contains(out.String(), "HOURSTATS_TEST_ENVINT_INVALID") {
+			t.Errorf("expected warning log to mention the env key, got: %s", out.String())
+		}
+	})
+}
+
+func TestEnvString(t *testing.T) {
+	allowed := []string{"MEMORY", "FILE"}
+
+	t.Run("unset returns fallback", func(t *testing.T) {
+		if got := envString("HOURSTATS_TEST_ENVSTRING_UNSET", "MEMORY", allowed); got != "MEMORY" {
+			t.Errorf("envString = %q, want %q", got, "MEMORY")
+		}
+	})
+
+	t.Run("valid value matches case-insensitively", func(t *testing.T) {
+		t.Setenv("HOURSTATS_TEST_ENVSTRING_VALID", "file")
+		if got := envString("HOURSTATS_TEST_ENVSTRING_VALID", "MEMORY", allowed); got != "FILE" {
+			t.Errorf("envString = %q, want %q", got, "FILE")
+		}
+	})
+
+	t.Run("invalid value falls back to default and warns", func(t *testing.T) {
+		t.Setenv("HOURSTATS_TEST_ENVSTRING_INVALID", "DISK")
+		out, restore := captureWarnLog()
+		defer restore()
+
+		if got := envString("HOURSTATS_TEST_ENVSTRING_INVALID", "MEMORY", allowed); got != "MEMORY" {
+			t.Errorf("envString = %q, want fallback %q", got, "MEMORY")
+		}
+		if !strings.Contains(out.String(), "HOURSTATS_TEST_ENVSTRING_INVALID") {
+			t.Errorf("expected warning log to mention the env key, got: %s", out.String())
+		}
+	})
+}
+
+func TestClampInt(t *testing.T) {
+	t.Run("within range is unchanged", func(t *testing.T) {
+		if got := clampInt("TEST_KEY", 4, 1, 8); got != 4 {
+			t.Errorf("clampInt = %d, want 4", got)
+		}
+	})
+
+	t.Run("below minimum clamps up and warns", func(t *testing.T) {
+		out, restore := captureWarnLog()
+		defer restore()
+
+		if got := clampInt("SQLITE_READ_CONNS", 0, 1, 8); got != 1 {
+			t.Errorf("clampInt = %d, want 1", got)
+		}
+		if !strings.Contains(out.String(), "SQLITE_READ_CONNS") {
+			t.Errorf("expected clamp warning log to mention the env key, got: %s", out.String())
+		}
+	})
+
+	t.Run("above maximum clamps down and warns", func(t *testing.T) {
+		out, restore := captureWarnLog()
+		defer restore()
+
+		if got := clampInt("SQLITE_READ_CONNS", 20, 1, 8); got != 8 {
+			t.Errorf("clampInt = %d, want 8", got)
+		}
+		if !strings.Contains(out.String(), "SQLITE_READ_CONNS") {
+			t.Errorf("expected clamp warning log to mention the env key, got: %s", out.String())
+		}
+	})
+}
+
+func TestNew_EnvConfigurable(t *testing.T) {
+	t.Setenv("SQLITE_MMAP_MB", "0")
+	t.Setenv("SQLITE_READ_CONNS", "2")
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New(%q): %v", dbPath, err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.SetKeyValue(ctx, "env_test", "ok"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+	val, err := s.GetKeyValue(ctx, "env_test")
+	if err != nil {
+		t.Fatalf("GetKeyValue: %v", err)
+	}
+	if val != "ok" {
+		t.Errorf("value = %q, want %q", val, "ok")
 	}
 }

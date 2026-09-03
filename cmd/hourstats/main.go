@@ -173,14 +173,26 @@ func main() {
 			runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes, collector, topicAnalyzer)
 
 		case <-backupCh:
-			runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
-			runDailyAggregation(ctx, db)
-			runDailyTopPostQuote(ctx, db, handle, password, dryRun)
-			if time.Now().UTC().Weekday() == time.Sunday {
-				if err := db.RunVacuum(ctx); err != nil {
-					slog.Error("weekly vacuum failed", "error", err)
+			// Wrapped so the sampler is stopped and its peak recorded even if a
+			// daily step panics.
+			func() {
+				stopDailyMemSampler := startMemSampler(ctx, 500*time.Millisecond, "daily")
+				defer func() {
+					peak := stopDailyMemSampler()
+					// LogEvent already warns on failure. Detach from ctx so the
+					// write still lands during shutdown.
+					_ = collector.LogEvent(context.WithoutCancel(ctx), "cycle_memory_peak", peak.eventDetails("daily"))
+				}()
+
+				runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
+				runDailyAggregation(ctx, db)
+				runDailyTopPostQuote(ctx, db, handle, password, dryRun)
+				if time.Now().UTC().Weekday() == time.Sunday {
+					if err := db.RunVacuum(ctx); err != nil {
+						slog.Error("weekly vacuum failed", "error", err)
+					}
 				}
-			}
+			}()
 
 		case <-yearlyPostCh:
 			runYearlyPosting(ctx, db, handle, password, dryRun)
