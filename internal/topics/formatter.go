@@ -45,6 +45,22 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, an
 		text = buildTrendingText(ranked, showExemplar, analysisHours)
 	}
 
+	// Exemplars are exhausted and the text still doesn't fit. Drop trailing
+	// (lowest-ranked) topics until it does, keeping at least the top topic so
+	// the post still says something.
+	for len([]rune(text)) > maxGraphemes && len(ranked) > 1 {
+		ranked = ranked[:len(ranked)-1]
+		showExemplar = showExemplar[:len(ranked)]
+		text = buildTrendingText(ranked, showExemplar, analysisHours)
+	}
+
+	// Last resort: one topic whose label alone overflows. Cut on a rune
+	// boundary — Bluesky rejects anything over 300 graphemes, and facets are
+	// built from the final text so no offset can point past the end.
+	if runes := []rune(text); len(runes) > maxGraphemes {
+		text = string(runes[:maxGraphemes])
+	}
+
 	filtered := make([]IdentifiedTopic, len(ranked))
 	for i, t := range ranked {
 		filtered[i] = t

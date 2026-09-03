@@ -3,6 +3,7 @@ package topics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -55,13 +56,23 @@ func NewAnalyzer(s AnalyzerStore, geminiAPIKey, geminiModel, geminiFallbackModel
 
 const maxTFIDFRows = 20000
 
-func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
+// ErrTopicsUnavailable reports that a pipeline step genuinely failed to produce
+// topics this cycle. It is distinct from the legitimate "nothing to publish"
+// cases (corpus below MinCorpusSize), which return a nil error and an empty
+// snapshot time.
+var ErrTopicsUnavailable = errors.New("topics unavailable")
+
+// RunAnalysisCycle recomputes trending topics and persists them as a snapshot.
+// It returns the snapshot time it wrote, which RunTrendingPost requires in
+// order to publish only this cycle's topics. An empty string means no snapshot
+// was produced and there is nothing to post.
+func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 	start := time.Now()
 
 	purgeTokenCutoff := time.Now().UTC().Add(-26 * time.Hour).Format(time.RFC3339)
 	purged, err := a.store.PurgeTopicTokens(ctx, purgeTokenCutoff)
 	if err != nil {
-		return fmt.Errorf("purge tokens: %w", err)
+		return "", fmt.Errorf("purge tokens: %w", err)
 	}
 	if purged > 0 {
 		slog.Info("topics: purged expired tokens", "count", purged)
@@ -69,29 +80,29 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 
 	snapshotPurge := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
 	if _, err := a.store.PurgeTopicSnapshots(ctx, snapshotPurge); err != nil {
-		return fmt.Errorf("purge snapshots: %w", err)
+		return "", fmt.Errorf("purge snapshots: %w", err)
 	}
 
 	tokenCutoff := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
 	count, err := a.store.CountTopicTokensSince(ctx, tokenCutoff)
 	if err != nil {
-		return fmt.Errorf("count tokens: %w", err)
+		return "", fmt.Errorf("count tokens: %w", err)
 	}
 	if count < int64(MinCorpusSize) {
+		// Not a failure: there genuinely isn't enough material this window.
 		slog.Info("topics: corpus too small, skipping", "count", count, "min", MinCorpusSize)
-		return nil
+		return "", nil
 	}
 
 	rows, err := a.store.GetTopicTokensSinceLimit(ctx, tokenCutoff, maxTFIDFRows)
 	if err != nil {
-		return fmt.Errorf("get tokens: %w", err)
+		return "", fmt.Errorf("get tokens: %w", err)
 	}
 	slog.Info("topics: loaded tokens for TF-IDF", "rows", len(rows), "total_available", count)
 
 	terms := ComputeTFIDF(rows)
 	if len(terms) == 0 {
-		slog.Warn("topics: no significant terms found, skipping")
-		return nil
+		return "", fmt.Errorf("%w: TF-IDF produced no significant terms from %d rows", ErrTopicsUnavailable, len(rows))
 	}
 	slog.Info("topics: TF-IDF computed", "terms", len(terms), "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 
@@ -103,27 +114,25 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		// stale snapshot or publishing raw underscore terms.
 		clusters = AlgorithmicGroup(rows, terms)
 		if len(clusters) == 0 {
-			return fmt.Errorf("topics: grouping failed and offline fallback empty, skipping trending post: %w", err)
+			return "", fmt.Errorf("%w: grouping failed and offline fallback empty: %w", ErrTopicsUnavailable, err)
 		}
 		slog.Warn("topics: Gemini grouping failed, using offline co-occurrence fallback",
 			"error", err, "clusters", len(clusters))
 	}
 	if len(clusters) == 0 {
-		slog.Warn("topics: no clusters produced, skipping")
-		return nil
+		return "", fmt.Errorf("%w: grouping produced no clusters from %d terms", ErrTopicsUnavailable, len(terms))
 	}
 
 	clusters = MergeSimilarClusters(clusters, terms)
 
 	ranked := RankTopics(clusters, rows)
 	if len(ranked) == 0 {
-		slog.Warn("topics: no ranked topics produced")
-		return nil
+		return "", fmt.Errorf("%w: ranking produced no topics from %d clusters", ErrTopicsUnavailable, len(clusters))
 	}
 
 	identified, err := a.tracker.AssignIdentities(ctx, ranked)
 	if err != nil {
-		return fmt.Errorf("assign identities: %w", err)
+		return "", fmt.Errorf("assign identities: %w", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -133,16 +142,28 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) error {
 		if err := a.store.InsertTopicSnapshot(ctx, now, topic.Rank, topic.TopicID,
 			topic.Cluster.Label, topic.Cluster.Description, topic.UniqueAuthorCount,
 			string(kwJSON), string(synJSON), "", "", topic.Cluster.IsMeme, topic.Cluster.Justification); err != nil {
-			return fmt.Errorf("insert snapshot: %w", err)
+			return "", fmt.Errorf("insert snapshot: %w", err)
 		}
 	}
 
-	slog.Info("topics: analysis cycle complete", "topics", len(identified), "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
-	return nil
+	slog.Info("topics: analysis cycle complete", "topics", len(identified), "snapshot_time", now, "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
+	return now, nil
 }
 
-func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, dryRun bool, rootURI, rootCID, parentURI, parentCID string) error {
+// RunTrendingPost publishes the snapshot identified by snapshotTime, which must
+// come from the RunAnalysisCycle call for this cycle.
+//
+// Selecting by exact snapshot time rather than "latest within 24h" is what
+// stops a failed analysis from republishing the previous window's topics as if
+// they were current. An empty snapshotTime means this cycle produced nothing,
+// so there is nothing to post.
+func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, dryRun bool, snapshotTime, rootURI, rootCID, parentURI, parentCID string) error {
 	start := time.Now()
+
+	if snapshotTime == "" {
+		slog.Info("topics: no snapshot from this cycle, skipping trending post")
+		return nil
+	}
 
 	snapshotCutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
 	snapshots, err := a.store.GetTopicSnapshotsSince(ctx, snapshotCutoff)
@@ -155,10 +176,9 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		return nil
 	}
 
-	latestTime := snapshots[len(snapshots)-1].SnapshotTime
 	var latestTopics []IdentifiedTopic
 	for _, s := range snapshots {
-		if s.SnapshotTime == latestTime {
+		if s.SnapshotTime == snapshotTime {
 			var kws []string
 			if err := json.Unmarshal([]byte(s.Keywords), &kws); err != nil {
 				slog.Warn("topics: unmarshal snapshot keywords", "error", err, "snapshot_id", s.ID, "label", s.Label)
@@ -179,6 +199,7 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	}
 
 	if len(latestTopics) == 0 {
+		slog.Info("topics: snapshot from this cycle holds no topics, skipping", "snapshot_time", snapshotTime)
 		return nil
 	}
 
@@ -188,7 +209,7 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 	if len(prevSnapshots) > 0 {
 		prevTime := ""
 		for _, s := range prevSnapshots {
-			if s.SnapshotTime != latestTime && s.SnapshotTime > prevTime {
+			if s.SnapshotTime != snapshotTime && s.SnapshotTime > prevTime {
 				prevTime = s.SnapshotTime
 			}
 		}
