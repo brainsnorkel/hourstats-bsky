@@ -34,6 +34,10 @@ var essentialTables = []string{
 	"topic_snapshots",
 	"topic_identity",
 	"key_value",
+	// 400-day report rollups; unreconstructable once topic_snapshots and
+	// runs have been purged.
+	"topic_daily",
+	"daily_top_post",
 }
 
 func (s *Store) Backup(ctx context.Context, dataDir, profile string, retainDays int) (string, error) {

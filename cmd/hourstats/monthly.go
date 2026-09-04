@@ -101,10 +101,8 @@ func buildMonthlyVolumeText(r monthlyReport) string {
 	hi, lo := busiestQuietest(r.Days)
 
 	analysed := fmt.Sprintf("%s English posts analysed", compactCount(total))
-	if r.hasPrev() {
-		if prev := sumPosts(r.PrevDays); prev > 0 {
-			analysed += fmt.Sprintf(", %+.1f%% vs %s", (float64(total)-float64(prev))/float64(prev)*100, r.prevName())
-		}
+	if d, ok := r.volumeDelta(); ok {
+		analysed += fmt.Sprintf(", %+.1f%% vs %s", d, r.prevName())
 	}
 	lines := []string{
 		"Post volume · " + r.monthName(),
@@ -114,10 +112,25 @@ func buildMonthlyVolumeText(r monthlyReport) string {
 		fmt.Sprintf("Busiest: %s, %s", dayLabel(r.Days[hi].Date), compactCount(r.Days[hi].TotalPosts)),
 		fmt.Sprintf("Quietest: %s, %s", dayLabel(r.Days[lo].Date), compactCount(r.Days[lo].TotalPosts)),
 	}
-	if fh := r.firehoseTotal(); fh > 0 {
+	if fh := r.firehoseTotal(); fh >= total && fh > 0 {
 		lines = append(lines, fmt.Sprintf("English share of the firehose: %.0f%% of %s", float64(total)/float64(fh)*100, compactCount(fh)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// volumeDelta compares this month's mean daily English volume with the
+// previous month's, so a short month or a thin previous month does not
+// masquerade as a change in traffic.
+func (r monthlyReport) volumeDelta() (float64, bool) {
+	if !r.hasPrev() || len(r.Days) == 0 {
+		return 0, false
+	}
+	cur := float64(sumPosts(r.Days)) / float64(len(r.Days))
+	prev := float64(sumPosts(r.PrevDays)) / float64(len(r.PrevDays))
+	if prev <= 0 {
+		return 0, false
+	}
+	return (cur - prev) / prev * 100, true
 }
 
 // buildMonthlyCandleAltText describes the candlestick chart.
@@ -142,21 +155,20 @@ func buildMonthlyCandleAltText(r monthlyReport) string {
 func buildMonthlyVolumeAltText(r monthlyReport) string {
 	total := sumPosts(r.Days)
 	hi, lo := busiestQuietest(r.Days)
+	fh := r.firehoseTotal()
 	text := fmt.Sprintf("Line chart of daily English posts analysed on Bluesky in %s", r.monthLabel())
-	if fh := r.firehoseTotal(); fh > 0 {
+	if fh > 0 {
 		text += ", with the full firehose as a softer line behind it"
 	}
 	text += fmt.Sprintf(". %s English posts over %d days, %s per day on average",
 		compactCount(total), len(r.Days), compactCount(total/len(r.Days)))
-	if r.hasPrev() {
-		if prev := sumPosts(r.PrevDays); prev > 0 {
-			text += fmt.Sprintf(", %+.1f%% vs %s", (float64(total)-float64(prev))/float64(prev)*100, r.prevName())
-		}
+	if d, ok := r.volumeDelta(); ok {
+		text += fmt.Sprintf(", %+.1f%% vs %s", d, r.prevName())
 	}
 	text += fmt.Sprintf(". Busiest %s with %s; quietest %s with %s.",
 		dayLabel(r.Days[hi].Date), compactCount(r.Days[hi].TotalPosts),
 		dayLabel(r.Days[lo].Date), compactCount(r.Days[lo].TotalPosts))
-	if fh := r.firehoseTotal(); fh > 0 {
+	if fh >= total && fh > 0 {
 		text += fmt.Sprintf(" English posts were %.0f%% of the %s firehose.", float64(total)/float64(fh)*100, compactCount(fh))
 	}
 	return text
@@ -191,41 +203,19 @@ func toDailyVolumePoints(r monthlyReport) []sparkline.DailyVolumePoint {
 	return out
 }
 
-// completeFirehose returns each day's firehose total when every day has
-// one, filling gaps from sentiment_history where it still reaches, and nil
-// otherwise.
-func completeFirehose(ctx context.Context, db *store.Store, r monthlyReport, now time.Time) map[string]int {
+// completeFirehose returns each day's firehose total when every day of the
+// month has one, and nil otherwise. The daily cycle's backfill is the only
+// source: reading sentiment_history directly here would mix filtered and
+// unfiltered cycle sets.
+func completeFirehose(r monthlyReport) map[string]int {
 	totals := map[string]int{}
-	var missing []string
 	for _, d := range r.Days {
-		if d.TotalFirehosePosts > 0 {
-			totals[d.Date] = d.TotalFirehosePosts
-		} else {
-			missing = append(missing, d.Date)
-		}
-	}
-	if len(missing) > 0 {
-		counts, err := db.GetDailyPostCounts(ctx, now.Sub(r.First)+24*time.Hour)
-		if err != nil {
-			slog.Warn("monthly report: daily post counts fallback failed", "error", err)
-		}
-		byDate := map[string]int{}
-		for _, c := range counts {
-			byDate[c.Date.Format(dateFormat)] = c.TotalFirehosePosts
-		}
-		var still []string
-		for _, d := range missing {
-			if byDate[d] > 0 {
-				totals[d] = byDate[d]
-			} else {
-				still = append(still, d)
-			}
-		}
-		if len(still) > 0 {
+		if d.TotalFirehosePosts <= 0 {
 			slog.Info("monthly report: firehose totals incomplete, showing English only",
-				"month", r.First.Format("2006-01"), "days_missing", len(still), "first_missing", still[0])
+				"month", r.First.Format("2006-01"), "first_missing", d.Date)
 			return nil
 		}
+		totals[d.Date] = d.TotalFirehosePosts
 	}
 	return totals
 }
@@ -254,7 +244,7 @@ func loadMonthlyReport(ctx context.Context, db *store.Store, now time.Time) (mon
 	} else {
 		r.PrevDays = prev
 	}
-	r.Firehose = completeFirehose(ctx, db, r, now)
+	r.Firehose = completeFirehose(r)
 	return r, true
 }
 
@@ -330,7 +320,7 @@ func runMonthlyReport(ctx context.Context, db *store.Store, handle, password str
 	}
 	slog.Info("monthly report posted", "month", monthKey, "uri", rootURI)
 	if err := db.SetKeyValue(ctx, monthlyReportGuardKey, monthKey); err != nil {
-		slog.Warn("persist monthly report guard failed", "error", err)
+		slog.Error("persist monthly report guard failed", "error", err, "month", monthKey)
 	}
 
 	if _, _, err := bskyClient.PostWithImageAsReply(apiCtx, volumeText, volumePNG, volumeAlt, rootURI, rootCID, rootURI, rootCID); err != nil {

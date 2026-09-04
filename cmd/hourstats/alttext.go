@@ -15,8 +15,11 @@ import (
 
 // signedPct formats a percentage with an explicit sign for positive values.
 func signedPct(v float64) string {
-	if v > 0 {
+	switch {
+	case v >= 0.05:
 		return fmt.Sprintf("+%.1f%%", v)
+	case v > -0.05:
+		return "0.0%"
 	}
 	return fmt.Sprintf("%.1f%%", v)
 }

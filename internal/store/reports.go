@@ -22,6 +22,9 @@ func dayBounds(date string) (string, string, error) {
 	return start.Format(time.RFC3339), start.Add(24 * time.Hour).Format(time.RFC3339), nil
 }
 
+// The SELECT below keeps its WHERE clause on purpose: SQLite's grammar needs
+// one to tell the upsert's ON CONFLICT apart from a join's ON.
+//
 // RollupTopicDaily condenses the day's topic_snapshots into topic_daily and
 // returns how many topics were written. It merges with any existing rows for
 // the date rather than replacing them, so a re-run over a partially purged
@@ -140,11 +143,11 @@ func (s *Store) StoreDailyTopPost(ctx context.Context, date string, p Post) erro
 func (s *Store) GetTopPostForRange(ctx context.Context, startDate, endDate string) (*Post, error) {
 	var p Post
 	err := s.readDB.QueryRowContext(ctx,
-		`SELECT uri, cid, author_handle, likes, reposts, replies, engagement_score, date
+		`SELECT uri, cid, author_handle, likes, reposts, replies, engagement_score
 		 FROM daily_top_post
 		 WHERE date >= ? AND date <= ?
 		 ORDER BY engagement_score DESC, date DESC LIMIT 1`, startDate, endDate,
-	).Scan(&p.URI, &p.CID, &p.AuthorHandle, &p.Likes, &p.Reposts, &p.Replies, &p.EngagementScore, &p.CreatedAt)
+	).Scan(&p.URI, &p.CID, &p.AuthorHandle, &p.Likes, &p.Reposts, &p.Replies, &p.EngagementScore)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -177,6 +180,44 @@ func (s *Store) UpdateDailyFirehoseTotal(ctx context.Context, date string, total
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// GetDailySentimentMissingFirehose returns daily rows on or after startDate
+// whose firehose total is still zero, oldest first.
+func (s *Store) GetDailySentimentMissingFirehose(ctx context.Context, startDate string) ([]DailySentimentDataPoint, error) {
+	return s.queryDailySentiment(ctx,
+		`SELECT `+dailySentimentColumns+`
+		 FROM daily_sentiment
+		 WHERE date >= ? AND COALESCE(total_firehose_posts, 0) = 0
+		 ORDER BY date ASC`, startDate)
+}
+
+// DayCycleTotals sums one UTC day's sentiment_history cycles that meet the
+// minimum post count: how many cycles, their English posts and their
+// firehose posts. Matching Cycles and EnglishPosts against the daily row
+// proves the day is fully covered.
+type DayCycleTotals struct {
+	Cycles        int
+	EnglishPosts  int
+	FirehosePosts int
+}
+
+func (s *Store) GetDayCycleTotals(ctx context.Context, date string, minPosts int) (DayCycleTotals, error) {
+	start, end, err := dayBounds(date)
+	if err != nil {
+		return DayCycleTotals{}, err
+	}
+	var t DayCycleTotals
+	err = s.readDB.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(total_posts), 0), COALESCE(SUM(total_firehose_posts), 0)
+		 FROM sentiment_history
+		 WHERE timestamp >= ? AND timestamp < ? AND total_posts >= ?`,
+		start, end, minPosts,
+	).Scan(&t.Cycles, &t.EnglishPosts, &t.FirehosePosts)
+	if err != nil {
+		return DayCycleTotals{}, fmt.Errorf("day cycle totals %s: %w", date, err)
+	}
+	return t, nil
 }
 
 // PurgeReportRollups deletes topic_daily and daily_top_post rows older than

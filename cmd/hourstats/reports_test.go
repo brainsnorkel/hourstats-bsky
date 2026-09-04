@@ -131,6 +131,15 @@ func TestBuildWeeklyReportText(t *testing.T) {
 	if truncateRunes("abc", 3) != "abc" || truncateRunes("abcd", 3) != "ab…" {
 		t.Error("truncateRunes")
 	}
+	// Never end on a joiner that belonged to the next glyph.
+	if got := truncateRunes("ab\u200dcd", 3); got != "ab…" {
+		t.Errorf("truncateRunes joiner = %q", got)
+	}
+	for _, tc := range []struct{ app, mins, want int }{{31, 60, 31}, {62, 30, 31}, {336, 30, 168}, {200, 60, 168}, {5, 0, 5}} {
+		if got := topicHours(tc.app, tc.mins); got != tc.want {
+			t.Errorf("topicHours(%d,%d) = %d, want %d", tc.app, tc.mins, got, tc.want)
+		}
+	}
 }
 
 func mustDate(s string) time.Time {
@@ -205,6 +214,20 @@ func TestBuildMonthlyTexts(t *testing.T) {
 	}
 	if alt := buildMonthlyVolumeAltText(r); strings.Contains(alt, "firehose") {
 		t.Errorf("volume alt still mentions firehose: %s", alt)
+	}
+	// Firehose is all-or-nothing: one untracked day drops the whole line.
+	full := monthDays("2026-08-01", 31, 10.8, 1_900_000)
+	if fh := completeFirehose(monthlyReport{First: r.First, Days: full}); len(fh) != 31 {
+		t.Errorf("complete firehose = %d days", len(fh))
+	}
+	full[10].TotalFirehosePosts = 0
+	if fh := completeFirehose(monthlyReport{First: r.First, Days: full}); fh != nil {
+		t.Errorf("partial firehose should be nil, got %d days", len(fh))
+	}
+	// A short previous month compares per-day means, not raw sums.
+	short := monthlyReport{First: r.First, Days: monthDays("2026-02-01", 28, 10, 1_000_000), PrevDays: monthDays("2026-01-01", 31, 10, 1_000_000)}
+	if d, ok := short.volumeDelta(); !ok || d > 1 || d < -1 {
+		t.Errorf("volumeDelta over equal daily means = %v, %v", d, ok)
 	}
 	pts := toDailyVolumePoints(r)
 	if len(pts) != 31 || pts[0].TotalPosts != 0 {
