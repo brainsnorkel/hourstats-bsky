@@ -5,6 +5,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 )
 
@@ -95,18 +96,28 @@ func generateSparklineAltText(points []state.SentimentDataPoint) string {
 
 	text := fmt.Sprintf(
 		"Chart of Bluesky net sentiment, hourly readings from %s to %s UTC, drawn as dots with a smoothed trend line. "+
-			"Latest %s, %s, %s. High %s on %s; low %s on %s.",
+			"Latest %s, %s, %s. High %s on %s%s; low %s on %s%s.",
 		first.Timestamp.Format("Mon 2 Jan"), latest.Timestamp.Format("Mon 2 Jan"),
 		signedPct(latest.NetSentimentPercent),
 		deltaPhrase(latest.NetSentimentPercent, avg, "7-day average"),
 		zonePhrase(latest.NetSentimentPercent),
-		signedPct(values[hi]), points[hi].Timestamp.Format("Mon 15:04"),
-		signedPct(values[lo]), points[lo].Timestamp.Format("Mon 15:04"),
+		signedPct(values[hi]), points[hi].Timestamp.Format("Mon 15:04"), topTopicPhrase(points[hi]),
+		signedPct(values[lo]), points[lo].Timestamp.Format("Mon 15:04"), topTopicPhrase(points[lo]),
 	)
 	if trend := trendPhrase(values, "week"); trend != "" {
 		text += " " + trend
 	}
 	return text
+}
+
+// topTopicPhrase names the hour's top trending topic for the alt text, or
+// returns "" when none was recorded.
+func topTopicPhrase(p state.SentimentDataPoint) string {
+	topic := sparkline.TruncateNote(p.TopTopic)
+	if topic == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (top topic: %s)", topic)
 }
 
 // yearlyDay formats a yearly point's date as "2 Jan", preferring the Date

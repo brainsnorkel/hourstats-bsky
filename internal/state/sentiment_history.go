@@ -23,6 +23,7 @@ type SentimentDataPoint struct {
 	NetSentimentPercent  float64   `json:"netSentimentPercent" dynamodbav:"netSentimentPercent"`
 	SentimentCategory    string    `json:"sentimentCategory" dynamodbav:"sentimentCategory"`
 	TotalPosts           int       `json:"totalPosts" dynamodbav:"totalPosts"`
+	TopTopic             string    `json:"topTopic,omitempty" dynamodbav:"topTopic,omitempty"` // rank-1 trending topic for the cycle, if known
 	CreatedAt            time.Time `json:"createdAt" dynamodbav:"createdAt"`
 	TTL                  int64     `json:"ttl" dynamodbav:"ttl"`
 }

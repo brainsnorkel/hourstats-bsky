@@ -36,6 +36,7 @@ func toStateSentimentPoints(points []store.SentimentDataPoint) []state.Sentiment
 			NetSentimentPercent:  p.NetSentimentPercent,
 			SentimentCategory:    p.SentimentCategory,
 			TotalPosts:           p.TotalPosts,
+			TopTopic:             p.TopTopic,
 			CreatedAt:            p.CreatedAt,
 			TTL:                  p.TTL,
 		}
