@@ -451,6 +451,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
 					"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 				recordTopTopic(ctx, db, runID, outcome)
+			} else if ctx.Err() != nil {
+				slog.Info("shutdown during topic wait, sparkline will not carry this cycle's topic")
 			} else {
 				slog.Warn("topic analysis still running, sparkline will not carry this cycle's topic",
 					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()))
