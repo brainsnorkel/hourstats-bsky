@@ -88,8 +88,23 @@ type DailySentimentDataPoint struct {
 	Q3Sentiment      float64
 	TotalRuns        int
 	TotalPosts       int
-	CreatedAt        time.Time
-	TTL              int64
+	// TotalFirehosePosts is the day's all-language firehose volume, summed
+	// from the same cycles as TotalPosts. Zero on rows written before the
+	// column existed and not yet backfilled.
+	TotalFirehosePosts int
+	CreatedAt          time.Time
+	TTL                int64
+}
+
+// TopicDailyRow is one topic's presence in one UTC day's hourly trending
+// snapshots, rolled up by the daily cycle from topic_snapshots.
+type TopicDailyRow struct {
+	Date        string
+	TopicID     string
+	Label       string
+	Appearances int // hourly snapshots the topic appeared in
+	BestRank    int
+	MaxAuthors  int
 }
 
 // YearlySparklineDataPoint is used by the yearly chart generator.
@@ -491,6 +506,30 @@ func (s *Store) migrate() error {
 			total_posts INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 			ttl INTEGER NOT NULL DEFAULT 0
+		)`,
+
+		`ALTER TABLE daily_sentiment ADD COLUMN total_firehose_posts INTEGER NOT NULL DEFAULT 0`,
+
+		// Long-lived rollups for the weekly and monthly reports. Written by the
+		// daily cycle only; 400-day retention so an annual report can use them.
+		`CREATE TABLE IF NOT EXISTS topic_daily (
+			date TEXT NOT NULL,
+			topic_id TEXT NOT NULL,
+			label TEXT NOT NULL,
+			appearances INTEGER NOT NULL,
+			best_rank INTEGER NOT NULL,
+			max_authors INTEGER NOT NULL,
+			PRIMARY KEY (date, topic_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS daily_top_post (
+			date TEXT PRIMARY KEY,
+			uri TEXT NOT NULL,
+			cid TEXT NOT NULL,
+			author_handle TEXT NOT NULL,
+			likes INTEGER NOT NULL,
+			reposts INTEGER NOT NULL,
+			replies INTEGER NOT NULL,
+			engagement_score REAL NOT NULL
 		)`,
 
 		`CREATE TABLE IF NOT EXISTS key_value (
