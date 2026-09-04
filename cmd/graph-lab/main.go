@@ -29,7 +29,7 @@ import (
 const outputDir = "test-results/graph-lab"
 
 func main() {
-	chartType := flag.String("type", "all", "Chart type to generate: sparkline, yearly, daily-volume, yearly-volume, or all")
+	chartType := flag.String("type", "all", "Chart type to generate: sparkline, yearly, daily-volume, yearly-volume, monthly, or all")
 	seed := flag.Int64("seed", 42, "Random seed for reproducible data (0 for random)")
 	flag.Parse()
 
@@ -50,13 +50,16 @@ func main() {
 		generateDailyVolumeCharts(*seed)
 	case "yearly-volume":
 		generateYearlyVolumeCharts(*seed)
+	case "monthly":
+		generateMonthlyCharts(*seed)
 	case "all":
 		generateSparklineCharts(*seed)
 		generateYearlyCharts(*seed)
 		generateDailyVolumeCharts(*seed)
 		generateYearlyVolumeCharts(*seed)
+		generateMonthlyCharts(*seed)
 	default:
-		log.Fatalf("Unknown chart type: %s (use sparkline, yearly, daily-volume, yearly-volume, or all)", *chartType)
+		log.Fatalf("Unknown chart type: %s (use sparkline, yearly, daily-volume, yearly-volume, monthly, or all)", *chartType)
 	}
 
 	fmt.Printf("\nAll charts saved to %s/\n", outputDir)
