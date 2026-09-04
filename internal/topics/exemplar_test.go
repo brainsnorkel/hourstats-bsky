@@ -39,13 +39,16 @@ func (m *mockCandidateStore) GetExemplarCandidates(_ context.Context, keywords [
 	return result, nil
 }
 
-// candidate builds an ExemplarCandidate with enough text to clear the
-// short-post quality penalty, so tests exercise ranking rather than length.
+// defaultCandidateText is long enough to clear the short-post quality penalty,
+// so tests exercise ranking rather than length.
+const defaultCandidateText = "this is a perfectly ordinary post about the subject at hand today"
+
+// candidate builds an ExemplarCandidate carrying defaultCandidateText.
 func candidate(uri, handle string, eng int, matched ...string) store.ExemplarCandidate {
 	return store.ExemplarCandidate{
 		URI:             uri,
 		Handle:          handle,
-		Text:            "this is a perfectly ordinary post about the subject at hand today",
+		Text:            defaultCandidateText,
 		Engagement:      eng,
 		Matched:         matched,
 		DistinctMatches: len(matched),
@@ -412,7 +415,7 @@ func TestHydrateExemplars_ValidationErrorKeepsTopPick(t *testing.T) {
 	}
 }
 
-func TestHydrateExemplars_ValidationBudgetCapsPairs(t *testing.T) {
+func TestHydrateExemplars_HydratesOnlyPostedTopics(t *testing.T) {
 	// Each topic needs its own handles: handles are claimed across topics.
 	var nth atomic.Int64
 	s := &mockCandidateStore{
@@ -431,28 +434,125 @@ func TestHydrateExemplars_ValidationBudgetCapsPairs(t *testing.T) {
 	hydrator := NewExemplarHydrator(s)
 	hydrator.SetValidator(v)
 
-	// Six topics x 3 candidates would be 18 pairs; the cap is 15.
 	var topics []IdentifiedTopic
 	for i := 0; i < 6; i++ {
 		topics = append(topics, topicOf(fmt.Sprintf("Hockey %d", i),
 			[]string{"jordan_binnington", "canada", "hockey"}))
 	}
 
-	if _, err := hydrator.HydrateExemplars(context.Background(), topics, nil); err != nil {
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := s.callCount.Load(); got != int64(maxPostedTopics) {
+		t.Errorf("expected %d candidate queries (only posted topics), got %d", maxPostedTopics, got)
+	}
+	for i := maxPostedTopics; i < len(result); i++ {
+		if result[i].ExemplarHandle != "" {
+			t.Errorf("topic %d is never posted but got exemplar %q", i, result[i].ExemplarHandle)
+		}
 	}
 	if got := v.calls.Load(); got != 1 {
 		t.Errorf("expected exactly 1 validation call, got %d", got)
 	}
+	if len(v.received) != maxPostedTopics*exemplarTopK {
+		t.Errorf("expected %d pairs, got %d", maxPostedTopics*exemplarTopK, len(v.received))
+	}
 	if len(v.received) > maxValidationPairs {
 		t.Errorf("expected at most %d pairs, got %d", maxValidationPairs, len(v.received))
 	}
-	// Round-robin ordering means every topic gets its top candidate validated.
+	// Round-robin ordering means every posted topic is validated first.
 	seen := make(map[string]bool)
-	for _, p := range v.received[:6] {
+	for _, p := range v.received[:maxPostedTopics] {
 		seen[p.TopicLabel] = true
 	}
-	if len(seen) != 6 {
-		t.Errorf("expected all 6 topics in the first round, got %d", len(seen))
+	if len(seen) != maxPostedTopics {
+		t.Errorf("expected all %d posted topics in the first round, got %d", maxPostedTopics, len(seen))
+	}
+}
+
+func TestMaxValidationPairs_DerivedFromConstants(t *testing.T) {
+	if maxValidationPairs != TopTopics*exemplarTopK {
+		t.Errorf("maxValidationPairs = %d, want TopTopics*exemplarTopK = %d", maxValidationPairs, TopTopics*exemplarTopK)
+	}
+}
+
+func TestHydrateExemplars_FallbackHandlesDoNotStarveLaterTopics(t *testing.T) {
+	shared := candidate("at://shared/1", "shared.bsky.social", 5, "weather")
+	shared.Text = "a long enough post about the weather to avoid the short text penalty"
+
+	s := &mockCandidateStore{
+		candidatesFn: func(keywords []string) []store.ExemplarCandidate {
+			if keywords[0] == "politics" {
+				// The shared handle is only this topic's rank-2 fallback.
+				return []store.ExemplarCandidate{
+					candidate("at://a/1", "alice.bsky.social", 100, "politics"),
+					shared,
+				}
+			}
+			return []store.ExemplarCandidate{shared}
+		},
+	}
+
+	hydrator := NewExemplarHydrator(s)
+	topics := []IdentifiedTopic{
+		topicOf("Politics", []string{"politics"}),
+		topicOf("Weather", []string{"weather"}),
+	}
+
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result[0].ExemplarHandle != "alice.bsky.social" {
+		t.Errorf("topic 1 should keep its own top pick, got %q", result[0].ExemplarHandle)
+	}
+	if result[1].ExemplarHandle != "shared.bsky.social" {
+		t.Errorf("topic 2 was starved by topic 1's unused fallback, got %q", result[1].ExemplarHandle)
+	}
+}
+
+func TestHydrateExemplars_PromotedFallbackKeepsHandlesDistinct(t *testing.T) {
+	// Both topics rank the same fallback second; only one may publish it.
+	shared := candidate("at://shared/1", "shared.bsky.social", 80, "politics", "weather")
+	shared.Text = "a long enough post about politics and the weather to avoid penalties"
+
+	s := &mockCandidateStore{
+		candidatesFn: func(keywords []string) []store.ExemplarCandidate {
+			if keywords[0] == "politics" {
+				return []store.ExemplarCandidate{
+					candidate("at://a/1", "alice.bsky.social", 100, "politics"),
+					shared,
+				}
+			}
+			return []store.ExemplarCandidate{
+				candidate("at://b/1", "bob.bsky.social", 100, "weather"),
+				shared,
+			}
+		},
+	}
+	// Reject both top picks so both topics reach for the shared fallback.
+	v := &mockValidator{rejectText: map[string]bool{defaultCandidateText: true}}
+
+	hydrator := NewExemplarHydrator(s)
+	hydrator.SetValidator(v)
+
+	topics := []IdentifiedTopic{
+		topicOf("Politics", []string{"politics"}),
+		topicOf("Weather", []string{"weather"}),
+	}
+
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result[0].ExemplarHandle != "shared.bsky.social" {
+		t.Errorf("first topic should promote the shared fallback, got %q", result[0].ExemplarHandle)
+	}
+	if result[1].ExemplarHandle == "shared.bsky.social" {
+		t.Error("two topics published the same handle")
+	}
+	if result[1].ExemplarHandle != "" {
+		t.Errorf("second topic had no other approved candidate, got %q", result[1].ExemplarHandle)
 	}
 }

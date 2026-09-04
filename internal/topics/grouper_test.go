@@ -3,10 +3,12 @@ package topics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func geminiMockHandler(clusters []TopicCluster) http.HandlerFunc {
@@ -434,8 +436,105 @@ func TestValidateExemplars_MapsVerdictsByID(t *testing.T) {
 	}
 }
 
-func TestValidateExemplars_FallsBackToOrderWithoutIDs(t *testing.T) {
-	verdicts := []exemplarValidationResult{{IsRelevant: false}, {IsRelevant: true}}
+func TestValidateExemplars_ZeroBasedIDsDoNotShiftVerdicts(t *testing.T) {
+	// A model that echoes 0-based ids must not shift every verdict by one and
+	// leave the last pair at its default.
+	verdicts := []exemplarValidationResult{
+		{ID: 0, IsRelevant: false},
+		{ID: 1, IsRelevant: true},
+		{ID: 2, IsRelevant: false},
+	}
+	srv := httptest.NewServer(exemplarValidationHandler(t, verdicts, nil))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{
+		{TopicLabel: "Hockey", PostText: "first", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "second", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "third", IsRelevant: true},
+	}
+
+	got, err := g.ValidateExemplars(context.Background(), pairs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []bool{false, true, false}
+	for i, w := range want {
+		if got[i].IsRelevant != w {
+			t.Errorf("pair %d IsRelevant = %v, want %v (verdicts must not shift)", i+1, got[i].IsRelevant, w)
+		}
+	}
+}
+
+func TestMapVerdicts(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []exemplarValidationResult
+		n       int
+		want    []bool
+		wantErr bool
+	}{
+		{
+			name:    "complete ids out of order",
+			results: []exemplarValidationResult{{ID: 3, IsRelevant: true}, {ID: 1, IsRelevant: false}, {ID: 2, IsRelevant: true}},
+			n:       3,
+			want:    []bool{false, true, true},
+		},
+		{
+			name:    "zero based ids fall back to order",
+			results: []exemplarValidationResult{{ID: 0, IsRelevant: false}, {ID: 1, IsRelevant: true}, {ID: 2, IsRelevant: false}},
+			n:       3,
+			want:    []bool{false, true, false},
+		},
+		{
+			name:    "partial id set falls back to order",
+			results: []exemplarValidationResult{{ID: 1, IsRelevant: false}, {IsRelevant: true}, {ID: 3, IsRelevant: false}},
+			n:       3,
+			want:    []bool{false, true, false},
+		},
+		{
+			name:    "duplicate ids fall back to order",
+			results: []exemplarValidationResult{{ID: 1, IsRelevant: false}, {ID: 1, IsRelevant: true}, {ID: 3, IsRelevant: true}},
+			n:       3,
+			want:    []bool{false, true, true},
+		},
+		{
+			name:    "missing verdicts are unvalidated",
+			results: []exemplarValidationResult{{ID: 1, IsRelevant: false}, {ID: 3, IsRelevant: false}},
+			n:       3,
+			wantErr: true,
+		},
+		{
+			name:    "extra verdicts are unvalidated",
+			results: []exemplarValidationResult{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+			n:       3,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := mapVerdicts(tt.results, tt.n)
+			if tt.wantErr {
+				if !errors.Is(err, ErrValidationUnavailable) {
+					t.Fatalf("expected ErrValidationUnavailable, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("verdict %d = %v, want %v (%v)", i+1, got[i], tt.want[i], got)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateExemplars_CountMismatchIsUnvalidated(t *testing.T) {
+	verdicts := []exemplarValidationResult{{ID: 1, IsRelevant: false}}
 	srv := httptest.NewServer(exemplarValidationHandler(t, verdicts, nil))
 	defer srv.Close()
 
@@ -446,11 +545,39 @@ func TestValidateExemplars_FallsBackToOrderWithoutIDs(t *testing.T) {
 	}
 
 	got, err := g.ValidateExemplars(context.Background(), pairs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrValidationUnavailable) {
+		t.Fatalf("expected ErrValidationUnavailable, got %v", err)
 	}
-	if got[0].IsRelevant || !got[1].IsRelevant {
-		t.Errorf("expected positional fallback [false true], got [%v %v]", got[0].IsRelevant, got[1].IsRelevant)
+	for i := range got {
+		if !got[i].IsRelevant {
+			t.Errorf("pair %d should come back untouched when unvalidated", i+1)
+		}
+	}
+}
+
+func TestValidateExemplars_APIFailureIsUnvalidated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+
+	if _, err := g.ValidateExemplars(context.Background(), pairs); !errors.Is(err, ErrValidationUnavailable) {
+		t.Fatalf("expected ErrValidationUnavailable, got %v", err)
+	}
+}
+
+func TestValidateExemplars_BudgetExhaustedIsUnvalidated(t *testing.T) {
+	g := NewGrouperWithEndpoint("test-key", "http://example.invalid")
+	for i := 0; i < maxDailyCalls; i++ {
+		g.checkAndIncrementRate()
+	}
+
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+	if _, err := g.ValidateExemplars(context.Background(), pairs); !errors.Is(err, ErrValidationUnavailable) {
+		t.Fatalf("expected ErrValidationUnavailable, got %v", err)
 	}
 }
 
@@ -486,5 +613,81 @@ func TestCheckAndIncrementRate_BudgetExhaustedFiresOncePerTrip(t *testing.T) {
 	}
 	if !g.BudgetExhausted() {
 		t.Error("expected BudgetExhausted to report true after the trip")
+	}
+}
+
+func TestBudgetExhausted_ClearsAfterWindow(t *testing.T) {
+	g := NewGrouperWithEndpoint("test-key", "http://example.invalid")
+	for i := 0; i < maxDailyCalls; i++ {
+		g.checkAndIncrementRate()
+	}
+	if g.checkAndIncrementRate() {
+		t.Fatal("expected the budget to be spent")
+	}
+	if !g.BudgetExhausted() {
+		t.Fatal("expected BudgetExhausted to be true inside the window")
+	}
+
+	g.mu.Lock()
+	g.lastReset = time.Now().Add(-25 * time.Hour)
+	g.mu.Unlock()
+
+	if g.BudgetExhausted() {
+		t.Error("expected BudgetExhausted to clear once the 24h window elapsed")
+	}
+	if !g.checkAndIncrementRate() {
+		t.Error("expected calls to be allowed again in the new window")
+	}
+}
+
+func TestNormalizeClusterKeywords(t *testing.T) {
+	terms := []TermScore{{Term: "trump"}, {Term: "election"}, {Term: "weather"}}
+	clusters := []TopicCluster{
+		{
+			Label:    "Donald Trump",
+			Keywords: []string{"Trump", " election ", "hallucinated", "trump"},
+			Synonyms: []string{"Politics", "election", ""},
+		},
+		{
+			Label:    "Invented",
+			Keywords: []string{"nonsense", "madeup"},
+			Synonyms: []string{"whatever"},
+		},
+	}
+
+	got := normalizeClusterKeywords(clusters, terms)
+
+	if len(got) != 1 {
+		t.Fatalf("expected the cluster with no known keywords to be dropped, got %d", len(got))
+	}
+	if strings.Join(got[0].Keywords, ",") != "trump,election" {
+		t.Errorf("keywords = %v, want [trump election] lowercased and deduplicated", got[0].Keywords)
+	}
+	if strings.Join(got[0].Synonyms, ",") != "politics" {
+		t.Errorf("synonyms = %v, want [politics] (lowercased, keyword duplicate dropped)", got[0].Synonyms)
+	}
+}
+
+func TestGroupAndLabel_DropsUnknownKeywords(t *testing.T) {
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{{
+		Label:    "Donald Trump",
+		Keywords: []string{"Trump", "Fabricated"},
+		Synonyms: []string{"POLITICS"},
+	}}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	clusters, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "trump", Score: 9}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(clusters) != 1 {
+		t.Fatalf("expected 1 cluster, got %d", len(clusters))
+	}
+	if strings.Join(clusters[0].Keywords, ",") != "trump" {
+		t.Errorf("keywords = %v, want only the known term", clusters[0].Keywords)
+	}
+	if strings.Join(clusters[0].Synonyms, ",") != "politics" {
+		t.Errorf("synonyms = %v, want lowercased", clusters[0].Synonyms)
 	}
 }

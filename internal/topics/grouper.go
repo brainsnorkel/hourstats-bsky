@@ -191,8 +191,63 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 		clusters = clusters[:MaxLLMGroups]
 	}
 
+	clusters = normalizeClusterKeywords(clusters, terms)
 	clusters = filterGenericClusters(clusters)
 	return clusters, nil
+}
+
+// normalizeClusterKeywords lowercases and trims the model's keywords and drops
+// any that were not among the terms it was given. A hallucinated or Title-Cased
+// keyword can never match a post token, but it still inflates the exemplar
+// relevance denominator, making genuine matches look less relevant than they
+// are. Synonyms are invented by design, so they are only normalised, not
+// filtered. Clusters left without a single known keyword are dropped.
+func normalizeClusterKeywords(clusters []TopicCluster, terms []TermScore) []TopicCluster {
+	allowed := make(map[string]bool, len(terms))
+	for _, t := range terms {
+		allowed[strings.ToLower(strings.TrimSpace(t.Term))] = true
+	}
+
+	out := make([]TopicCluster, 0, len(clusters))
+	for _, c := range clusters {
+		keywords := make([]string, 0, len(c.Keywords))
+		seen := make(map[string]bool, len(c.Keywords))
+		var dropped []string
+		for _, k := range c.Keywords {
+			k = strings.ToLower(strings.TrimSpace(k))
+			if k == "" || seen[k] {
+				continue
+			}
+			if !allowed[k] {
+				dropped = append(dropped, k)
+				continue
+			}
+			seen[k] = true
+			keywords = append(keywords, k)
+		}
+		if len(dropped) > 0 {
+			slog.Warn("grouper: dropping unknown keywords", "label", c.Label, "keywords", dropped)
+		}
+		if len(keywords) == 0 {
+			slog.Warn("grouper: dropping cluster with no known keywords", "label", c.Label)
+			continue
+		}
+
+		synonyms := make([]string, 0, len(c.Synonyms))
+		for _, syn := range c.Synonyms {
+			syn = strings.ToLower(strings.TrimSpace(syn))
+			if syn == "" || seen[syn] {
+				continue
+			}
+			seen[syn] = true
+			synonyms = append(synonyms, syn)
+		}
+
+		c.Keywords = keywords
+		c.Synonyms = synonyms
+		out = append(out, c)
+	}
+	return out
 }
 
 // requestClusters performs one Gemini grouping call against the given endpoint
@@ -586,14 +641,19 @@ var exemplarValidationSchema = map[string]interface{}{
 	},
 }
 
+// ErrValidationUnavailable reports that a validation batch was not judged at
+// all: the budget was spent, the API failed, or the response could not be
+// aligned with the pairs that were sent. The pairs come back untouched, so the
+// caller must not read their IsRelevant field as a verdict.
+var ErrValidationUnavailable = errors.New("exemplar validation unavailable")
+
 func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidation) ([]ExemplarValidation, error) {
 	if len(pairs) == 0 {
 		return pairs, nil
 	}
 
 	if !g.checkAndIncrementRate() {
-		slog.Warn("validate-exemplars: rate limit reached, skipping validation")
-		return pairs, nil
+		return pairs, fmt.Errorf("%w: daily call budget of %d reached", ErrValidationUnavailable, maxDailyCalls)
 	}
 
 	prompt := buildValidationPrompt(pairs)
@@ -622,59 +682,84 @@ func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidat
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		slog.Warn("validate-exemplars: API call failed, skipping", "error", err)
-		return pairs, nil
+		return pairs, fmt.Errorf("%w: API call failed: %w", ErrValidationUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		slog.Warn("validate-exemplars: API returned non-OK, skipping", "status", resp.StatusCode, "body", string(respBody))
-		return pairs, nil
+		return pairs, fmt.Errorf("%w: API returned status %d: %s", ErrValidationUnavailable, resp.StatusCode, string(respBody))
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return pairs, nil
+		return pairs, fmt.Errorf("%w: read response: %w", ErrValidationUnavailable, err)
 	}
 
 	var gemResp geminiResponse
 	if err := json.Unmarshal(respBody, &gemResp); err != nil {
-		return pairs, nil
+		return pairs, fmt.Errorf("%w: unmarshal response: %w", ErrValidationUnavailable, err)
 	}
 
 	if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
-		return pairs, nil
+		return pairs, fmt.Errorf("%w: empty response", ErrValidationUnavailable)
 	}
 
 	jsonText := extractResponseText(gemResp.Candidates[0].Content.Parts)
 	if jsonText == "" {
-		return pairs, nil
+		return pairs, fmt.Errorf("%w: no response text", ErrValidationUnavailable)
 	}
 
 	var results []exemplarValidationResult
 	if err := json.Unmarshal([]byte(jsonText), &results); err != nil {
-		slog.Warn("validate-exemplars: parse JSON failed, skipping", "error", err)
-		return pairs, nil
+		return pairs, fmt.Errorf("%w: parse JSON: %w", ErrValidationUnavailable, err)
 	}
 
-	applied := 0
-	for _, r := range results {
-		idx := r.ID - 1
-		if idx < 0 || idx >= len(pairs) {
-			continue
-		}
-		pairs[idx].IsRelevant = r.IsRelevant
-		applied++
+	verdicts, err := mapVerdicts(results, len(pairs))
+	if err != nil {
+		return pairs, err
 	}
-	if applied == 0 && len(results) == len(pairs) {
-		// Model dropped the ids but answered in order.
-		for i := range pairs {
-			pairs[i].IsRelevant = results[i].IsRelevant
-		}
+	for i := range pairs {
+		pairs[i].IsRelevant = verdicts[i]
 	}
 
 	return pairs, nil
+}
+
+// mapVerdicts aligns the model's verdicts with the numbered pairs in the
+// prompt. Ids are only trusted when they form the complete set 1..n, each once:
+// a model that echoes 0-based ids would otherwise shift every verdict by one
+// slot and leave the last pair at its default. When the ids are unusable but
+// the model answered exactly once per pair, position is the next best evidence.
+// Anything else means we do not know which post was judged, so the batch counts
+// as unvalidated.
+func mapVerdicts(results []exemplarValidationResult, n int) ([]bool, error) {
+	if len(results) != n {
+		return nil, fmt.Errorf("%w: got %d verdicts for %d pairs", ErrValidationUnavailable, len(results), n)
+	}
+
+	seen := make(map[int]bool, n)
+	complete := true
+	for _, r := range results {
+		if r.ID < 1 || r.ID > n || seen[r.ID] {
+			complete = false
+			break
+		}
+		seen[r.ID] = true
+	}
+
+	out := make([]bool, n)
+	if complete {
+		for _, r := range results {
+			out[r.ID-1] = r.IsRelevant
+		}
+		return out, nil
+	}
+	slog.Warn("validate-exemplars: unusable verdict ids, falling back to response order", "pairs", n)
+	for i, r := range results {
+		out[i] = r.IsRelevant
+	}
+	return out, nil
 }
 
 func buildValidationPrompt(pairs []ExemplarValidation) string {
@@ -704,35 +789,61 @@ func (g *Grouper) SetBudgetExhaustedHandler(fn func(dailyCalls int)) {
 func (g *Grouper) BudgetExhausted() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.rollWindowLocked(time.Now())
 	return g.budgetTripped
 }
 
-func (g *Grouper) checkAndIncrementRate() bool {
-	g.mu.Lock()
-	now := time.Now()
+// rollWindowLocked clears the daily counters once the 24h window has elapsed.
+func (g *Grouper) rollWindowLocked(now time.Time) {
 	if now.Sub(g.lastReset) > 24*time.Hour {
 		g.dailyCalls = 0
 		g.budgetTripped = false
 		g.lastReset = now
 	}
+}
+
+// rateDecision is the outcome of one budget check, resolved under the lock so
+// the logging and callback can run without holding it.
+type rateDecision struct {
+	allowed     bool
+	firstTrip   bool
+	dailyCalls  int
+	windowStart time.Time
+	handler     func(dailyCalls int)
+}
+
+func (g *Grouper) checkAndIncrementRate() bool {
+	d := g.reserveCall(time.Now())
+	if !d.allowed && d.firstTrip {
+		slog.Warn("gemini: daily call budget exhausted",
+			"daily_calls", d.dailyCalls, "max_daily_calls", maxDailyCalls,
+			"window_started", d.windowStart.UTC().Format(time.RFC3339))
+		if d.handler != nil {
+			d.handler(d.dailyCalls)
+		}
+	}
+	return d.allowed
+}
+
+// reserveCall takes one call off the daily budget if there is one left. All
+// mutation happens here under a deferred unlock so no future early return can
+// leak the lock.
+func (g *Grouper) reserveCall(now time.Time) rateDecision {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.rollWindowLocked(now)
+
 	if g.dailyCalls >= maxDailyCalls {
 		firstTrip := !g.budgetTripped
 		g.budgetTripped = true
-		calls := g.dailyCalls
-		windowStart := g.lastReset
-		handler := g.onBudgetExhausted
-		g.mu.Unlock()
-		if firstTrip {
-			slog.Warn("gemini: daily call budget exhausted",
-				"daily_calls", calls, "max_daily_calls", maxDailyCalls,
-				"window_started", windowStart.UTC().Format(time.RFC3339))
-			if handler != nil {
-				handler(calls)
-			}
+		return rateDecision{
+			firstTrip:   firstTrip,
+			dailyCalls:  g.dailyCalls,
+			windowStart: g.lastReset,
+			handler:     g.onBudgetExhausted,
 		}
-		return false
 	}
+
 	g.dailyCalls++
-	g.mu.Unlock()
-	return true
+	return rateDecision{allowed: true, dailyCalls: g.dailyCalls, windowStart: g.lastReset}
 }

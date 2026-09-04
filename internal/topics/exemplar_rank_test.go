@@ -138,16 +138,75 @@ func TestKeywordWeights_AnchorRule(t *testing.T) {
 		t.Error("expected a single anchor match to pass")
 	}
 
-	// "bb28" is not in the label, so this topic has no anchors.
-	free := buildKeywordWeights("Big Brother 28", []string{"bb28", "hoh", "games"}, nil, nil)
-	if len(free.anchors) != 0 {
-		t.Fatalf("expected no anchors, got %v", free.anchors)
+	// "bb28" is not in the label, so the topic has no natural anchor: the
+	// most distinctive keywords are promoted instead of falling back to
+	// "any two keywords", which would admit generic pairs.
+	promoted := buildKeywordWeights("Big Brother 28", []string{"bb28", "hoh", "games"}, nil, nil)
+	if !promoted.anchors["bb28"] || !promoted.anchors["hoh"] {
+		t.Errorf("expected bb28 and hoh to be promoted to anchors, got %v", promoted.anchors)
 	}
-	if free.meetsAnchorRule(free.distinctMatched([]string{"games"})) {
-		t.Error("expected a single generic match to be rejected for an anchorless topic")
+	if promoted.anchors["games"] {
+		t.Error("generic keyword should not be promoted to an anchor")
 	}
-	if !free.meetsAnchorRule(free.distinctMatched([]string{"bb28", "hoh"})) {
+	if len(promoted.strong) != 0 {
+		t.Errorf("promoted anchors must not be strong, got %v", promoted.strong)
+	}
+	if promoted.meetsAnchorRule(promoted.distinctMatched([]string{"games"})) {
+		t.Error("expected a single generic match to be rejected")
+	}
+	if !promoted.meetsAnchorRule(promoted.distinctMatched([]string{"bb28"})) {
+		t.Error("expected a post naming the topic to pass on its own")
+	}
+
+	// A topic whose keywords are all generic has nothing to promote and falls
+	// back to requiring two distinct matches.
+	allGeneric := buildKeywordWeights("Live Show Today", []string{"news", "people", "time"}, nil, nil)
+	if len(allGeneric.anchors) != 0 {
+		t.Fatalf("expected no anchors for an all-generic topic, got %v", allGeneric.anchors)
+	}
+	if allGeneric.meetsAnchorRule(allGeneric.distinctMatched([]string{"news"})) {
+		t.Error("expected a single match to be rejected for an anchorless topic")
+	}
+	if !allGeneric.meetsAnchorRule(allGeneric.distinctMatched([]string{"news", "people"})) {
 		t.Error("expected two distinct matches to pass for an anchorless topic")
+	}
+}
+
+func TestRankExemplarCandidates_StrongAnchorSkipsRelevanceFloor(t *testing.T) {
+	long := "this is a perfectly ordinary post about the subject at hand today"
+	// One label anchor (weight 2) among nine plain keywords: an anchor-only
+	// match is 2/11 = 0.18, below the coverage floor.
+	keywords := []string{"binnington", "canada", "hockey", "nhl", "goalie", "save", "puck", "ice", "rink", "shootout"}
+	candidates := []store.ExemplarCandidate{
+		rankCandidate("at://a/1", "anchored", long, 20, false, "binnington"),
+		rankCandidate("at://a/2", "filler", long, 20, false, "puck", "ice"),
+	}
+
+	ranked := rankExemplarCandidates("Jordan Binnington", keywords, nil, candidates, nil)
+
+	if len(ranked) != 1 {
+		t.Fatalf("expected only the anchored candidate, got %d: %+v", len(ranked), ranked)
+	}
+	if ranked[0].Handle != "anchored" {
+		t.Errorf("expected the anchor-only post to survive, got %q", ranked[0].Handle)
+	}
+	if ranked[0].Relevance >= minRelevance {
+		t.Errorf("test no longer exercises the floor: relevance %.2f >= %.2f", ranked[0].Relevance, minRelevance)
+	}
+}
+
+func TestRankExemplarCandidates_PromotedAnchorStillNeedsRelevance(t *testing.T) {
+	long := "this is a perfectly ordinary post about the subject at hand today"
+	// No label anchor, so "star" is promoted; it carries 1 of 5.5 total weight
+	// (0.18), which must not be enough on its own.
+	keywords := []string{"star", "news", "people", "today", "time", "year", "day", "live", "show", "watch"}
+	candidates := []store.ExemplarCandidate{
+		rankCandidate("at://a/1", "thin", long, 500, false, "star"),
+	}
+
+	ranked := rankExemplarCandidates("Celebrity Gossip", keywords, nil, candidates, nil)
+	if len(ranked) != 0 {
+		t.Fatalf("expected the promoted-anchor-only candidate to be dropped, got %+v", ranked)
 	}
 }
 
