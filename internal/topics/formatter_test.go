@@ -13,7 +13,7 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 
 	text, facets := FormatTrendingPost(ranked, nil, 2)
 
-	if !strings.HasPrefix(text, "Trending topics exemplar posts:\n\n") {
+	if !strings.HasPrefix(text, "Trending topic exemplar posts:\n\n") {
 		t.Errorf("expected exemplar posts header, text: %q", text)
 	}
 	if !strings.Contains(text, "1. Politics") {

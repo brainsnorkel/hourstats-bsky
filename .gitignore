@@ -78,4 +78,5 @@ terraform/*.zip
 terraform/*.tfstate*
 *.json
 !terraform/step-functions-definition.json
+!internal/topics/testdata/*.json
 test-results/

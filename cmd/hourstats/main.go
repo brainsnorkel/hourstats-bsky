@@ -144,6 +144,19 @@ func main() {
 	var topicAnalyzer *topics.Analyzer
 	if trendingEnabled {
 		topicAnalyzer = topics.NewAnalyzer(db, geminiAPIKey, geminiModel, geminiFallbackModel)
+		// Budget exhaustion silently degrades grouping and exemplar validation,
+		// so record it where the stats API can surface it.
+		topicAnalyzer.SetBudgetExhaustedHandler(func(dailyCalls int) {
+			_ = collector.LogEvent(context.Background(), "gemini_budget_exhausted",
+				fmt.Sprintf("daily_calls=%d", dailyCalls))
+		})
+		// A topic published without an exemplar is a deliberate
+		// correctness-over-coverage trade; record each one so the rate is
+		// visible.
+		topicAnalyzer.SetExemplarDroppedHandler(func(topic string, candidates int) {
+			_ = collector.LogEvent(context.Background(), "exemplar_dropped",
+				fmt.Sprintf("topic=%q candidates=%d", topic, candidates))
+		})
 		slog.Info("trending topics enabled (runs with sentiment cycle)", "model", geminiModel, "fallback_model", geminiFallbackModel)
 	}
 
