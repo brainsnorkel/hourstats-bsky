@@ -111,6 +111,24 @@ Chosen variant: English plus the full firehose as a soft line behind it.
 The English-only rendering (`monthly-volume-english-only.png`) is what the
 chart degrades to for days where firehose totals are not tracked.
 
+### Stacked by language
+
+When every day of the month has a language split (`language_daily`, collected
+from the firehose since the language-volume change), the firehose line becomes
+a stacked area: English at the bottom, then the largest languages up to five,
+then "other". Untagged posts get their own band when large enough. Colours are
+pinned per language (English blue, Portuguese orange, Japanese aqua, Spanish
+yellow, German magenta) so a language keeps its colour month to month; the
+English-analysed line is drawn in ink with a surface halo over the fills.
+The shares in the synthetic data mirror the first staging measurement
+(English ~70%, untagged ~11%, Japanese ~6%, Portuguese ~5%).
+
+![languages](monthly-volume-languages.png)
+
+Rendered by `go run ./cmd/graph-lab -type monthly` as
+`test-results/graph-lab/monthly-volume-languages.png`. The post text gains a
+`Next: Portuguese 5%, Japanese 6%, ...` line when it fits in 300 graphemes.
+
 Data source: `daily_sentiment.total_posts` for English counts. Firehose
 totals are only on `sentiment_history.total_firehose_posts`, so the share
 tile either reads from there (works while that table is not purged) or a

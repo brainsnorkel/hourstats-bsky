@@ -51,16 +51,21 @@ func generateMonthlyCharts(seed int64) {
 	fmt.Println("=== Generating monthly volume charts ===")
 	vgen := sparkline.NewMonthlyVolumeGenerator()
 	volScenarios := []struct {
-		name     string
-		withAll  bool
-		prevMult float64
+		name      string
+		withAll   bool
+		withLangs bool
+		prevMult  float64
 	}{
-		{"prod-like", true, 0.97},
-		{"english-only", false, 1.04},
+		{"prod-like", true, false, 0.97},
+		{"english-only", false, false, 1.04},
+		{"languages", true, true, 0.97},
 	}
 	for _, sc := range volScenarios {
 		rng := rand.New(rand.NewSource(seed))
 		days := syntheticMonthVolume(rng, sc.withAll)
+		if sc.withLangs {
+			addSyntheticLanguages(rng, days)
+		}
 		total := 0
 		for _, d := range days {
 			total += d.ENPosts
@@ -152,6 +157,42 @@ func syntheticMonthDip(rng *rand.Rand) []sparkline.DailyCandle {
 		}
 		return v
 	})
+}
+
+// addSyntheticLanguages splits each day's firehose total into a language
+// mix shaped like the staging measurement of 2026-09-04 (English ~70%,
+// untagged ~11%, then Japanese, Portuguese, Spanish, German, French and a
+// long tail), with a Portuguese surge over one weekend.
+func addSyntheticLanguages(rng *rand.Rand, days []sparkline.DailyVolumePoint) {
+	shares := []struct {
+		code  string
+		share float64
+	}{
+		{"en", 0.68}, {"und", 0.11}, {"ja", 0.06}, {"pt", 0.045}, {"es", 0.03}, {"de", 0.018},
+		{"fr", 0.012}, {"ko", 0.006}, {"nl", 0.005}, {"tr", 0.004}, {"it", 0.004}, {"id", 0.003},
+	}
+	for i := range days {
+		total := days[i].TotalPosts
+		if total == 0 {
+			total = days[i].ENPosts * 3 / 2
+		}
+		langs := make(map[string]int, len(shares)+1)
+		used := 0
+		for _, s := range shares {
+			share := s.share * (1 + rng.NormFloat64()*0.05)
+			if s.code == "pt" && (i == 15 || i == 16) {
+				share *= 2.4 // a weekend event in Brazil
+			}
+			n := int(float64(total) * share)
+			langs[s.code] = n
+			used += n
+		}
+		if rest := total - used; rest > 0 {
+			langs["ru"] = rest
+		}
+		days[i].Languages = langs
+		days[i].TotalPosts = total
+	}
 }
 
 // syntheticMonthVolume follows a weekday pattern with a slow rise and one spike.
