@@ -125,6 +125,22 @@ func TestRankFixture_BigBrother28(t *testing.T) {
 	_, ranked := rankFixture(t, "exemplar_bb28.json", "Big Brother 28",
 		[]string{"bb28", "hoh", "games"})
 
+	// A post that names the topic and nothing else is still about the topic:
+	// "bb28" is promoted to an anchor because the label shares no word with
+	// any keyword, and its own weight share clears the relevance floor.
+	found := false
+	for _, c := range ranked {
+		if strings.Contains(c.Text, "post-eviction feeds have kinda been legendary") {
+			found = true
+			if len(c.Distinct) != 1 || c.Distinct[0] != "bb28" {
+				t.Errorf("expected the bb28-only post to match only bb28, got %v", c.Distinct)
+			}
+		}
+	}
+	if !found {
+		t.Error("the bb28-only post was dropped from ranking")
+	}
+
 	for i := 0; i < 3; i++ {
 		matched := ranked[i].Distinct
 		onTopic := false
@@ -173,7 +189,7 @@ func TestRankFixture_GenericOnlyMatchesDropped(t *testing.T) {
 		candidates = append(candidates, r.candidate())
 	}
 	if genericOnly == 0 {
-		t.Skip("fixture has no generic-only rows")
+		t.Fatal("fixture must contain generic-only rows to exercise the anchor rule")
 	}
 
 	ranked := rankExemplarCandidates("Big Brother 28", []string{"bb28", "hoh", "games"}, nil, candidates, nil)

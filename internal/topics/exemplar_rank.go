@@ -37,8 +37,13 @@ const (
 	minRelevance = 0.25
 
 	// minAnchorlessMatches is how many distinct keywords a candidate must match
-	// for a topic whose keywords contain no anchor.
+	// for a topic that has no anchor at all (every keyword is generic).
 	minAnchorlessMatches = 2
+
+	// minAnchorAffixLen is the shortest keyword or label word that may anchor
+	// by prefix rather than exact match. Below it, "war" would anchor
+	// "Warriors".
+	minAnchorAffixLen = 4
 
 	// qualityRootBoost favours root posts over replies, which usually read as
 	// fragments out of context.
@@ -95,8 +100,13 @@ func (d *DocFreqStats) isGeneric(kw string) bool {
 // keywordWeights holds the per-keyword evidence weights for one topic.
 type keywordWeights struct {
 	weights map[string]float64
+	// anchors are the keywords that make a post about this topic rather than
+	// an adjacent one. A candidate must match one of them.
 	anchors map[string]bool
-	total   float64
+	// strong holds the subset of anchors that prove topicality on their own:
+	// compound tokens and keywords named in the label.
+	strong map[string]bool
+	total  float64
 }
 
 // buildKeywordWeights assigns an evidence weight to every keyword and synonym
@@ -108,8 +118,10 @@ func buildKeywordWeights(label string, keywords, synonyms []string, df *DocFreqS
 	kw := keywordWeights{
 		weights: make(map[string]float64, len(keywords)+len(synonyms)),
 		anchors: make(map[string]bool),
+		strong:  make(map[string]bool),
 	}
 	labelWords := splitLabelWords(label)
+	terms := make([]string, 0, len(keywords))
 
 	for _, k := range keywords {
 		k = strings.ToLower(strings.TrimSpace(k))
@@ -121,15 +133,18 @@ func buildKeywordWeights(label string, keywords, synonyms []string, df *DocFreqS
 		case strings.Contains(k, "_"):
 			w = weightCompound
 			kw.anchors[k] = true
+			kw.strong[k] = true
 		case isLabelAnchor(labelWords, k):
 			w = weightAnchor
 			kw.anchors[k] = true
+			kw.strong[k] = true
 		case df.isGeneric(k):
 			w = weightGeneric
 		default:
 			w = weightPlain
 		}
 		kw.addWeight(k, w)
+		terms = append(terms, k)
 	}
 
 	for _, s := range synonyms {
@@ -140,7 +155,34 @@ func buildKeywordWeights(label string, keywords, synonyms []string, df *DocFreqS
 		kw.addWeight(s, weightSynonym)
 	}
 
+	kw.promoteAnchors(terms)
 	return kw
+}
+
+// promoteAnchors gives an anchor to a topic whose label happens to share no
+// word with its keywords. "bb28" and "hoh" are what make a post about
+// "Big Brother 28"; "games" is not. Without this the topic falls back to the
+// weaker "any two distinct keywords" rule, which admits generic pairs and
+// rejects a post that names the topic outright. Promoted anchors are not
+// strong: they still have to clear the relevance floor on their own weight.
+func (k *keywordWeights) promoteAnchors(keywordTerms []string) {
+	if len(k.anchors) > 0 {
+		return
+	}
+	var best float64
+	for _, term := range keywordTerms {
+		if w := k.weights[term]; w > weightGeneric && w > best {
+			best = w
+		}
+	}
+	if best == 0 {
+		return
+	}
+	for _, term := range keywordTerms {
+		if k.weights[term] == best {
+			k.anchors[term] = true
+		}
+	}
 }
 
 // addWeight records the highest weight seen for a term (a term listed as both
@@ -167,14 +209,16 @@ func splitLabelWords(label string) []string {
 
 // isLabelAnchor reports whether a keyword names the topic itself. Matching is
 // per label word rather than bare substring so that "war" does not anchor
-// "Warriors"; keywords of 4+ characters may match a label word by prefix so
-// that "tariff" still anchors "Tariffs".
+// "Warriors", and runs both ways for words of minAnchorAffixLen or more so
+// that "tariff" anchors "Tariffs" and "emmys" anchors "Emmy Awards".
 func isLabelAnchor(labelWords []string, kw string) bool {
 	for _, w := range labelWords {
-		if w == kw {
+		switch {
+		case w == kw:
 			return true
-		}
-		if len(kw) >= 4 && strings.HasPrefix(w, kw) {
+		case len(kw) >= minAnchorAffixLen && strings.HasPrefix(w, kw):
+			return true
+		case len(w) >= minAnchorAffixLen && strings.HasPrefix(kw, w):
 			return true
 		}
 	}
@@ -216,7 +260,7 @@ func (k keywordWeights) relevance(distinct []string) float64 {
 
 // meetsAnchorRule reports whether the candidate has enough topical evidence to
 // be considered at all: at least one anchor when the topic has anchors,
-// otherwise at least two distinct keywords.
+// otherwise (every keyword generic) at least two distinct keywords.
 func (k keywordWeights) meetsAnchorRule(distinct []string) bool {
 	if len(k.anchors) > 0 {
 		for _, m := range distinct {
@@ -227,6 +271,18 @@ func (k keywordWeights) meetsAnchorRule(distinct []string) bool {
 		return false
 	}
 	return len(distinct) >= minAnchorlessMatches
+}
+
+// matchesStrongAnchor reports whether the candidate matched a compound or
+// label anchor, which is proof of topicality regardless of how much of the
+// rest of the keyword set it covers.
+func (k keywordWeights) matchesStrongAnchor(distinct []string) bool {
+	for _, m := range distinct {
+		if k.strong[m] {
+			return true
+		}
+	}
+	return false
 }
 
 // exemplarQuality scores a post as a thing to show a reader: engaged-with,
@@ -276,7 +332,10 @@ func rankExemplarCandidates(label string, keywords, synonyms []string, candidate
 			continue
 		}
 		rel := weights.relevance(distinct)
-		if rel < minRelevance {
+		// The coverage floor only applies to weaker evidence: one label anchor
+		// in a ten-keyword topic is 2/11 = 0.18, and discarding that post
+		// would leave the topic to candidates that merely share more filler.
+		if rel < minRelevance && !weights.matchesStrongAnchor(distinct) {
 			continue
 		}
 		q := exemplarQuality(c.Text, c.Engagement, c.IsReply)
