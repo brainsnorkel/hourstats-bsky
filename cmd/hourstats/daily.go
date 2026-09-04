@@ -115,6 +115,8 @@ func runReportRollups(ctx context.Context, db *store.Store, now time.Time) {
 		}
 	}
 
+	backfillDailyTopPosts(ctx, db, now)
+
 	purged, err := db.PurgeReportRollups(ctx, reportRollupRetention)
 	if err != nil {
 		slog.Warn("purge report rollups failed", "error", err)
@@ -162,6 +164,58 @@ func backfillDailyFirehoseTotals(ctx context.Context, db firehoseBackfillStore, 
 		slog.Info("daily firehose backfill", "candidates", len(missing), "filled", filled,
 			"incomplete_history", incomplete, "untracked", untracked)
 	}
+}
+
+// backfillDailyTopPosts fills daily_top_post for every daily row in the
+// retention window that lacks one and that runs still covers. runs is never
+// purged in practice, so on first deploy this recovers the post of the day
+// for the whole history rather than only the last three days.
+func backfillDailyTopPosts(ctx context.Context, db topPostBackfillStore, now time.Time) {
+	earliest, err := db.GetEarliestRunDate(ctx)
+	if err != nil {
+		slog.Warn("top post backfill: earliest run lookup failed", "error", err)
+		return
+	}
+	if earliest == "" {
+		return
+	}
+	since := now.UTC().Add(-reportRollupRetention).Format(dateFormat)
+	if earliest > since {
+		since = earliest
+	}
+	dates, err := db.GetDatesMissingTopPost(ctx, since)
+	if err != nil {
+		slog.Warn("top post backfill: list dates failed", "error", err)
+		return
+	}
+	var filled, empty int
+	for _, date := range dates {
+		top, err := db.GetTopPostForDate(ctx, date)
+		if err != nil {
+			slog.Warn("top post backfill: lookup failed", "date", date, "error", err)
+			continue
+		}
+		if top == nil {
+			empty++
+			continue
+		}
+		if err := db.StoreDailyTopPost(ctx, date, *top); err != nil {
+			slog.Warn("top post backfill: store failed", "date", date, "error", err)
+			continue
+		}
+		filled++
+	}
+	if len(dates) > 0 {
+		slog.Info("daily top post backfill", "candidates", len(dates), "filled", filled, "no_runs", empty)
+	}
+}
+
+// topPostBackfillStore is the slice of *store.Store the top post backfill needs.
+type topPostBackfillStore interface {
+	GetEarliestRunDate(ctx context.Context) (string, error)
+	GetDatesMissingTopPost(ctx context.Context, startDate string) ([]string, error)
+	GetTopPostForDate(ctx context.Context, date string) (*store.Post, error)
+	StoreDailyTopPost(ctx context.Context, date string, p store.Post) error
 }
 
 // firehoseBackfillStore is the slice of *store.Store the backfill needs.

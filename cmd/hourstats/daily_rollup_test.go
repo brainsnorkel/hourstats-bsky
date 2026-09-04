@@ -69,3 +69,63 @@ func TestBackfillDailyFirehoseTotals_OnlyCompleteDays(t *testing.T) {
 		t.Errorf("updated = %v, want only 2026-08-01=60000", f.updated)
 	}
 }
+
+type fakeTopPostStore struct {
+	earliest string
+	missing  []string
+	posts    map[string]*store.Post
+	stored   map[string]string
+	gotSince string
+}
+
+func (f *fakeTopPostStore) GetEarliestRunDate(context.Context) (string, error) {
+	return f.earliest, nil
+}
+func (f *fakeTopPostStore) GetDatesMissingTopPost(_ context.Context, since string) ([]string, error) {
+	f.gotSince = since
+	var out []string
+	for _, d := range f.missing {
+		if d >= since {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+func (f *fakeTopPostStore) GetTopPostForDate(_ context.Context, date string) (*store.Post, error) {
+	return f.posts[date], nil
+}
+func (f *fakeTopPostStore) StoreDailyTopPost(_ context.Context, date string, p store.Post) error {
+	if f.stored == nil {
+		f.stored = map[string]string{}
+	}
+	f.stored[date] = p.URI
+	return nil
+}
+
+func TestBackfillDailyTopPosts(t *testing.T) {
+	now := time.Date(2026, 9, 4, 0, 5, 0, 0, time.UTC)
+	f := &fakeTopPostStore{
+		earliest: "2026-02-13",
+		missing:  []string{"2026-01-01", "2026-02-13", "2026-08-24", "2026-08-25"},
+		posts: map[string]*store.Post{
+			"2026-01-01": {URI: "at://too-early", CID: "c"},
+			"2026-02-13": {URI: "at://first", CID: "c"},
+			"2026-08-24": {URI: "at://mon", CID: "c"},
+			// 2026-08-25 has runs rows but no usable top post: skipped, not an error.
+		},
+	}
+	backfillDailyTopPosts(context.Background(), f, now)
+	if f.gotSince != "2026-02-13" {
+		t.Errorf("since = %s, want the earliest run date", f.gotSince)
+	}
+	if len(f.stored) != 2 || f.stored["2026-02-13"] != "at://first" || f.stored["2026-08-24"] != "at://mon" {
+		t.Errorf("stored = %v", f.stored)
+	}
+
+	// No runs at all: nothing is queried or written.
+	g := &fakeTopPostStore{missing: []string{"2026-08-24"}}
+	backfillDailyTopPosts(context.Background(), g, now)
+	if g.gotSince != "" || len(g.stored) != 0 {
+		t.Errorf("empty runs: since=%q stored=%v", g.gotSince, g.stored)
+	}
+}

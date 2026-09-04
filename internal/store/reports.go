@@ -220,6 +220,41 @@ func (s *Store) GetDayCycleTotals(ctx context.Context, date string, minPosts int
 	return t, nil
 }
 
+// GetDatesMissingTopPost returns daily_sentiment dates on or after startDate
+// that have no daily_top_post row, oldest first.
+func (s *Store) GetDatesMissingTopPost(ctx context.Context, startDate string) ([]string, error) {
+	rows, err := s.readDB.QueryContext(ctx,
+		`SELECT date FROM daily_sentiment
+		 WHERE date >= ? AND date NOT IN (SELECT date FROM daily_top_post)
+		 ORDER BY date ASC`, startDate)
+	if err != nil {
+		return nil, fmt.Errorf("query dates missing top post: %w", err)
+	}
+	defer rows.Close()
+	var dates []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, fmt.Errorf("scan date: %w", err)
+		}
+		dates = append(dates, d)
+	}
+	return dates, rows.Err()
+}
+
+// GetEarliestRunDate returns the YYYY-MM-DD of the oldest runs row, or ""
+// when there are none.
+func (s *Store) GetEarliestRunDate(ctx context.Context) (string, error) {
+	var earliest sql.NullString
+	if err := s.readDB.QueryRowContext(ctx, `SELECT MIN(created_at) FROM runs`).Scan(&earliest); err != nil {
+		return "", fmt.Errorf("query earliest run: %w", err)
+	}
+	if !earliest.Valid || len(earliest.String) < 10 {
+		return "", nil
+	}
+	return earliest.String[:10], nil
+}
+
 // PurgeReportRollups deletes topic_daily and daily_top_post rows older than
 // olderThan and returns the total removed.
 func (s *Store) PurgeReportRollups(ctx context.Context, olderThan time.Duration) (int64, error) {

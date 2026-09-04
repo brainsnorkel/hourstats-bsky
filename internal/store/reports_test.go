@@ -207,3 +207,30 @@ func TestPurgeReportRollups(t *testing.T) {
 		t.Error("recent daily_top_post purged")
 	}
 }
+
+func TestDatesMissingTopPostAndEarliestRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if d, err := s.GetEarliestRunDate(ctx); err != nil || d != "" {
+		t.Fatalf("earliest with no runs = %q, %v", d, err)
+	}
+	for _, d := range []string{"2026-08-30", "2026-08-31", "2026-09-01"} {
+		if err := s.StoreDailySentiment(ctx, DailySentimentDataPoint{Date: d, RunID: "daily-" + d}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.StoreDailyTopPost(ctx, "2026-08-31", Post{URI: "at://x", CID: "c", EngagementScore: 1}); err != nil {
+		t.Fatal(err)
+	}
+	dates, err := s.GetDatesMissingTopPost(ctx, "2026-08-30")
+	if err != nil || len(dates) != 2 || dates[0] != "2026-08-30" || dates[1] != "2026-09-01" {
+		t.Fatalf("missing = %v, %v", dates, err)
+	}
+	if err := s.CreateRun(ctx, RunState{RunID: "run-1", CreatedAt: time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatal(err)
+	}
+	// CreateRun stamps created_at itself, so the earliest date is today.
+	if d, err := s.GetEarliestRunDate(ctx); err != nil || d != time.Now().UTC().Format("2006-01-02") {
+		t.Fatalf("earliest = %q, %v", d, err)
+	}
+}
