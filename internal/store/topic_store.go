@@ -116,12 +116,18 @@ func (s *Store) PurgeTopicTokens(ctx context.Context, cutoff string) (int64, err
 }
 
 // ExemplarCandidate is a post matched by keyword with engagement from post_buffer.
+// MatchScore counts weighted keyword *occurrences*; DistinctMatches and Matched
+// describe keyword *coverage*, which is what exemplar ranking scores on.
 type ExemplarCandidate struct {
-	URI        string
-	Handle     string
-	Text       string
-	Engagement int
-	MatchScore int
+	URI             string
+	Handle          string
+	Text            string
+	Engagement      int
+	MatchScore      int
+	DistinctMatches int
+	Matched         []string
+	IsReply         bool
+	CreatedAt       string
 }
 
 func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cutoff string, limit int) ([]ExemplarCandidate, error) {
@@ -131,17 +137,17 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 
 	// Build CASE expression: compound keywords (containing '_') get weight 3, simple keywords get 1.
 	// This ensures "jordan_binnington" counts 3x more than "canada" in match ranking.
+	//
+	// Arguments are appended in the order the placeholders appear in the SQL
+	// text: the CASE lives in the SELECT clause, so its parameters bind before
+	// the IN list. Appending them the other way round silently shifted every
+	// keyword by one whenever a compound keyword was present.
 	var caseParts []string
-	args := make([]any, 0, len(keywords)*2+2)
-	placeholders := make([]string, len(keywords))
-	for i, kw := range keywords {
-		placeholders[i] = "?"
-		args = append(args, kw)
-	}
+	caseArgs := make([]any, 0, len(keywords))
 	for _, kw := range keywords {
 		if strings.Contains(kw, "_") {
-			caseParts = append(caseParts, fmt.Sprintf("WHEN je.value = ? THEN 3"))
-			args = append(args, kw)
+			caseParts = append(caseParts, "WHEN je.value = ? THEN 3")
+			caseArgs = append(caseArgs, kw)
 		}
 	}
 
@@ -150,19 +156,31 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 		weightExpr = "CASE " + strings.Join(caseParts, " ") + " ELSE 1 END"
 	}
 
-	args = append(args, cutoff)
-	args = append(args, limit)
+	args := make([]any, 0, len(caseArgs)+len(keywords)+2)
+	args = append(args, caseArgs...)
+	placeholders := make([]string, len(keywords))
+	for i, kw := range keywords {
+		placeholders[i] = "?"
+		args = append(args, kw)
+	}
+	args = append(args, cutoff, limit)
 
+	// Ordered by keyword coverage, not occurrences: the caller re-ranks these
+	// rows with per-keyword weights, so the query only has to return the most
+	// broadly matching posts rather than pick a winner.
 	q := fmt.Sprintf(
 		`SELECT pb.uri, pb.author_handle, pb.text, (pb.likes + pb.reposts + pb.replies) AS eng,
-		        SUM(%s) AS match_score
+		        SUM(%s) AS match_score,
+		        COUNT(DISTINCT je.value) AS distinct_matches,
+		        GROUP_CONCAT(DISTINCT je.value) AS matched,
+		        pb.is_reply, pb.created_at
 		 FROM topic_tokens tt, json_each(tt.tokens) je
 		 JOIN post_buffer pb ON tt.post_uri = pb.uri
 		 WHERE je.value IN (%s)
 		   AND tt.created_at >= ?
 		   AND pb.author_handle != ''
 		 GROUP BY pb.uri
-		 ORDER BY match_score DESC, eng DESC
+		 ORDER BY distinct_matches DESC, eng DESC
 		 LIMIT ?`,
 		weightExpr,
 		strings.Join(placeholders, ","),
@@ -177,9 +195,15 @@ func (s *Store) GetExemplarCandidates(ctx context.Context, keywords []string, cu
 	var result []ExemplarCandidate
 	for rows.Next() {
 		var c ExemplarCandidate
-		if err := rows.Scan(&c.URI, &c.Handle, &c.Text, &c.Engagement, &c.MatchScore); err != nil {
+		var matched string
+		var isReply int
+		if err := rows.Scan(&c.URI, &c.Handle, &c.Text, &c.Engagement, &c.MatchScore, &c.DistinctMatches, &matched, &isReply, &c.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan exemplar candidate: %w", err)
 		}
+		if matched != "" {
+			c.Matched = strings.Split(matched, ",")
+		}
+		c.IsReply = isReply != 0
 		result = append(result, c)
 	}
 	return result, rows.Err()
