@@ -5,6 +5,12 @@
 **Data Coverage:** September 14, 2025 - January 7, 2026 (116 days)
 **Branch:** `recalibrate-sentiment-words`
 
+> **Superseded (2026-09-04):** the tier thresholds below were fitted to
+> 30-minute cycles. Hourly cycles are much tighter; see
+> [SENTIMENT_CALIBRATION_REVIEW_2026-09.md](SENTIMENT_CALIBRATION_REVIEW_2026-09.md)
+> for the current thresholds and the evidence behind them. The lexicon and
+> tier structure here still apply.
+
 ## Executive Summary
 
 This document presents a comprehensive analysis of historical Bluesky sentiment data to inform a recalibration of the sentiment word system. The key finding is that **Bluesky sentiment operates in a narrow positive band** (typically 6% to 20%), meaning the current 100-word scale mapped to -100% to +100% wastes approximately 80% of its vocabulary on ranges that never occur.
