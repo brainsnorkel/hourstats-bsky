@@ -39,6 +39,11 @@ func main() {
 	healthChartHours := envInt("HEALTH_CHART_HOURS", 6)
 	healthChartMemoryLimitMB := envInt("HEALTH_CHART_MEMORY_LIMIT_MB", 512)
 	walCheckpointThresholdMB := envInt("WAL_CHECKPOINT_THRESHOLD_MB", 50)
+	reportsEnabled := envBool("REPORTS_ENABLED", false)
+	startupWeekly, startupMonthly, unknownReports := parseStartupReports(envOr("REPORTS_RUN_AT_STARTUP", ""))
+	if len(unknownReports) > 0 {
+		slog.Warn("REPORTS_RUN_AT_STARTUP has unknown job names, ignoring them", "names", unknownReports)
+	}
 
 	if trendingEnabled && geminiAPIKey == "" {
 		slog.Error("TRENDING_ENABLED=true but GOOGLE_AI_API_KEY is empty, disabling trending")
@@ -155,6 +160,19 @@ func main() {
 
 	statsSnapshotCh := newWallClockTicker(30*time.Minute, 0)
 
+	// A nil channel never fires, so the startup report run only exists when
+	// asked for. It is how staging exercises the reports without waiting for
+	// a Monday or the 1st; the key_value guards and DRY_RUN still apply.
+	var reportsStartupCh <-chan time.Time
+	switch {
+	case reportsEnabled && (startupWeekly || startupMonthly):
+		reportsStartupCh = time.After(reportsStartupDelay)
+		slog.Info("reports: startup run scheduled",
+			"weekly", startupWeekly, "monthly", startupMonthly, "delay", reportsStartupDelay)
+	case startupWeekly || startupMonthly:
+		slog.Warn("REPORTS_RUN_AT_STARTUP is set but REPORTS_ENABLED is false, ignoring")
+	}
+
 	// stallThreshold is the quiet period after which the firehose connection is
 	// treated as dead and forcibly reconnected.
 	const stallThreshold = 5 * time.Minute
@@ -240,11 +258,18 @@ func main() {
 
 				runBackup(db, dataDir, profile, backupRetainDays, s3Cfg)
 				runDailyAggregation(ctx, db)
+				// Rollups run before the quote reply so a posting failure
+				// never costs the day's report inputs.
+				runReportRollups(ctx, db, time.Now())
 				runDailyTopPostQuote(ctx, db, handle, password, dryRun)
 				if time.Now().UTC().Weekday() == time.Sunday {
 					if err := db.RunVacuum(ctx); err != nil {
 						slog.Error("weekly vacuum failed", "error", err)
 					}
+				}
+				// Monday: the Sunday aggregate above completes last week.
+				if reportsEnabled && time.Now().UTC().Weekday() == time.Monday {
+					runWeeklyReport(ctx, db, handle, password, dryRun, time.Now())
 				}
 			})
 			if !started {
@@ -257,10 +282,30 @@ func main() {
 			// stacks two memory peaks on a VM that has already OOMed.
 			started := startAfterCycle(ctx, jobs, cycles, "yearly", jobCycleWait, func() {
 				runYearlyPosting(ctx, db, handle, password, dryRun)
+				// This ticker fires daily; only the 1st reports on last month.
+				if reportsEnabled && time.Now().UTC().Day() == 1 {
+					runMonthlyReport(ctx, db, handle, password, dryRun, time.Now())
+				}
 			})
 			if !started {
 				slog.Error("background job still running at yearly tick, skipping yearly posting")
 				_ = collector.LogEvent(ctx, "job_overlap_skipped", "job=yearly")
+			}
+
+		case <-reportsStartupCh:
+			started := startAfterCycle(ctx, jobs, cycles, "reports-startup", jobCycleWait, func() {
+				now := time.Now()
+				runReportRollups(ctx, db, now)
+				if startupWeekly {
+					runWeeklyReport(ctx, db, handle, password, dryRun, now)
+				}
+				if startupMonthly {
+					runMonthlyReport(ctx, db, handle, password, dryRun, now)
+				}
+			})
+			if !started {
+				slog.Error("background job still running, skipping startup report run")
+				_ = collector.LogEvent(ctx, "job_overlap_skipped", "job=reports-startup")
 			}
 
 		case <-statsSnapshotCh:

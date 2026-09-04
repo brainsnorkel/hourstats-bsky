@@ -621,8 +621,15 @@ func (c *BlueskyClient) PostText(ctx context.Context, text string) error {
 }
 
 func (c *BlueskyClient) PostWithFacets(ctx context.Context, text string, facets []*bsky.RichtextFacet) error {
+	_, _, err := c.PostWithFacetsRef(ctx, text, facets)
+	return err
+}
+
+// PostWithFacetsRef posts a standalone text post (facets may be nil) and
+// returns its URI and CID so replies can be threaded under it.
+func (c *BlueskyClient) PostWithFacetsRef(ctx context.Context, text string, facets []*bsky.RichtextFacet) (string, string, error) {
 	if c.client == nil {
-		return fmt.Errorf("client not authenticated")
+		return "", "", fmt.Errorf("client not authenticated")
 	}
 
 	// Create a text post with optional facets
@@ -637,18 +644,18 @@ func (c *BlueskyClient) PostWithFacets(ctx context.Context, text string, facets 
 	}
 
 	// Post the record using the AT Protocol
-	_, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
+	resp, err := atproto.RepoCreateRecord(ctx, c.client, &atproto.RepoCreateRecord_Input{
 		Repo:       c.handle, // Use the handle from the client
 		Collection: "app.bsky.feed.post",
 		Record:     &util.LexiconTypeDecoder{Val: postRecord},
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to post to Bluesky: %w", err)
+		return "", "", fmt.Errorf("failed to post to Bluesky: %w", err)
 	}
 
 	slog.Info("successfully posted to Bluesky", "text", text[:min(50, len(text))])
-	return nil
+	return resp.Uri, resp.Cid, nil
 }
 
 // UploadImage uploads an image to Bluesky's blob service and returns the blob reference
