@@ -83,7 +83,7 @@ func (g *MonthlyCandleGenerator) GenerateMonthlyCandleChart(days []DailyCandle, 
 		h:   H - 186*s - 84*s,
 		t0:  first.Truncate(24 * time.Hour),
 		t1:  last.Truncate(24 * time.Hour).Add(24 * time.Hour),
-		rng: fitRange(extents, 0.75),
+		rng: fitRange(extents, 0.75, rangePadFraction),
 	}
 
 	heroSub := fmt.Sprintf("%d days of readings", len(days))
