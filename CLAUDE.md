@@ -56,6 +56,8 @@ fly ssh console -a hourstats-prod       # SSH into production
 | `S3_BACKUP_BUCKET` | (optional) | S3 bucket for daily backups |
 | `WAL_CHECKPOINT_THRESHOLD_MB` | `50` | WAL size (MB) that triggers TRUNCATE escalation |
 | `VACUUM_FREELIST_PCT` | `20` | Freelist share of total pages the weekly VACUUM must exceed to run; below it the rewrite is skipped with an info log |
+| `REPORTS_ENABLED` | `false` | Enable the weekly (Monday) week-in-review thread and the monthly (1st) candlestick + volume thread |
+| `REPORTS_RUN_AT_STARTUP` | (empty) | Comma list of `weekly`, `monthly`. Runs the named reports once, ~30s after startup, ignoring the weekday/day-of-month checks but still honouring the `key_value` guards and `DRY_RUN`. Requires `REPORTS_ENABLED=true`. For staging tests; unset it before leaving an app running |
 | `HEALTH_CHART_HOURS` | `6` | Default hours for health chart generation |
 | `HEALTH_CHART_MEMORY_LIMIT_MB` | `512` | Memory limit line on health charts |
 | `SQLITE_MMAP_MB` | `128` | Read pool mmap_size in MB; `0` disables mmap entirely |
@@ -78,7 +80,9 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 | **Analysis Cycle** | Wall-clock ticker (default 30m, configurable; prod runs 60m at :55 via `ANALYSIS_INTERVAL_MINUTES`/`ANALYSIS_OFFSET_MINUTES`) | Hydrate engagement, VADER sentiment, post summary. Runs in its own goroutine so the other tickers keep firing; an overlapping tick is skipped and logged as `cycle_overlap_skipped` |
 | **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
 | **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled) |
-| **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply. Runs in its own goroutine, after waiting up to 15m for an in-flight analysis cycle so the aggregate includes the day's last cycle |
+| **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation (now including the day's firehose total), report rollups (`topic_daily`, `daily_top_post`, firehose backfill for daily rows that predate the column), top-post quote reply. Runs in its own goroutine, after waiting up to 15m for an in-flight analysis cycle so the aggregate includes the day's last cycle |
+| **Weekly Report** | Monday, end of the daily cycle (`REPORTS_ENABLED`) | Week-in-review text root (mood, delta vs prior week, happiest/unhappiest day, stickiest topic, posts analysed) plus a reply quoting the post of the week. Guard key `weekly_report_last_week`; skipped with fewer than 5 daily rows |
+| **Monthly Report** | 1st of month, after yearly posting (`REPORTS_ENABLED`) | Candlestick chart root plus a volume chart reply (English and, when tracked for every day, the full firehose). Guard key `monthly_report_last_month`; skipped with fewer than 20 daily rows |
 | **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile. Same goroutine/guard as the daily cycle, so chart rendering never overlaps a cycle or a daily run; a skipped tick logs `job_overlap_skipped` |
 | **Stall Detection** | 5m ticker | Warns if no posts received in 5m and force-closes the WebSocket so the consumer reconnects |
 | **WAL Checkpoint** | 5m ticker | Pressure-based WAL checkpoint: PASSIVE under threshold, TRUNCATE over threshold (default 50MB) |
@@ -130,7 +134,7 @@ Single file on Fly.io persistent volume: `/data/hourstats-{profile}.db` (WAL mod
 
 Three connection pools: `writeDB` (1 conn, 30s timeout), `readDB` (4 conns, read-only), `maintDB` (1 conn, 1s timeout for WAL checkpoints).
 
-Key tables: `post_buffer` (2h retention), `runs` (48h), `sentiment_history` (8 days), `daily_sentiment` (3 years), `topic_tokens` (26h), `topic_snapshots` (48h), `key_value` (permanent).
+Key tables: `post_buffer` (2h retention), `runs` (48h), `sentiment_history` (8 days), `daily_sentiment` (3 years), `topic_tokens` (26h), `topic_snapshots` (48h), `topic_daily` and `daily_top_post` (400 days, rolled up from `topic_snapshots` and `runs` by the daily cycle), `key_value` (permanent).
 
 ## Coding Conventions
 
