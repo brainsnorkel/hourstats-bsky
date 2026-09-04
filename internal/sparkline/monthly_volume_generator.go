@@ -47,7 +47,7 @@ func hasLanguagesEveryDay(days []DailyVolumePoint) bool {
 			return false
 		}
 	}
-	return len(days) > 0
+	return len(days) > 1
 }
 
 // languageDayTotal is the firehose total for a day from its language split.
@@ -131,7 +131,13 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		{Label: "Quietest", Value: countText(float64(days[quietest].ENPosts)), Sub: days[quietest].Date.Format("Mon 2 Jan")},
 	}
 	if hasTotal && allTotal > 0 {
-		tiles = append(tiles, statTile{Label: "English share", Value: fmt.Sprintf("%.0f%%", float64(enTotal)/float64(allTotal)*100), Sub: "of " + countText(float64(allTotal))})
+		// In the stacked view the legend already shows English as a share
+		// of the firehose; this tile is the analysed subset, so say so.
+		label := "English share"
+		if stacked {
+			label = "Analysed share"
+		}
+		tiles = append(tiles, statTile{Label: label, Value: fmt.Sprintf("%.0f%%", float64(enTotal)/float64(allTotal)*100), Sub: "of " + countText(float64(allTotal))})
 	}
 	subtitle := fmt.Sprintf("%s – %s · English posts analysed per day · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
 	if stacked {
@@ -258,10 +264,7 @@ func drawLanguageStack(dc *gg.Context, p plotArea, days []DailyVolumePoint, seri
 	if len(days) < 2 {
 		return
 	}
-	shown := map[string]bool{}
-	for _, sr := range series {
-		shown[sr.Code] = true
-	}
+	shown := shownCodes(series)
 	dc.DrawRectangle(p.x-2*s, p.y-2*s, p.w+4*s, p.h+4*s)
 	dc.Clip()
 
@@ -287,7 +290,9 @@ func drawLanguageStack(dc *gg.Context, p plotArea, days []DailyVolumePoint, seri
 		dc.SetColor(sr.Color)
 		dc.Fill()
 
-		// Surface-coloured seam between this band and the next.
+		// Surface-coloured seam along the band's upper edge; the next band
+		// paints over its top half, leaving a hairline of surface between
+		// the two fills.
 		dc.SetColor(themeSurface)
 		dc.SetLineWidth(2 * s)
 		for i, d := range days {
@@ -339,25 +344,39 @@ func drawAnalysedLine(dc *gg.Context, p plotArea, days []DailyVolumePoint, s flo
 // when the entries do not fit.
 func drawLanguageFooter(dc *gg.Context, spec seriesChartSpec, series []LanguageSeries, allTotal int, s, W, H float64) {
 	setFont(dc, 15*s, false)
-	left, right := 36*s, W-36*s
+	left := 36 * s
+	// The brand sits on the last row only, so only that row gives up width.
+	rowRight := []float64{W - 36*s, W - 36*s}
 	if spec.Brand != "" {
 		bw, _ := dc.MeasureString(spec.Brand)
-		right -= bw + 30*s
+		rowRight[1] -= bw + 30*s
 	}
-	rows := [][2]float64{{H - 50*s, 0}, {H - 26*s, 0}}
+	rowY := []float64{H - 50*s, H - 26*s}
 	row, x := 0, left
 
 	place := func(width float64) (float64, float64, bool) {
-		if x+width > right && row < len(rows)-1 && x > left {
+		if x+width > rowRight[row] && row < len(rowY)-1 && x > left {
 			row++
 			x = left
 		}
-		if x+width > right {
+		if x+width > rowRight[row] {
 			return 0, 0, false
 		}
-		px, py := x, rows[row][0]
+		px, py := x, rowY[row]
 		x += width + 22*s
 		return px, py, true
+	}
+	// The analysed line is the primary series, so its key is placed first
+	// and can never be the entry that overflow drops.
+	label := "English posts analysed, per day"
+	lw, _ := dc.MeasureString(label)
+	if px, py, ok := place(26*s + 8*s + lw); ok {
+		dc.SetColor(themeInkPrimary)
+		dc.SetLineWidth(3 * s)
+		dc.DrawLine(px, py-5*s, px+26*s, py-5*s)
+		dc.Stroke()
+		dc.SetColor(themeInkMuted)
+		dc.DrawStringAnchored(label, px+34*s, py, 0, 0)
 	}
 	for _, sr := range series {
 		label := sr.Name
@@ -374,16 +393,6 @@ func drawLanguageFooter(dc *gg.Context, spec seriesChartSpec, series []LanguageS
 		dc.Fill()
 		dc.SetColor(themeInkMuted)
 		dc.DrawStringAnchored(label, px+24*s, py, 0, 0)
-	}
-	label := "English posts analysed, per day"
-	lw, _ := dc.MeasureString(label)
-	if px, py, ok := place(26*s + 8*s + lw); ok {
-		dc.SetColor(themeInkPrimary)
-		dc.SetLineWidth(3 * s)
-		dc.DrawLine(px, py-5*s, px+26*s, py-5*s)
-		dc.Stroke()
-		dc.SetColor(themeInkMuted)
-		dc.DrawStringAnchored(label, px+34*s, py, 0, 0)
 	}
 	if spec.Brand != "" {
 		dc.SetColor(themeInkMuted)

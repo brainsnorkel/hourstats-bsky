@@ -3,8 +3,6 @@ package main
 import (
 	"strings"
 	"testing"
-
-	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
 func TestPrimaryAndPostLang(t *testing.T) {
@@ -36,7 +34,7 @@ func TestMonthlyLanguageLine(t *testing.T) {
 		r.Languages[d.Date] = map[string]int{"en": d.TotalPosts, "pt": d.TotalPosts / 4, "ja": d.TotalPosts / 5, "und": d.TotalPosts / 10, "es": d.TotalPosts / 20, "de": d.TotalPosts / 40, "fr": d.TotalPosts / 50, "ko": 1000}
 	}
 	line := r.languageLine()
-	if !strings.HasPrefix(line, "Portuguese ") || !strings.Contains(line, "Japanese ") || strings.Contains(line, "English") || strings.Contains(line, "other") {
+	if !strings.HasPrefix(line, "Portuguese ") || !strings.Contains(line, "Japanese ") || strings.Contains(line, "English") || strings.Contains(line, "other") || strings.Contains(line, "untagged") {
 		t.Errorf("languageLine = %q", line)
 	}
 	vol := buildMonthlyVolumeText(r)
@@ -54,10 +52,17 @@ func TestMonthlyLanguageLine(t *testing.T) {
 	if pts[0].Languages["pt"] == 0 {
 		t.Error("languages not carried to points")
 	}
+	// Languages without a firehose column still stack; the share line goes.
+	r.Firehose = nil
+	vol = buildMonthlyVolumeText(r)
+	if strings.Contains(vol, "English share") || !strings.Contains(vol, "Next: Portuguese") {
+		t.Errorf("languages-only text:\n%s", vol)
+	}
+	if alt := buildMonthlyVolumeAltText(r); !strings.Contains(alt, "stacked area") || strings.Contains(alt, "of the ") && strings.Contains(alt, "firehose.") {
+		t.Errorf("languages-only alt: %s", alt)
+	}
 	r.Languages = nil
 	if r.languageLine() != "" || strings.Contains(buildMonthlyVolumeText(r), "Next:") {
 		t.Error("language line should vanish without data")
 	}
 }
-
-var _ = store.LanguageDailyRow{}

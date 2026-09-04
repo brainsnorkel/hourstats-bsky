@@ -192,10 +192,10 @@ func (s *Store) GetDailySentimentMissingFirehose(ctx context.Context, startDate 
 		 ORDER BY date ASC`, startDate)
 }
 
-// DayCycleTotals sums one UTC day's sentiment_history cycles that meet the
-// minimum post count: how many cycles, their English posts and their
-// firehose posts. Matching Cycles and EnglishPosts against the daily row
-// proves the day is fully covered.
+// DayCycleTotals describes one UTC day of sentiment_history: how many
+// cycles met the minimum post count and their English posts (matching these
+// against the daily row proves the day is fully covered), plus the firehose
+// posts summed over every cycle of the day regardless of confidence.
 type DayCycleTotals struct {
 	Cycles        int
 	EnglishPosts  int
@@ -209,10 +209,12 @@ func (s *Store) GetDayCycleTotals(ctx context.Context, date string, minPosts int
 	}
 	var t DayCycleTotals
 	err = s.readDB.QueryRowContext(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(total_posts), 0), COALESCE(SUM(total_firehose_posts), 0)
+		`SELECT COALESCE(SUM(total_posts >= ?), 0),
+		        COALESCE(SUM(CASE WHEN total_posts >= ? THEN total_posts ELSE 0 END), 0),
+		        COALESCE(SUM(total_firehose_posts), 0)
 		 FROM sentiment_history
-		 WHERE timestamp >= ? AND timestamp < ? AND total_posts >= ?`,
-		start, end, minPosts,
+		 WHERE timestamp >= ? AND timestamp < ?`,
+		minPosts, minPosts, start, end,
 	).Scan(&t.Cycles, &t.EnglishPosts, &t.FirehosePosts)
 	if err != nil {
 		return DayCycleTotals{}, fmt.Errorf("day cycle totals %s: %w", date, err)

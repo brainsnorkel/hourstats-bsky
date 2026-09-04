@@ -62,7 +62,9 @@ func (r monthlyReport) languageShares() []languageShare {
 	}
 	var out []languageShare
 	for _, s := range sparkline.LanguageBreakdown(pts) {
-		if s.Code == "en" || s.Code == "other" {
+		// Untagged posts get a band on the chart but are not a language,
+		// so the prose leaves them out.
+		if s.Code == "en" || s.Code == sparkline.OtherCode || s.Code == sparkline.UndeterminedCode {
 			continue
 		}
 		out = append(out, languageShare{Name: s.Name, Share: float64(s.Total) / float64(total) * 100})
@@ -166,8 +168,10 @@ func buildMonthlyVolumeText(r monthlyReport) string {
 	}
 	if langs := r.languageLine(); langs != "" {
 		withLangs := append(append([]string{}, lines...), "Next: "+langs)
-		if postLength(strings.Join(withLangs, "\n")) <= blueskyPostLimit {
+		if n := postLength(strings.Join(withLangs, "\n")); n <= blueskyPostLimit {
 			lines = withLangs
+		} else {
+			slog.Info("monthly report: language line dropped, post would exceed limit", "length", n)
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -263,6 +267,39 @@ func toDailyVolumePoints(r monthlyReport) []sparkline.DailyVolumePoint {
 	return out
 }
 
+// firehoseCountV2Key records the first full UTC day on which the firehose
+// total counted every post create, including the ones the consumer's
+// pre-filter drops. Earlier days hold undercounts (English plus untagged
+// only), so a month that starts before this date is shown without a
+// firehose line rather than with a line that steps up mid-month.
+const firehoseCountV2Key = "firehose_count_v2_since"
+
+// recordFirehoseCountCutover stores the cutover date on the first start of
+// a build that counts the full firehose. Idempotent.
+func recordFirehoseCountCutover(ctx context.Context, db *store.Store, now time.Time) {
+	if v, _ := db.GetKeyValue(ctx, firehoseCountV2Key); v != "" {
+		return
+	}
+	since := utcDate(now).AddDate(0, 0, 1).Format(dateFormat)
+	if err := db.SetKeyValue(ctx, firehoseCountV2Key, since); err != nil {
+		slog.Warn("record firehose count cutover failed", "error", err)
+		return
+	}
+	slog.Info("firehose count cutover recorded", "since", since)
+}
+
+// firehoseCountedFully reports whether every day of the month lies on or
+// after the cutover to counting the full firehose.
+func firehoseCountedFully(ctx context.Context, db *store.Store, r monthlyReport) bool {
+	since, _ := db.GetKeyValue(ctx, firehoseCountV2Key)
+	if since == "" || r.First.Format(dateFormat) < since {
+		slog.Info("monthly report: month predates the full firehose count, showing English only",
+			"month", r.First.Format("2006-01"), "cutover", since)
+		return false
+	}
+	return true
+}
+
 // completeFirehose returns each day's firehose total when every day of the
 // month has one, and nil otherwise. The daily cycle's backfill is the only
 // source: reading sentiment_history directly here would mix filtered and
@@ -304,7 +341,9 @@ func loadMonthlyReport(ctx context.Context, db *store.Store, now time.Time) (mon
 	} else {
 		r.PrevDays = prev
 	}
-	r.Firehose = completeFirehose(r)
+	if firehoseCountedFully(ctx, db, r) {
+		r.Firehose = completeFirehose(r)
+	}
 	r.Languages = completeLanguages(ctx, db, r)
 	return r, true
 }
@@ -329,6 +368,19 @@ func completeLanguages(ctx context.Context, db *store.Store, r monthlyReport) ma
 			slog.Info("monthly report: language split incomplete, showing single line",
 				"month", r.First.Format("2006-01"), "first_missing", d.Date, "days_with_data", len(byDay))
 			return nil
+		}
+		// A day whose split covers only part of its cycles (a mid-day
+		// deploy, a failed store) would draw a false dip under the line.
+		if fh := r.Firehose[d.Date]; fh > 0 {
+			sum := 0
+			for _, n := range byDay[d.Date] {
+				sum += n
+			}
+			if float64(sum) < 0.9*float64(fh) {
+				slog.Info("monthly report: language split partial for a day, showing single line",
+					"month", r.First.Format("2006-01"), "date", d.Date, "split_total", sum, "firehose", fh)
+				return nil
+			}
 		}
 	}
 	return byDay
@@ -382,7 +434,7 @@ func runMonthlyReport(ctx context.Context, db *store.Store, handle, password str
 	if dryRun {
 		slog.Info("DRY_RUN: would post monthly report",
 			"month", monthKey, "days", len(r.Days), "prev_days", len(r.PrevDays),
-			"firehose_complete", r.Firehose != nil,
+			"firehose_complete", r.Firehose != nil, "languages_complete", r.Languages != nil,
 			"candle_bytes", len(candlePNG), "volume_bytes", len(volumePNG),
 			"mood_text", moodText, "mood_length", postLength(moodText),
 			"volume_text", volumeText, "volume_length", postLength(volumeText),

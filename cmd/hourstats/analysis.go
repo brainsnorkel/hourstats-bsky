@@ -305,7 +305,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	// same timestamp as the sentiment row so the daily rollup lines up.
 	if langs := collector.LanguagesSinceAnalysis(); len(langs) > 0 {
 		if err := db.StoreLanguageCounts(ctx, sdp.Timestamp, langs); err != nil {
-			slog.Error("store language counts failed", "error", err)
+			// Hand the counts back so the next cycle carries them rather
+			// than losing an hour of the language mix.
+			collector.RestoreLanguages(langs)
+			slog.Error("store language counts failed, carried to next cycle", "error", err)
 		} else {
 			slog.Info("language counts stored", "run_id", runID, "languages", len(langs))
 		}
