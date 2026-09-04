@@ -39,7 +39,7 @@ func (yg *YearlySparklineGenerator) calculateYearlyYRange(dataPoints []state.Yea
 	for i, dp := range dataPoints {
 		values[i] = dp.AverageSentiment
 	}
-	r := fitRange(values, 0.75)
+	r := fitRange(values, 0.75, rangePadFraction)
 	return YearlyYRange{
 		Min:    r.Min,
 		Max:    r.Max,

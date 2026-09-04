@@ -72,8 +72,11 @@ type SentimentDataPoint struct {
 	TotalFirehosePosts   int
 	RootSentimentPct     float64
 	ReplySentimentPct    float64
-	CreatedAt            time.Time
-	TTL                  int64
+	// TopTopic is the rank-1 trending topic label for the cycle, set once
+	// topic analysis completes. Empty when trending is disabled or failed.
+	TopTopic  string
+	CreatedAt time.Time
+	TTL       int64
 }
 
 // DailySentimentDataPoint aggregates a full day of runs.
@@ -499,6 +502,7 @@ func (s *Store) migrate() error {
 
 		`ALTER TABLE sentiment_history ADD COLUMN root_sentiment_pct REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE sentiment_history ADD COLUMN reply_sentiment_pct REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE sentiment_history ADD COLUMN top_topic TEXT NOT NULL DEFAULT ''`,
 
 		`CREATE TABLE IF NOT EXISTS daily_sentiment (
 			date TEXT PRIMARY KEY,
