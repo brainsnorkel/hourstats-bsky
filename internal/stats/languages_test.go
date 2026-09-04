@@ -23,7 +23,15 @@ func TestCollectorLanguages(t *testing.T) {
 		c.IncrementLanguage(string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + string(rune('a'+(i/676)%26)))
 	}
 	got = c.LanguagesSinceAnalysis()
-	if len(got) != maxLanguageKeys+1 || got["other"] != 10 {
-		t.Errorf("cap: keys=%d other=%d", len(got), got["other"])
+	if len(got) != maxLanguageKeys+1 || got[overflowLanguage] != 10 || got["other"] != 0 {
+		t.Errorf("cap: keys=%d und=%d other=%d", len(got), got[overflowLanguage], got["other"])
+	}
+
+	// A failed store hands the counts back for the next cycle.
+	c.IncrementLanguage("en")
+	c.RestoreLanguages(map[string]int64{"en": 4, "pt": 2})
+	got = c.LanguagesSinceAnalysis()
+	if got["en"] != 5 || got["pt"] != 2 {
+		t.Errorf("restore = %v", got)
 	}
 }

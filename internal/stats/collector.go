@@ -151,8 +151,13 @@ func (c *Collector) IncrementFirehosePost() {
 }
 
 // maxLanguageKeys bounds the per-cycle language map; tags beyond it fold
-// into "other" so a stream of junk tags cannot grow memory.
+// into the undetermined bucket so a stream of junk tags cannot grow memory.
+// "und" is chosen over "other" because the chart synthesises its own
+// "other" series and must not collide with a stored key.
 const maxLanguageKeys = 256
+
+// overflowLanguage is where tags past maxLanguageKeys are counted.
+const overflowLanguage = "und"
 
 // IncrementLanguage counts one firehose post under lang.
 func (c *Collector) IncrementLanguage(lang string) {
@@ -162,9 +167,22 @@ func (c *Collector) IncrementLanguage(lang string) {
 		c.langCounts = make(map[string]int64, 64)
 	}
 	if _, ok := c.langCounts[lang]; !ok && len(c.langCounts) >= maxLanguageKeys {
-		lang = "other"
+		lang = overflowLanguage
 	}
 	c.langCounts[lang]++
+}
+
+// RestoreLanguages merges counts back after a failed store so the next cycle
+// carries them instead of losing them.
+func (c *Collector) RestoreLanguages(counts map[string]int64) {
+	c.langMu.Lock()
+	defer c.langMu.Unlock()
+	if c.langCounts == nil {
+		c.langCounts = make(map[string]int64, len(counts)+16)
+	}
+	for lang, n := range counts {
+		c.langCounts[lang] += n
+	}
 }
 
 // LanguagesSinceAnalysis returns the per-language counts accumulated since

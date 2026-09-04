@@ -44,11 +44,19 @@ func runDailyAggregation(ctx context.Context, db *store.Store) {
 	}
 
 	var sentiments []float64
-	var totalPosts, totalFirehose int
+	var totalPosts int
 	for _, dp := range dayPoints {
 		sentiments = append(sentiments, dp.NetSentimentPercent)
 		totalPosts += dp.TotalPosts
-		totalFirehose += dp.TotalFirehosePosts
+	}
+	// The firehose total counts every cycle, including low-confidence ones:
+	// it measures what arrived, not what was analysed, and it has to agree
+	// with the per-language counts, which are stored for every cycle too.
+	totalFirehose := 0
+	for _, h := range history {
+		if h.Timestamp.Format("2006-01-02") == yesterday {
+			totalFirehose += h.TotalFirehosePosts
+		}
 	}
 	sort.Float64s(sentiments)
 
@@ -147,7 +155,8 @@ func runReportRollups(ctx context.Context, db *store.Store, now time.Time) {
 // in practice, so this reaches the whole rollup retention window. A day is
 // only written when its high-confidence cycles match the daily row exactly
 // (same cycle count and English total), which proves the history still holds
-// the complete day rather than a truncated edge of it.
+// the complete day rather than a truncated edge of it; the firehose figure
+// itself then sums every cycle of the day, as the daily aggregate does.
 func backfillDailyFirehoseTotals(ctx context.Context, db firehoseBackfillStore, now time.Time) {
 	since := now.UTC().Add(-reportRollupRetention).Format(dateFormat)
 	missing, err := db.GetDailySentimentMissingFirehose(ctx, since)

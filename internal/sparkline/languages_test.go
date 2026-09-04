@@ -38,8 +38,10 @@ func TestLanguageBreakdown(t *testing.T) {
 			t.Errorf("series[%d] = %s, want %s", i, s.Code, want[i])
 		}
 	}
-	if series[0].Color != languagePalette[0] || series[6].Color != languageOther {
-		t.Error("colour assignment")
+	// Pinned languages keep their slot; "und" takes the first free one.
+	if series[0].Color != languagePalette[0] || series[1].Color != languagePalette[1] || series[2].Color != languagePalette[2] ||
+		series[3].Color != languagePalette[5] || series[4].Color != languagePalette[3] || series[5].Color != languagePalette[4] || series[6].Color != languageOther {
+		t.Errorf("colour assignment: %v", series)
 	}
 	if series[2].Name != "Japanese" || series[3].Name != "untagged" {
 		t.Errorf("names: %s %s", series[2].Name, series[3].Name)
@@ -52,10 +54,22 @@ func TestLanguageBreakdown(t *testing.T) {
 		t.Error("empty / unknown code handling")
 	}
 
-	// Without English the first slot still goes to the largest language.
+	// Without English, Portuguese still keeps its pinned orange slot.
 	noEN := []DailyVolumePoint{{Languages: map[string]int{"pt": 5, "ja": 3}}}
-	if s := LanguageBreakdown(noEN); len(s) != 2 || s[0].Code != "pt" || s[0].Color != languagePalette[0] {
+	if s := LanguageBreakdown(noEN); len(s) != 2 || s[0].Code != "pt" || s[0].Color != languagePalette[1] {
 		t.Errorf("no-English breakdown = %+v", s)
+	}
+
+	// A stored "other" key never gets a band of its own; it folds into the
+	// remainder, and the legend total and the drawn band agree on it.
+	stored := []DailyVolumePoint{{Languages: map[string]int{"en": 10, "pt": 5, "other": 7, "xx": 1}}}
+	s := LanguageBreakdown(stored)
+	last := s[len(s)-1]
+	if last.Code != OtherCode || last.Total != 7 || len(s) != 4 {
+		t.Fatalf("stored other: %+v", s)
+	}
+	if got := languageValue(stored[0], last, shownCodes(s)); got != 7 {
+		t.Errorf("drawn other = %d, want 7", got)
 	}
 }
 

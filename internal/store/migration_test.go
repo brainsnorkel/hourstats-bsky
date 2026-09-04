@@ -102,8 +102,10 @@ func TestDayCycleTotalsAndMissingFirehose(t *testing.T) {
 	if err := s.StoreSentimentDataPoint(ctx, SentimentDataPoint{RunID: "next", Timestamp: day.Add(24 * time.Hour), TotalPosts: 1000, TotalFirehosePosts: 9999}); err != nil {
 		t.Fatal(err)
 	}
+	// Cycle count and English total exclude the low-confidence cycle; the
+	// firehose total counts every cycle of the day.
 	tot, err := s.GetDayCycleTotals(ctx, "2026-09-01", 500)
-	if err != nil || tot.Cycles != 23 || tot.EnglishPosts != 23000 || tot.FirehosePosts != 23*2500 {
+	if err != nil || tot.Cycles != 23 || tot.EnglishPosts != 23000 || tot.FirehosePosts != 24*2500 {
 		t.Fatalf("totals = %+v, %v", tot, err)
 	}
 
