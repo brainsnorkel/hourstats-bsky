@@ -14,10 +14,12 @@ type mockCandidateStore struct {
 	candidates   map[string][]store.ExemplarCandidate
 	err          error
 	callCount    atomic.Int64
+	lastLimit    atomic.Int64
 }
 
 func (m *mockCandidateStore) GetExemplarCandidates(_ context.Context, keywords []string, _ string, limit int) ([]store.ExemplarCandidate, error) {
 	m.callCount.Add(1)
+	m.lastLimit.Store(int64(limit))
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -37,23 +39,43 @@ func (m *mockCandidateStore) GetExemplarCandidates(_ context.Context, keywords [
 	return result, nil
 }
 
+// candidate builds an ExemplarCandidate with enough text to clear the
+// short-post quality penalty, so tests exercise ranking rather than length.
+func candidate(uri, handle string, eng int, matched ...string) store.ExemplarCandidate {
+	return store.ExemplarCandidate{
+		URI:             uri,
+		Handle:          handle,
+		Text:            "this is a perfectly ordinary post about the subject at hand today",
+		Engagement:      eng,
+		Matched:         matched,
+		DistinctMatches: len(matched),
+		CreatedAt:       "2026-09-04T00:00:00Z",
+	}
+}
+
+func topicOf(label string, keywords []string) IdentifiedTopic {
+	return IdentifiedTopic{
+		RankedTopic: RankedTopic{Cluster: TopicCluster{Label: label, Keywords: keywords, Synonyms: []string{}}},
+		TopicID:     "t-" + label,
+		Rank:        1,
+	}
+}
+
 func TestHydrateExemplars_PicksHighestEngagement(t *testing.T) {
 	s := &mockCandidateStore{
 		candidates: map[string][]store.ExemplarCandidate{
 			"politics": {
-				{URI: "at://a/2", Handle: "high.bsky.social", Engagement: 175, MatchScore: 1},
-				{URI: "at://a/3", Handle: "mid.bsky.social", Engagement: 17, MatchScore: 1},
-				{URI: "at://a/1", Handle: "low.bsky.social", Engagement: 1, MatchScore: 1},
+				candidate("at://a/2", "high.bsky.social", 175, "politics"),
+				candidate("at://a/3", "mid.bsky.social", 17, "politics"),
+				candidate("at://a/1", "low.bsky.social", 1, "politics"),
 			},
 		},
 	}
 
 	hydrator := NewExemplarHydrator(s)
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"politics"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
-	}
+	topics := []IdentifiedTopic{topicOf("Politics", []string{"politics"})}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,17 +85,43 @@ func TestHydrateExemplars_PicksHighestEngagement(t *testing.T) {
 	if result[0].ExemplarHandle != "high.bsky.social" {
 		t.Errorf("expected handle 'high.bsky.social', got %q", result[0].ExemplarHandle)
 	}
+	if got := s.lastLimit.Load(); got != exemplarCandidateLimit {
+		t.Errorf("expected candidate limit %d, got %d", exemplarCandidateLimit, got)
+	}
+}
+
+func TestHydrateExemplars_CoverageBeatsEngagement(t *testing.T) {
+	s := &mockCandidateStore{
+		candidatesFn: func([]string) []store.ExemplarCandidate {
+			return []store.ExemplarCandidate{
+				// Repeats one generic keyword many times; engagement is zero.
+				candidate("at://a/1", "narrow.bsky.social", 0, "school", "football"),
+				// Matches the whole topic.
+				candidate("at://a/2", "broad.bsky.social", 5, "colorado", "football", "college", "georgia", "georgia_tech"),
+			}
+		},
+	}
+
+	hydrator := NewExemplarHydrator(s)
+	topics := []IdentifiedTopic{topicOf("College Football",
+		[]string{"colorado", "football", "college", "georgia", "georgia_tech", "school"})}
+
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result[0].ExemplarHandle != "broad.bsky.social" {
+		t.Errorf("expected broad keyword coverage to win, got %q", result[0].ExemplarHandle)
+	}
 }
 
 func TestHydrateExemplars_NoCandidates(t *testing.T) {
 	s := &mockCandidateStore{candidates: map[string][]store.ExemplarCandidate{}}
 
 	hydrator := NewExemplarHydrator(s)
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Empty", Keywords: []string{"nothing"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
-	}
+	topics := []IdentifiedTopic{topicOf("Empty", []string{"nothing"})}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,11 +134,9 @@ func TestHydrateExemplars_StoreError(t *testing.T) {
 	s := &mockCandidateStore{err: fmt.Errorf("db error")}
 
 	hydrator := NewExemplarHydrator(s)
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Test", Keywords: []string{"test"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
-	}
+	topics := []IdentifiedTopic{topicOf("Test", []string{"test"})}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,18 +148,18 @@ func TestHydrateExemplars_StoreError(t *testing.T) {
 func TestHydrateExemplars_MultipleTopics(t *testing.T) {
 	s := &mockCandidateStore{
 		candidates: map[string][]store.ExemplarCandidate{
-			"politics": {{URI: "at://a/1", Handle: "alice.bsky.social", Engagement: 65, MatchScore: 1}},
-			"weather":  {{URI: "at://b/1", Handle: "bob.bsky.social", Engagement: 130, MatchScore: 1}},
+			"politics": {candidate("at://a/1", "alice.bsky.social", 65, "politics")},
+			"weather":  {candidate("at://b/1", "bob.bsky.social", 130, "weather")},
 		},
 	}
 
 	hydrator := NewExemplarHydrator(s)
 	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"politics"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather", Keywords: []string{"weather"}, Synonyms: []string{}}}, TopicID: "t2", Rank: 2},
+		topicOf("Politics", []string{"politics"}),
+		topicOf("Weather", []string{"weather"}),
 	}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -128,21 +174,21 @@ func TestHydrateExemplars_MultipleTopics(t *testing.T) {
 func TestHydrateExemplars_DeduplicatesHandles(t *testing.T) {
 	s := &mockCandidateStore{
 		candidates: map[string][]store.ExemplarCandidate{
-			"politics": {{URI: "at://a/1", Handle: "alice.bsky.social", Engagement: 100, MatchScore: 1}},
+			"politics": {candidate("at://a/1", "alice.bsky.social", 100, "politics")},
 			"weather": {
-				{URI: "at://a/2", Handle: "alice.bsky.social", Engagement: 200, MatchScore: 1},
-				{URI: "at://b/1", Handle: "bob.bsky.social", Engagement: 50, MatchScore: 1},
+				candidate("at://a/2", "alice.bsky.social", 200, "weather"),
+				candidate("at://b/1", "bob.bsky.social", 50, "weather"),
 			},
 		},
 	}
 
 	hydrator := NewExemplarHydrator(s)
 	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"politics"}, Synonyms: []string{}}}, TopicID: "t1", Rank: 1},
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather", Keywords: []string{"weather"}, Synonyms: []string{}}}, TopicID: "t2", Rank: 2},
+		topicOf("Politics", []string{"politics"}),
+		topicOf("Weather", []string{"weather"}),
 	}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,7 +202,7 @@ func TestHydrateExemplars_DeduplicatesHandles(t *testing.T) {
 
 func TestHydrateExemplars_EmptyTopics(t *testing.T) {
 	hydrator := NewExemplarHydrator(nil)
-	result, err := hydrator.HydrateExemplars(context.Background(), nil)
+	result, err := hydrator.HydrateExemplars(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,25 +214,21 @@ func TestHydrateExemplars_EmptyTopics(t *testing.T) {
 func TestHydrateExemplars_SkipsMemeTopics(t *testing.T) {
 	s := &mockCandidateStore{
 		candidates: map[string][]store.ExemplarCandidate{
-			"politics": {{URI: "at://a/1", Handle: "alice.bsky.social", Engagement: 100, MatchScore: 1}},
+			"politics": {candidate("at://a/1", "alice.bsky.social", 100, "politics")},
 		},
 	}
 
 	hydrator := NewExemplarHydrator(s)
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Post a Banger", Keywords: []string{"post", "banger"}, Synonyms: []string{}, IsMeme: true}}, TopicID: "t1", Rank: 1},
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Politics", Keywords: []string{"politics"}, Synonyms: []string{}}}, TopicID: "t2", Rank: 2},
-	}
+	meme := topicOf("Post a Banger", []string{"post", "banger"})
+	meme.Cluster.IsMeme = true
+	topics := []IdentifiedTopic{meme, topicOf("Politics", []string{"politics"})}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result[0].ExemplarURI != "" {
-		t.Errorf("meme topic should have empty ExemplarURI, got %q", result[0].ExemplarURI)
-	}
-	if result[0].ExemplarHandle != "" {
-		t.Errorf("meme topic should have empty ExemplarHandle, got %q", result[0].ExemplarHandle)
+	if result[0].ExemplarURI != "" || result[0].ExemplarHandle != "" {
+		t.Errorf("meme topic should have no exemplar, got %q / %q", result[0].ExemplarURI, result[0].ExemplarHandle)
 	}
 	if result[1].ExemplarHandle != "alice.bsky.social" {
 		t.Errorf("non-meme topic should get exemplar, got %q", result[1].ExemplarHandle)
@@ -196,171 +238,221 @@ func TestHydrateExemplars_SkipsMemeTopics(t *testing.T) {
 	}
 }
 
-func TestHydrateExemplars_ThresholdRejectsBelowMin(t *testing.T) {
+func TestHydrateExemplars_AnchorRuleRejectsGenericOnlyMatch(t *testing.T) {
 	s := &mockCandidateStore{
-		candidatesFn: func(keywords []string) []store.ExemplarCandidate {
+		candidatesFn: func([]string) []store.ExemplarCandidate {
 			return []store.ExemplarCandidate{
-				{URI: "at://a/1", Handle: "low.bsky.social", Engagement: 500, MatchScore: 1},
-				{URI: "at://a/2", Handle: "good.bsky.social", Engagement: 50, MatchScore: 4},
+				// An itch.io games post that only shares the generic "games".
+				candidate("at://a/1", "gamedev.bsky.social", 900, "games"),
+				candidate("at://a/2", "bbfan.bsky.social", 9, "bb28", "hoh"),
 			}
 		},
 	}
 
 	hydrator := NewExemplarHydrator(s)
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{
-			Label:    "Jordan Binnington",
-			Keywords: []string{"jordan_binnington", "canada", "hockey"},
-			Synonyms: []string{},
-		}}, TopicID: "t1", Rank: 1},
-	}
+	topics := []IdentifiedTopic{topicOf("Big Brother 28", []string{"bb28", "hoh", "games"})}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result[0].ExemplarHandle != "good.bsky.social" {
-		t.Errorf("expected good.bsky.social (score 4), got %q", result[0].ExemplarHandle)
+	if result[0].ExemplarHandle != "bbfan.bsky.social" {
+		t.Errorf("expected on-topic post despite lower engagement, got %q", result[0].ExemplarHandle)
 	}
 }
 
-func TestHydrateExemplars_ThresholdAllowsSingleKeyword(t *testing.T) {
+func TestHydrateExemplars_NoCandidateMeetsRelevance(t *testing.T) {
 	s := &mockCandidateStore{
-		candidatesFn: func(keywords []string) []store.ExemplarCandidate {
+		candidatesFn: func([]string) []store.ExemplarCandidate {
 			return []store.ExemplarCandidate{
-				{URI: "at://a/1", Handle: "ok.bsky.social", Engagement: 100, MatchScore: 1},
+				candidate("at://a/1", "bad.bsky.social", 1000, "canada"),
 			}
 		},
 	}
 
 	hydrator := NewExemplarHydrator(s)
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{
-			Label:    "Bitcoin",
-			Keywords: []string{"bitcoin"},
-			Synonyms: []string{},
-		}}, TopicID: "t1", Rank: 1},
-	}
+	topics := []IdentifiedTopic{topicOf("Jordan Binnington",
+		[]string{"jordan_binnington", "canada", "hockey", "nhl"})}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result[0].ExemplarHandle != "ok.bsky.social" {
-		t.Errorf("expected ok.bsky.social for single-keyword topic, got %q", result[0].ExemplarHandle)
-	}
-}
-
-func TestHydrateExemplars_ThresholdRejectsAll(t *testing.T) {
-	s := &mockCandidateStore{
-		candidatesFn: func(keywords []string) []store.ExemplarCandidate {
-			return []store.ExemplarCandidate{
-				{URI: "at://a/1", Handle: "bad.bsky.social", Engagement: 1000, MatchScore: 1},
-			}
-		},
-	}
-
-	hydrator := NewExemplarHydrator(s)
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{
-			Label:    "Jordan Binnington",
-			Keywords: []string{"jordan_binnington", "canada", "hockey", "nhl"},
-			Synonyms: []string{},
-		}}, TopicID: "t1", Rank: 1},
-	}
-
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result[0].ExemplarURI != "" {
-		t.Errorf("expected no exemplar when all below threshold, got %q", result[0].ExemplarURI)
-	}
-}
-
-func TestMinMatchScore(t *testing.T) {
-	if minMatchScore(1) != 1 {
-		t.Errorf("1 keyword: expected threshold 1, got %d", minMatchScore(1))
-	}
-	if minMatchScore(2) != 1 {
-		t.Errorf("2 keywords: expected threshold 1, got %d", minMatchScore(2))
-	}
-	if minMatchScore(3) != 2 {
-		t.Errorf("3 keywords: expected threshold 2, got %d", minMatchScore(3))
-	}
-	if minMatchScore(10) != 2 {
-		t.Errorf("10 keywords: expected threshold 2, got %d", minMatchScore(10))
+		t.Errorf("expected no exemplar when no candidate matches an anchor, got %q", result[0].ExemplarURI)
 	}
 }
 
 type mockValidator struct {
-	rejectTopics map[string]bool
+	calls      atomic.Int64
+	received   []ExemplarValidation
+	rejectText map[string]bool
+	err        error
 }
 
 func (m *mockValidator) ValidateExemplars(_ context.Context, pairs []ExemplarValidation) ([]ExemplarValidation, error) {
+	m.calls.Add(1)
+	m.received = append(m.received, pairs...)
+	if m.err != nil {
+		return nil, m.err
+	}
 	for i := range pairs {
-		if m.rejectTopics[pairs[i].TopicLabel] {
+		if m.rejectText[pairs[i].PostText] {
 			pairs[i].IsRelevant = false
 		}
 	}
 	return pairs, nil
 }
 
-func TestHydrateExemplars_ValidationRejectsAndReplaces(t *testing.T) {
+func validationCandidates() []store.ExemplarCandidate {
+	first := candidate("at://a/1", "first.bsky.social", 500, "jordan_binnington", "canada", "hockey")
+	first.Text = "canada beat the usa in a hockey game that jordan binnington did not play"
+	second := candidate("at://a/2", "second.bsky.social", 50, "jordan_binnington", "hockey")
+	second.Text = "jordan binnington makes an unbelievable save late in the third period"
+	third := candidate("at://a/3", "third.bsky.social", 5, "jordan_binnington", "canada")
+	third.Text = "binnington signs a new deal to stay in canada for another season yes"
+	return []store.ExemplarCandidate{first, second, third}
+}
+
+func TestHydrateExemplars_ValidationSendsTopKInOneCall(t *testing.T) {
 	s := &mockCandidateStore{
-		candidatesFn: func(keywords []string) []store.ExemplarCandidate {
-			return []store.ExemplarCandidate{
-				{URI: "at://a/1", Handle: "curling.bsky.social", Text: "Canada curling great performance", Engagement: 500, MatchScore: 3},
-				{URI: "at://a/2", Handle: "hockey.bsky.social", Text: "Binnington amazing save in hockey", Engagement: 50, MatchScore: 4},
-			}
-		},
+		candidatesFn: func([]string) []store.ExemplarCandidate { return validationCandidates() },
 	}
+	v := &mockValidator{}
 
 	hydrator := NewExemplarHydrator(s)
-	hydrator.SetValidator(&mockValidator{rejectTopics: map[string]bool{"Jordan Binnington": true}})
+	hydrator.SetValidator(v)
 
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{
-			Label:    "Jordan Binnington",
-			Keywords: []string{"jordan_binnington", "canada", "hockey"},
-			Synonyms: []string{},
-		}}, TopicID: "t1", Rank: 1},
-	}
+	topics := []IdentifiedTopic{topicOf("Jordan Binnington",
+		[]string{"jordan_binnington", "canada", "hockey"})}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
-	if err != nil {
+	if _, err := hydrator.HydrateExemplars(context.Background(), topics, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result[0].ExemplarHandle != "hockey.bsky.social" {
-		t.Errorf("expected replacement after rejection, got %q", result[0].ExemplarHandle)
+	if got := v.calls.Load(); got != 1 {
+		t.Errorf("expected exactly 1 validation call, got %d", got)
+	}
+	if len(v.received) != exemplarTopK {
+		t.Fatalf("expected %d pairs, got %d", exemplarTopK, len(v.received))
+	}
+	for _, p := range v.received {
+		if p.TopicLabel != "Jordan Binnington" {
+			t.Errorf("unexpected topic label %q", p.TopicLabel)
+		}
 	}
 }
 
-func TestHydrateExemplars_ValidationAcceptsGoodMatch(t *testing.T) {
+func TestHydrateExemplars_ValidationFallsThroughToSecond(t *testing.T) {
+	cands := validationCandidates()
 	s := &mockCandidateStore{
-		candidatesFn: func(keywords []string) []store.ExemplarCandidate {
-			return []store.ExemplarCandidate{
-				{URI: "at://a/1", Handle: "good.bsky.social", Text: "Great hockey save by Binnington", Engagement: 200, MatchScore: 5},
-			}
-		},
+		candidatesFn: func([]string) []store.ExemplarCandidate { return cands },
 	}
+	v := &mockValidator{rejectText: map[string]bool{cands[0].Text: true}}
 
 	hydrator := NewExemplarHydrator(s)
-	hydrator.SetValidator(&mockValidator{rejectTopics: map[string]bool{}})
+	hydrator.SetValidator(v)
 
-	topics := []IdentifiedTopic{
-		{RankedTopic: RankedTopic{Cluster: TopicCluster{
-			Label:    "Jordan Binnington",
-			Keywords: []string{"jordan_binnington", "hockey"},
-			Synonyms: []string{},
-		}}, TopicID: "t1", Rank: 1},
-	}
+	topics := []IdentifiedTopic{topicOf("Jordan Binnington",
+		[]string{"jordan_binnington", "canada", "hockey"})}
 
-	result, err := hydrator.HydrateExemplars(context.Background(), topics)
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result[0].ExemplarHandle != "good.bsky.social" {
-		t.Errorf("expected accepted exemplar to remain, got %q", result[0].ExemplarHandle)
+	if result[0].ExemplarHandle != "second.bsky.social" {
+		t.Errorf("expected fall-through to the next approved candidate, got %q", result[0].ExemplarHandle)
+	}
+}
+
+func TestHydrateExemplars_ValidationRejectsAllLeavesNoExemplar(t *testing.T) {
+	cands := validationCandidates()
+	reject := make(map[string]bool, len(cands))
+	for _, c := range cands {
+		reject[c.Text] = true
+	}
+	s := &mockCandidateStore{
+		candidatesFn: func([]string) []store.ExemplarCandidate { return cands },
+	}
+	v := &mockValidator{rejectText: reject}
+
+	hydrator := NewExemplarHydrator(s)
+	hydrator.SetValidator(v)
+
+	topics := []IdentifiedTopic{topicOf("Jordan Binnington",
+		[]string{"jordan_binnington", "canada", "hockey"})}
+
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result[0].ExemplarURI != "" || result[0].ExemplarHandle != "" {
+		t.Errorf("expected no exemplar when every candidate is rejected, got %q / %q",
+			result[0].ExemplarURI, result[0].ExemplarHandle)
+	}
+}
+
+func TestHydrateExemplars_ValidationErrorKeepsTopPick(t *testing.T) {
+	s := &mockCandidateStore{
+		candidatesFn: func([]string) []store.ExemplarCandidate { return validationCandidates() },
+	}
+	v := &mockValidator{err: fmt.Errorf("gemini down")}
+
+	hydrator := NewExemplarHydrator(s)
+	hydrator.SetValidator(v)
+
+	topics := []IdentifiedTopic{topicOf("Jordan Binnington",
+		[]string{"jordan_binnington", "canada", "hockey"})}
+
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result[0].ExemplarHandle != "first.bsky.social" {
+		t.Errorf("expected top-ranked fallback when validation fails, got %q", result[0].ExemplarHandle)
+	}
+}
+
+func TestHydrateExemplars_ValidationBudgetCapsPairs(t *testing.T) {
+	// Each topic needs its own handles: handles are claimed across topics.
+	var nth atomic.Int64
+	s := &mockCandidateStore{
+		candidatesFn: func([]string) []store.ExemplarCandidate {
+			n := nth.Add(1)
+			cands := validationCandidates()
+			for i := range cands {
+				cands[i].Handle = fmt.Sprintf("t%d-%s", n, cands[i].Handle)
+				cands[i].URI = fmt.Sprintf("at://t%d/%d", n, i)
+			}
+			return cands
+		},
+	}
+	v := &mockValidator{}
+
+	hydrator := NewExemplarHydrator(s)
+	hydrator.SetValidator(v)
+
+	// Six topics x 3 candidates would be 18 pairs; the cap is 15.
+	var topics []IdentifiedTopic
+	for i := 0; i < 6; i++ {
+		topics = append(topics, topicOf(fmt.Sprintf("Hockey %d", i),
+			[]string{"jordan_binnington", "canada", "hockey"}))
+	}
+
+	if _, err := hydrator.HydrateExemplars(context.Background(), topics, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := v.calls.Load(); got != 1 {
+		t.Errorf("expected exactly 1 validation call, got %d", got)
+	}
+	if len(v.received) > maxValidationPairs {
+		t.Errorf("expected at most %d pairs, got %d", maxValidationPairs, len(v.received))
+	}
+	// Round-robin ordering means every topic gets its top candidate validated.
+	seen := make(map[string]bool)
+	for _, p := range v.received[:6] {
+		seen[p.TopicLabel] = true
+	}
+	if len(seen) != 6 {
+		t.Errorf("expected all 6 topics in the first round, got %d", len(seen))
 	}
 }

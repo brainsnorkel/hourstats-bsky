@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -374,5 +375,116 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// exemplarValidationHandler replies with the given verdicts, echoing the ids
+// the prompt assigned.
+func exemplarValidationHandler(t *testing.T, verdicts []exemplarValidationResult, capturedPrompt *string) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req geminiRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if capturedPrompt != nil && len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 {
+			*capturedPrompt = req.Contents[0].Parts[0].Text
+		}
+		text, _ := json.Marshal(verdicts)
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{Content: geminiContent{Parts: []geminiPart{{Text: string(text)}}}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+func TestValidateExemplars_MapsVerdictsByID(t *testing.T) {
+	// Three pairs share one topic label, so only the id can tell them apart.
+	verdicts := []exemplarValidationResult{
+		{ID: 1, IsRelevant: false},
+		{ID: 2, IsRelevant: true},
+		{ID: 3, IsRelevant: false},
+	}
+	var prompt string
+	srv := httptest.NewServer(exemplarValidationHandler(t, verdicts, &prompt))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{
+		{TopicLabel: "Hockey", PostText: "first", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "second", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "third", IsRelevant: true},
+	}
+
+	got, err := g.ValidateExemplars(context.Background(), pairs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []bool{false, true, false}
+	for i, w := range want {
+		if got[i].IsRelevant != w {
+			t.Errorf("pair %d IsRelevant = %v, want %v", i+1, got[i].IsRelevant, w)
+		}
+	}
+	if !strings.Contains(prompt, "3. Topic:") {
+		t.Errorf("expected numbered pairs in prompt, got:\n%s", prompt)
+	}
+}
+
+func TestValidateExemplars_FallsBackToOrderWithoutIDs(t *testing.T) {
+	verdicts := []exemplarValidationResult{{IsRelevant: false}, {IsRelevant: true}}
+	srv := httptest.NewServer(exemplarValidationHandler(t, verdicts, nil))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{
+		{TopicLabel: "Hockey", PostText: "first", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "second", IsRelevant: true},
+	}
+
+	got, err := g.ValidateExemplars(context.Background(), pairs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got[0].IsRelevant || !got[1].IsRelevant {
+		t.Errorf("expected positional fallback [false true], got [%v %v]", got[0].IsRelevant, got[1].IsRelevant)
+	}
+}
+
+func TestCheckAndIncrementRate_BudgetExhaustedFiresOncePerTrip(t *testing.T) {
+	g := NewGrouperWithEndpoint("test-key", "http://example.invalid")
+
+	var trips int
+	var reported int
+	g.SetBudgetExhaustedHandler(func(dailyCalls int) {
+		trips++
+		reported = dailyCalls
+	})
+
+	for i := 0; i < maxDailyCalls; i++ {
+		if !g.checkAndIncrementRate() {
+			t.Fatalf("call %d should have been allowed", i+1)
+		}
+	}
+	if g.BudgetExhausted() {
+		t.Error("budget should not be flagged before the limit trips")
+	}
+
+	for i := 0; i < 3; i++ {
+		if g.checkAndIncrementRate() {
+			t.Fatal("call past the daily limit should be refused")
+		}
+	}
+	if trips != 1 {
+		t.Errorf("expected the handler to fire once per trip, fired %d times", trips)
+	}
+	if reported != maxDailyCalls {
+		t.Errorf("handler reported %d daily calls, want %d", reported, maxDailyCalls)
+	}
+	if !g.BudgetExhausted() {
+		t.Error("expected BudgetExhausted to report true after the trip")
 	}
 }

@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -485,5 +487,84 @@ func TestPurgeTopicTokens_OnlyPurgesTopicTokens(t *testing.T) {
 	}
 	if survivorURI != "at://new/1" {
 		t.Errorf("expected surviving row at://new/1, got %q", survivorURI)
+	}
+}
+
+func TestGetExemplarCandidates_ReturnsMatchDetail(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	s.InsertTopicTokens(ctx, "at://a/1", `["trump","war","trump"]`, now)
+	s.InsertTopicTokens(ctx, "at://a/2", `["trump"]`, now)
+
+	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "Trump on the war", AuthorDID: "did:plc:1", AuthorHandle: "alice.bsky.social", CreatedAt: now})
+	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Trump reply", AuthorDID: "did:plc:2", AuthorHandle: "bob.bsky.social", CreatedAt: now, IsReply: true})
+
+	candidates, err := s.GetExemplarCandidates(ctx, []string{"trump", "war"}, "2000-01-01T00:00:00Z", 50)
+	if err != nil {
+		t.Fatalf("GetExemplarCandidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+
+	first := candidates[0]
+	if first.Handle != "alice.bsky.social" {
+		t.Fatalf("expected alice first (2 distinct matches), got %q", first.Handle)
+	}
+	if first.DistinctMatches != 2 {
+		t.Errorf("DistinctMatches = %d, want 2", first.DistinctMatches)
+	}
+	if first.MatchScore != 3 {
+		t.Errorf("MatchScore = %d, want 3 (occurrences)", first.MatchScore)
+	}
+	matched := append([]string(nil), first.Matched...)
+	sort.Strings(matched)
+	if strings.Join(matched, ",") != "trump,war" {
+		t.Errorf("Matched = %v, want [trump war]", first.Matched)
+	}
+	if first.IsReply {
+		t.Error("expected root post, got IsReply=true")
+	}
+	if first.CreatedAt != now {
+		t.Errorf("CreatedAt = %q, want %q", first.CreatedAt, now)
+	}
+
+	if !candidates[1].IsReply {
+		t.Error("expected bob's post to be flagged as a reply")
+	}
+}
+
+func TestGetExemplarCandidates_CoverageOutranksOccurrences(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	// Repeats three keywords (9 weighted occurrences) but covers only 3 of 6.
+	s.InsertTopicTokens(ctx, "at://a/1", `["football","football","football","school","school","school","college","college","college"]`, now)
+	// Covers 5 keywords once each.
+	s.InsertTopicTokens(ctx, "at://a/2", `["colorado","football","college","georgia","georgia_tech"]`, now)
+
+	s.InsertPost(ctx, Post{URI: "at://a/1", CID: "cid1", Text: "school football college school football college", AuthorDID: "did:plc:1", AuthorHandle: "narrow.bsky.social", CreatedAt: now})
+	s.InsertPost(ctx, Post{URI: "at://a/2", CID: "cid2", Text: "Colorado beat Georgia Tech", AuthorDID: "did:plc:2", AuthorHandle: "broad.bsky.social", CreatedAt: now})
+
+	keywords := []string{"colorado", "football", "college", "georgia", "georgia_tech", "school"}
+	candidates, err := s.GetExemplarCandidates(ctx, keywords, "2000-01-01T00:00:00Z", 50)
+	if err != nil {
+		t.Fatalf("GetExemplarCandidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0].Handle != "broad.bsky.social" {
+		t.Errorf("expected broadest keyword coverage first, got %q (distinct=%d)", candidates[0].Handle, candidates[0].DistinctMatches)
+	}
+	if candidates[0].DistinctMatches != 5 {
+		t.Errorf("DistinctMatches = %d, want 5", candidates[0].DistinctMatches)
+	}
+	if candidates[1].MatchScore <= candidates[0].MatchScore {
+		t.Errorf("expected the repetitive post to still have the higher occurrence score: %d vs %d",
+			candidates[1].MatchScore, candidates[0].MatchScore)
 	}
 }

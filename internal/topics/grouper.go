@@ -31,6 +31,11 @@ type Grouper struct {
 	mu               sync.Mutex
 	dailyCalls       int
 	lastReset        time.Time
+	// budgetTripped records that the daily budget was hit in the current
+	// window, so the warning and the stats event fire once per trip rather
+	// than once per blocked call.
+	budgetTripped     bool
+	onBudgetExhausted func(dailyCalls int)
 }
 
 // groupingEndpoint builds the Gemini generateContent URL for a model name.
@@ -559,15 +564,25 @@ type ExemplarValidation struct {
 	IsRelevant bool   `json:"is_relevant"`
 }
 
+// exemplarValidationResult is one verdict from the model. The id echoes the
+// numbered pair in the prompt: several pairs can share a topic label now that
+// each topic offers multiple candidates, so the label alone cannot identify
+// which post was judged.
+type exemplarValidationResult struct {
+	ID         int  `json:"id"`
+	IsRelevant bool `json:"is_relevant"`
+}
+
 var exemplarValidationSchema = map[string]interface{}{
 	"type": "ARRAY",
 	"items": map[string]interface{}{
 		"type": "OBJECT",
 		"properties": map[string]interface{}{
+			"id":          map[string]interface{}{"type": "INTEGER"},
 			"topic_label": map[string]interface{}{"type": "STRING"},
 			"is_relevant": map[string]interface{}{"type": "BOOLEAN"},
 		},
-		"required": []string{"topic_label", "is_relevant"},
+		"required": []string{"id", "topic_label", "is_relevant"},
 	},
 }
 
@@ -637,20 +652,25 @@ func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidat
 		return pairs, nil
 	}
 
-	var results []ExemplarValidation
+	var results []exemplarValidationResult
 	if err := json.Unmarshal([]byte(jsonText), &results); err != nil {
 		slog.Warn("validate-exemplars: parse JSON failed, skipping", "error", err)
 		return pairs, nil
 	}
 
-	resultMap := make(map[string]bool)
+	applied := 0
 	for _, r := range results {
-		resultMap[r.TopicLabel] = r.IsRelevant
+		idx := r.ID - 1
+		if idx < 0 || idx >= len(pairs) {
+			continue
+		}
+		pairs[idx].IsRelevant = r.IsRelevant
+		applied++
 	}
-
-	for i := range pairs {
-		if relevant, ok := resultMap[pairs[i].TopicLabel]; ok {
-			pairs[i].IsRelevant = relevant
+	if applied == 0 && len(results) == len(pairs) {
+		// Model dropped the ids but answered in order.
+		for i := range pairs {
+			pairs[i].IsRelevant = results[i].IsRelevant
 		}
 	}
 
@@ -659,28 +679,60 @@ func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidat
 
 func buildValidationPrompt(pairs []ExemplarValidation) string {
 	var b strings.Builder
-	b.WriteString("For each topic-post pair below, determine if the post is genuinely about the topic.\n")
-	b.WriteString("A post is relevant if its main subject matches the topic. Tangential keyword overlap does NOT count.\n\n")
+	b.WriteString("For each numbered topic-post pair below, determine if the post is genuinely about the topic.\n")
+	b.WriteString("A post is relevant if its main subject matches the topic. Tangential keyword overlap does NOT count.\n")
+	b.WriteString("Several pairs may share a topic: judge each pair independently and echo its id.\n\n")
 
 	for i, p := range pairs {
 		fmt.Fprintf(&b, "%d. Topic: %q\n   Post: %q\n\n", i+1, p.TopicLabel, p.PostText)
 	}
 
-	b.WriteString("Return is_relevant=true only if the post is genuinely about the topic, not just sharing a keyword.\n")
+	b.WriteString("Return one entry per pair with its id, and is_relevant=true only if the post is genuinely about the topic, not just sharing a keyword.\n")
 	return b.String()
+}
+
+// SetBudgetExhaustedHandler registers a callback invoked the first time the
+// daily Gemini call budget is exhausted within a window. It runs outside the
+// Grouper's lock, so it may block (e.g. to write a stats event).
+func (g *Grouper) SetBudgetExhaustedHandler(fn func(dailyCalls int)) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.onBudgetExhausted = fn
+}
+
+// BudgetExhausted reports whether the daily call budget is currently spent.
+func (g *Grouper) BudgetExhausted() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.budgetTripped
 }
 
 func (g *Grouper) checkAndIncrementRate() bool {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	now := time.Now()
 	if now.Sub(g.lastReset) > 24*time.Hour {
 		g.dailyCalls = 0
+		g.budgetTripped = false
 		g.lastReset = now
 	}
 	if g.dailyCalls >= maxDailyCalls {
+		firstTrip := !g.budgetTripped
+		g.budgetTripped = true
+		calls := g.dailyCalls
+		windowStart := g.lastReset
+		handler := g.onBudgetExhausted
+		g.mu.Unlock()
+		if firstTrip {
+			slog.Warn("gemini: daily call budget exhausted",
+				"daily_calls", calls, "max_daily_calls", maxDailyCalls,
+				"window_started", windowStart.UTC().Format(time.RFC3339))
+			if handler != nil {
+				handler(calls)
+			}
+		}
 		return false
 	}
 	g.dailyCalls++
+	g.mu.Unlock()
 	return true
 }
