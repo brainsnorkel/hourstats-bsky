@@ -14,8 +14,8 @@ func (s *Store) StoreDailySentiment(ctx context.Context, dp DailySentimentDataPo
 	ttl := time.Now().UTC().Add(3 * 365 * 24 * time.Hour).Unix() // 3 years TTL
 
 	_, err := s.writeDB.ExecContext(ctx,
-		`INSERT INTO daily_sentiment (date, run_id, average_sentiment, min_sentiment, max_sentiment, q1_sentiment, median_sentiment, q3_sentiment, total_runs, total_posts, created_at, ttl)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO daily_sentiment (date, run_id, average_sentiment, min_sentiment, max_sentiment, q1_sentiment, median_sentiment, q3_sentiment, total_runs, total_posts, total_firehose_posts, created_at, ttl)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(date) DO UPDATE SET
 			run_id=excluded.run_id,
 			average_sentiment=excluded.average_sentiment,
@@ -25,10 +25,11 @@ func (s *Store) StoreDailySentiment(ctx context.Context, dp DailySentimentDataPo
 			median_sentiment=excluded.median_sentiment,
 			q3_sentiment=excluded.q3_sentiment,
 			total_runs=excluded.total_runs,
-			total_posts=excluded.total_posts`,
+			total_posts=excluded.total_posts,
+			total_firehose_posts=excluded.total_firehose_posts`,
 		dp.Date, dp.RunID, dp.AverageSentiment, dp.MinSentiment, dp.MaxSentiment,
 		dp.Q1Sentiment, dp.MedianSentiment, dp.Q3Sentiment,
-		dp.TotalRuns, dp.TotalPosts, now, ttl,
+		dp.TotalRuns, dp.TotalPosts, dp.TotalFirehosePosts, now, ttl,
 	)
 	if err != nil {
 		return fmt.Errorf("store daily sentiment: %w", err)
@@ -40,13 +41,38 @@ func (s *Store) StoreDailySentiment(ctx context.Context, dp DailySentimentDataPo
 func (s *Store) GetDailySentimentHistory(ctx context.Context, days int) ([]DailySentimentDataPoint, error) {
 	startDate := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
 
-	rows, err := s.readDB.QueryContext(ctx,
-		`SELECT date, run_id, average_sentiment, min_sentiment, max_sentiment, q1_sentiment, median_sentiment, q3_sentiment, total_runs, total_posts, created_at, ttl
+	return s.queryDailySentiment(ctx,
+		`SELECT `+dailySentimentColumns+`
 		 FROM daily_sentiment
 		 WHERE date >= ?
 		 ORDER BY date ASC`,
 		startDate,
 	)
+}
+
+// dailySentimentColumns is the column list every daily_sentiment reader
+// scans, in scanDailySentiment order.
+const dailySentimentColumns = `date, run_id, average_sentiment, min_sentiment, max_sentiment, q1_sentiment, median_sentiment, q3_sentiment, total_runs, total_posts, COALESCE(total_firehose_posts, 0), created_at, ttl`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanDailySentiment(r rowScanner) (DailySentimentDataPoint, error) {
+	var dp DailySentimentDataPoint
+	var createdStr string
+	if err := r.Scan(&dp.Date, &dp.RunID, &dp.AverageSentiment,
+		&dp.MinSentiment, &dp.MaxSentiment, &dp.Q1Sentiment,
+		&dp.MedianSentiment, &dp.Q3Sentiment, &dp.TotalRuns, &dp.TotalPosts,
+		&dp.TotalFirehosePosts, &createdStr, &dp.TTL); err != nil {
+		return dp, err
+	}
+	dp.CreatedAt = strToTime(createdStr)
+	return dp, nil
+}
+
+func (s *Store) queryDailySentiment(ctx context.Context, query string, args ...any) ([]DailySentimentDataPoint, error) {
+	rows, err := s.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query daily sentiment: %w", err)
 	}
@@ -54,18 +80,25 @@ func (s *Store) GetDailySentimentHistory(ctx context.Context, days int) ([]Daily
 
 	var results []DailySentimentDataPoint
 	for rows.Next() {
-		var dp DailySentimentDataPoint
-		var createdStr string
-		if err := rows.Scan(&dp.Date, &dp.RunID, &dp.AverageSentiment,
-			&dp.MinSentiment, &dp.MaxSentiment, &dp.Q1Sentiment,
-			&dp.MedianSentiment, &dp.Q3Sentiment, &dp.TotalRuns, &dp.TotalPosts,
-			&createdStr, &dp.TTL); err != nil {
+		dp, err := scanDailySentiment(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan daily sentiment: %w", err)
 		}
-		dp.CreatedAt = strToTime(createdStr)
 		results = append(results, dp)
 	}
 	return results, rows.Err()
+}
+
+// GetDailySentimentRange returns the daily rows from startDate to endDate
+// inclusive (YYYY-MM-DD), ordered by date. Missing days are simply absent.
+func (s *Store) GetDailySentimentRange(ctx context.Context, startDate, endDate string) ([]DailySentimentDataPoint, error) {
+	return s.queryDailySentiment(ctx,
+		`SELECT `+dailySentimentColumns+`
+		 FROM daily_sentiment
+		 WHERE date >= ? AND date <= ?
+		 ORDER BY date ASC`,
+		startDate, endDate,
+	)
 }
 
 // GetYearlySentimentData returns 365 days of data converted to YearlySparklineDataPoint.
@@ -95,26 +128,16 @@ func (s *Store) GetYearlySentimentData(ctx context.Context) ([]YearlySparklineDa
 
 // GetDailySentimentForDate retrieves the daily sentiment for a specific date.
 func (s *Store) GetDailySentimentForDate(ctx context.Context, date string) (*DailySentimentDataPoint, error) {
-	var dp DailySentimentDataPoint
-	var createdStr string
-
-	err := s.readDB.QueryRowContext(ctx,
-		`SELECT date, run_id, average_sentiment, min_sentiment, max_sentiment, q1_sentiment, median_sentiment, q3_sentiment, total_runs, total_posts, created_at, ttl
-		 FROM daily_sentiment WHERE date = ?`,
+	dp, err := scanDailySentiment(s.readDB.QueryRowContext(ctx,
+		`SELECT `+dailySentimentColumns+` FROM daily_sentiment WHERE date = ?`,
 		date,
-	).Scan(&dp.Date, &dp.RunID, &dp.AverageSentiment,
-		&dp.MinSentiment, &dp.MaxSentiment, &dp.Q1Sentiment,
-		&dp.MedianSentiment, &dp.Q3Sentiment, &dp.TotalRuns, &dp.TotalPosts,
-		&createdStr, &dp.TTL)
-
+	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("daily sentiment not found for date: %s", date)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get daily sentiment: %w", err)
 	}
-
-	dp.CreatedAt = strToTime(createdStr)
 	return &dp, nil
 }
 
