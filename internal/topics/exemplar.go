@@ -24,6 +24,16 @@ type ExemplarValidator interface {
 type ExemplarHydrator struct {
 	store     ExemplarCandidateStore
 	validator ExemplarValidator
+	// onDropped is called when every validated candidate for a topic was
+	// rejected and the topic is published without an exemplar, so the rate
+	// of that trade-off is measurable rather than inferred from logs.
+	onDropped func(topic string, candidates int)
+}
+
+// SetDroppedHandler registers the callback fired when a topic loses its
+// exemplar because no validated candidate was approved.
+func (h *ExemplarHydrator) SetDroppedHandler(fn func(topic string, candidates int)) {
+	h.onDropped = fn
 }
 
 func NewExemplarHydrator(s ExemplarCandidateStore) *ExemplarHydrator {
@@ -285,8 +295,10 @@ func (h *ExemplarHydrator) validatePicks(ctx context.Context, result []Identifie
 			continue
 		}
 
+		// Only ranks that were actually sent carry a verdict; the round-robin
+		// fill guarantees they are ranks 0..sent-1.
 		chosen := -1
-		for rank := range topK {
+		for rank := 0; rank < sent[i] && rank < len(topK); rank++ {
 			if !approved[pairRef{topic: i, rank: rank}] || used[topK[rank].Handle] {
 				continue
 			}
@@ -294,9 +306,25 @@ func (h *ExemplarHydrator) validatePicks(ctx context.Context, result []Identifie
 			break
 		}
 		if chosen < 0 {
+			// Candidates the pair budget never sent are unknown, not rejected:
+			// promote the first free one unvalidated, as the budget path does.
+			for rank := sent[i]; rank < len(topK); rank++ {
+				if used[topK[rank].Handle] {
+					continue
+				}
+				chosen = rank
+				slog.Info("exemplar: unvalidated pick", "topic", result[i].Cluster.Label,
+					"handle", topK[rank].Handle, "rank", rank+1, "reason", "validated candidates rejected, pair budget left this one unsent")
+				break
+			}
+		}
+		if chosen < 0 {
 			slog.Warn("exemplar: no candidate approved, dropping exemplar", "topic", result[i].Cluster.Label, "candidates", len(topK))
 			result[i].ExemplarURI = ""
 			result[i].ExemplarHandle = ""
+			if h.onDropped != nil {
+				h.onDropped(result[i].Cluster.Label, len(topK))
+			}
 			continue
 		}
 

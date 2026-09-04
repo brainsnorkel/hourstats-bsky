@@ -556,3 +556,33 @@ func TestHydrateExemplars_PromotedFallbackKeepsHandlesDistinct(t *testing.T) {
 		t.Errorf("second topic had no other approved candidate, got %q", result[1].ExemplarHandle)
 	}
 }
+
+func TestHydrateExemplars_DroppedHandlerFiresWhenAllRejected(t *testing.T) {
+	a := candidate("at://a/1", "alice.bsky.social", 100, "politics")
+	a.Text = "a long enough post about politics that will be rejected by the validator"
+	b := candidate("at://b/1", "bob.bsky.social", 90, "politics")
+	b.Text = "another long enough post about politics that will also be rejected"
+	s := &mockCandidateStore{candidatesFn: func([]string) []store.ExemplarCandidate {
+		return []store.ExemplarCandidate{a, b}
+	}}
+	hydrator := NewExemplarHydrator(s)
+	hydrator.SetValidator(&mockValidator{rejectText: map[string]bool{a.Text: true, b.Text: true}})
+
+	var dropped []string
+	var droppedCandidates int
+	hydrator.SetDroppedHandler(func(topic string, candidates int) {
+		dropped = append(dropped, topic)
+		droppedCandidates = candidates
+	})
+
+	result, err := hydrator.HydrateExemplars(context.Background(), []IdentifiedTopic{topicOf("Politics", []string{"politics"})}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result[0].ExemplarHandle != "" || result[0].ExemplarURI != "" {
+		t.Errorf("rejected candidates should leave no exemplar, got %q", result[0].ExemplarHandle)
+	}
+	if len(dropped) != 1 || dropped[0] != "Politics" || droppedCandidates != 2 {
+		t.Errorf("dropped handler = %v (%d candidates), want [Politics] with 2", dropped, droppedCandidates)
+	}
+}

@@ -487,16 +487,22 @@ func TestMapVerdicts(t *testing.T) {
 			want:    []bool{false, true, false},
 		},
 		{
-			name:    "partial id set falls back to order",
+			name:    "partial id set is unvalidated",
 			results: []exemplarValidationResult{{ID: 1, IsRelevant: false}, {IsRelevant: true}, {ID: 3, IsRelevant: false}},
 			n:       3,
-			want:    []bool{false, true, false},
+			wantErr: true,
 		},
 		{
-			name:    "duplicate ids fall back to order",
+			name:    "duplicate ids are unvalidated",
 			results: []exemplarValidationResult{{ID: 1, IsRelevant: false}, {ID: 1, IsRelevant: true}, {ID: 3, IsRelevant: true}},
 			n:       3,
-			want:    []bool{false, true, true},
+			wantErr: true,
+		},
+		{
+			name:    "scrambled ids are unvalidated",
+			results: []exemplarValidationResult{{ID: 2, IsRelevant: false}, {ID: 0, IsRelevant: true}, {ID: 1, IsRelevant: true}},
+			n:       3,
+			wantErr: true,
 		},
 		{
 			name:    "missing verdicts are unvalidated",
