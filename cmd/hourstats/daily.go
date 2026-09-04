@@ -80,9 +80,13 @@ func runDailyAggregation(ctx context.Context, db *store.Store) {
 // Report rollups (weekly and monthly report inputs)
 // ---------------------------------------------------------------------------
 
-// reportRollupRetention keeps topic_daily and daily_top_post long enough for
-// an annual report.
+// reportRollupRetention keeps topic_daily, daily_top_post and language_daily
+// long enough for an annual report.
 const reportRollupRetention = 400 * 24 * time.Hour
+
+// languageCountsRetention keeps the per-cycle language rows long enough to
+// re-run a daily rollup after a missed midnight.
+const languageCountsRetention = 8 * 24 * time.Hour
 
 // runReportRollups condenses the last three finished days of topic_snapshots
 // (purged after 48h) and runs into their long-lived rollups, backfills
@@ -103,6 +107,13 @@ func runReportRollups(ctx context.Context, db *store.Store, now time.Time) {
 			slog.Info("topic daily rollup complete", "date", date, "topics", topics)
 		}
 
+		langs, err := db.RollupLanguageDaily(ctx, date)
+		if err != nil {
+			slog.Error("language daily rollup failed", "date", date, "error", err)
+		} else {
+			slog.Info("language daily rollup complete", "date", date, "languages", langs)
+		}
+
 		top, err := db.GetTopPostForDate(ctx, date)
 		if err != nil {
 			slog.Warn("top post lookup for rollup failed", "date", date, "error", err)
@@ -116,6 +127,12 @@ func runReportRollups(ctx context.Context, db *store.Store, now time.Time) {
 	}
 
 	backfillDailyTopPosts(ctx, db, now)
+
+	if purged, err := db.PurgeLanguageCounts(ctx, languageCountsRetention); err != nil {
+		slog.Warn("purge language counts failed", "error", err)
+	} else if purged > 0 {
+		slog.Info("purged hourly language counts", "rows", purged)
+	}
 
 	purged, err := db.PurgeReportRollups(ctx, reportRollupRetention)
 	if err != nil {

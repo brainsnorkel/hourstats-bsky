@@ -51,6 +51,11 @@ type Collector struct {
 	lastAnalysisFirehose atomic.Int64 // cursor for FirehoseSinceAnalysis
 	lastPostReceived     atomic.Int64 // Unix timestamp of last post received
 
+	// Per-language firehose counts since the last analysis cycle consumed
+	// them, keyed by primary language subtag ("en", "pt", "und").
+	langMu     sync.Mutex
+	langCounts map[string]int64
+
 	// Dropped-post counter — incremented when the write buffer is full
 	droppedPosts atomic.Int64
 
@@ -143,6 +148,37 @@ func (c *Collector) SetConsumer(provider ConsumerStatsProvider) {
 func (c *Collector) IncrementFirehosePost() {
 	c.firehosePosts.Add(1)
 	c.lastPostReceived.Store(time.Now().Unix())
+}
+
+// maxLanguageKeys bounds the per-cycle language map; tags beyond it fold
+// into "other" so a stream of junk tags cannot grow memory.
+const maxLanguageKeys = 256
+
+// IncrementLanguage counts one firehose post under lang.
+func (c *Collector) IncrementLanguage(lang string) {
+	c.langMu.Lock()
+	defer c.langMu.Unlock()
+	if c.langCounts == nil {
+		c.langCounts = make(map[string]int64, 64)
+	}
+	if _, ok := c.langCounts[lang]; !ok && len(c.langCounts) >= maxLanguageKeys {
+		lang = "other"
+	}
+	c.langCounts[lang]++
+}
+
+// LanguagesSinceAnalysis returns the per-language counts accumulated since
+// the previous call and starts a fresh map. Only the analysis cycle consumes
+// these, so a swap is safe.
+func (c *Collector) LanguagesSinceAnalysis() map[string]int64 {
+	c.langMu.Lock()
+	defer c.langMu.Unlock()
+	out := c.langCounts
+	c.langCounts = nil
+	if out == nil {
+		out = map[string]int64{}
+	}
+	return out
 }
 
 // IncrementEnglishPost increments the English post counter and either root or reply counter.

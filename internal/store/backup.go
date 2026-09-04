@@ -38,6 +38,7 @@ var essentialTables = []string{
 	// runs have been purged.
 	"topic_daily",
 	"daily_top_post",
+	"language_daily",
 }
 
 func (s *Store) Backup(ctx context.Context, dataDir, profile string, retainDays int) (string, error) {

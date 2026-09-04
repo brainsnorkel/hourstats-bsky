@@ -33,6 +33,55 @@ type monthlyReport struct {
 	// month has one; nil otherwise, which drops the share line and the
 	// firehose line on the chart rather than drawing a misleading partial.
 	Firehose map[string]int
+	// Languages holds each day's firehose split by primary language subtag
+	// when every day of the month has one; nil otherwise, which keeps the
+	// chart on its single-line view.
+	Languages map[string]map[string]int
+}
+
+// languageShares returns the month's non-English languages that get their
+// own band, largest first, each with its share of the month's firehose.
+type languageShare struct {
+	Name  string
+	Share float64
+}
+
+func (r monthlyReport) languageShares() []languageShare {
+	if r.Languages == nil {
+		return nil
+	}
+	pts := toDailyVolumePoints(r)
+	total := 0
+	for _, p := range pts {
+		for _, n := range p.Languages {
+			total += n
+		}
+	}
+	if total == 0 {
+		return nil
+	}
+	var out []languageShare
+	for _, s := range sparkline.LanguageBreakdown(pts) {
+		if s.Code == "en" || s.Code == "other" {
+			continue
+		}
+		out = append(out, languageShare{Name: s.Name, Share: float64(s.Total) / float64(total) * 100})
+	}
+	return out
+}
+
+// languageLine renders "Portuguese 18%, Japanese 12%, Spanish 6%" for the
+// post and alt text, or "" without language data.
+func (r monthlyReport) languageLine() string {
+	shares := r.languageShares()
+	if len(shares) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(shares))
+	for _, s := range shares {
+		parts = append(parts, fmt.Sprintf("%s %.0f%%", s.Name, s.Share))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (r monthlyReport) monthLabel() string { return r.First.Format("January 2006") }
@@ -115,6 +164,12 @@ func buildMonthlyVolumeText(r monthlyReport) string {
 	if fh := r.firehoseTotal(); fh >= total && fh > 0 {
 		lines = append(lines, fmt.Sprintf("English share of the firehose: %.0f%% of %s", float64(total)/float64(fh)*100, compactCount(fh)))
 	}
+	if langs := r.languageLine(); langs != "" {
+		withLangs := append(append([]string{}, lines...), "Next: "+langs)
+		if postLength(strings.Join(withLangs, "\n")) <= blueskyPostLimit {
+			lines = withLangs
+		}
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -157,7 +212,9 @@ func buildMonthlyVolumeAltText(r monthlyReport) string {
 	hi, lo := busiestQuietest(r.Days)
 	fh := r.firehoseTotal()
 	text := fmt.Sprintf("Line chart of daily English posts analysed on Bluesky in %s", r.monthLabel())
-	if fh > 0 {
+	if r.Languages != nil {
+		text += ", over a stacked area of the full firehose by language"
+	} else if fh > 0 {
 		text += ", with the full firehose as a softer line behind it"
 	}
 	text += fmt.Sprintf(". %s English posts over %d days, %s per day on average",
@@ -170,6 +227,9 @@ func buildMonthlyVolumeAltText(r monthlyReport) string {
 		dayLabel(r.Days[lo].Date), compactCount(r.Days[lo].TotalPosts))
 	if fh >= total && fh > 0 {
 		text += fmt.Sprintf(" English posts were %.0f%% of the %s firehose.", float64(total)/float64(fh)*100, compactCount(fh))
+	}
+	if langs := r.languageLine(); langs != "" {
+		text += " The firehose is stacked by language behind the line; the largest after English were " + langs + "."
 	}
 	return text
 }
@@ -198,7 +258,7 @@ func toDailyVolumePoints(r monthlyReport) []sparkline.DailyVolumePoint {
 		if err != nil {
 			continue
 		}
-		out = append(out, sparkline.DailyVolumePoint{Date: t, ENPosts: d.TotalPosts, TotalPosts: r.Firehose[d.Date]})
+		out = append(out, sparkline.DailyVolumePoint{Date: t, ENPosts: d.TotalPosts, TotalPosts: r.Firehose[d.Date], Languages: r.Languages[d.Date]})
 	}
 	return out
 }
@@ -245,7 +305,33 @@ func loadMonthlyReport(ctx context.Context, db *store.Store, now time.Time) (mon
 		r.PrevDays = prev
 	}
 	r.Firehose = completeFirehose(r)
+	r.Languages = completeLanguages(ctx, db, r)
 	return r, true
+}
+
+// completeLanguages returns each day's language split when every day of the
+// month has one, and nil otherwise (the chart then stays on its line view).
+func completeLanguages(ctx context.Context, db *store.Store, r monthlyReport) map[string]map[string]int {
+	rows, err := db.GetLanguageDailyRange(ctx, r.First.Format(dateFormat), r.Last.Format(dateFormat))
+	if err != nil {
+		slog.Warn("monthly report: language rows failed, showing single line", "error", err)
+		return nil
+	}
+	byDay := map[string]map[string]int{}
+	for _, row := range rows {
+		if byDay[row.Date] == nil {
+			byDay[row.Date] = map[string]int{}
+		}
+		byDay[row.Date][row.Lang] += row.Count
+	}
+	for _, d := range r.Days {
+		if len(byDay[d.Date]) == 0 {
+			slog.Info("monthly report: language split incomplete, showing single line",
+				"month", r.First.Format("2006-01"), "first_missing", d.Date, "days_with_data", len(byDay))
+			return nil
+		}
+	}
+	return byDay
 }
 
 // runMonthlyReport posts the candlestick root and the volume reply for the
