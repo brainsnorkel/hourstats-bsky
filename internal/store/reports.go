@@ -260,7 +260,7 @@ func (s *Store) GetEarliestRunDate(ctx context.Context) (string, error) {
 func (s *Store) PurgeReportRollups(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan).Format("2006-01-02")
 	var total int64
-	for _, table := range []string{"topic_daily", "daily_top_post"} {
+	for _, table := range []string{"topic_daily", "daily_top_post", "language_daily"} {
 		result, err := s.writeDB.ExecContext(ctx, `DELETE FROM `+table+` WHERE date < ?`, cutoff)
 		if err != nil {
 			return total, fmt.Errorf("purge %s: %w", table, err)

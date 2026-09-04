@@ -96,6 +96,13 @@ type DailySentimentDataPoint struct {
 	TTL                int64
 }
 
+// LanguageDailyRow is one language's firehose post count for one UTC day.
+type LanguageDailyRow struct {
+	Date  string
+	Lang  string
+	Count int
+}
+
 // TopicDailyRow is one topic's presence in one UTC day's hourly trending
 // snapshots, rolled up by the daily cycle from topic_snapshots.
 type TopicDailyRow struct {
@@ -520,6 +527,21 @@ func (s *Store) migrate() error {
 			best_rank INTEGER NOT NULL,
 			max_authors INTEGER NOT NULL,
 			PRIMARY KEY (date, topic_id)
+		)`,
+		// Firehose language mix: per analysis cycle (8 days) and per day (400
+		// days), keyed by primary language subtag. Written by the analysis and
+		// daily cycles; read by the monthly volume chart.
+		`CREATE TABLE IF NOT EXISTS language_counts (
+			timestamp TEXT NOT NULL,
+			lang TEXT NOT NULL,
+			count INTEGER NOT NULL,
+			PRIMARY KEY (timestamp, lang)
+		)`,
+		`CREATE TABLE IF NOT EXISTS language_daily (
+			date TEXT NOT NULL,
+			lang TEXT NOT NULL,
+			count INTEGER NOT NULL,
+			PRIMARY KEY (date, lang)
 		)`,
 		`CREATE TABLE IF NOT EXISTS daily_top_post (
 			date TEXT PRIMARY KEY,

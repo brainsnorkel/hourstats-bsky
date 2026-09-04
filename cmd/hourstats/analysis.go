@@ -301,6 +301,15 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	if err := db.StoreSentimentDataPoint(ctx, sdp); err != nil {
 		slog.Error("store sentiment data point failed", "error", err)
 	}
+	// Language mix of the firehose since the previous cycle, keyed to the
+	// same timestamp as the sentiment row so the daily rollup lines up.
+	if langs := collector.LanguagesSinceAnalysis(); len(langs) > 0 {
+		if err := db.StoreLanguageCounts(ctx, sdp.Timestamp, langs); err != nil {
+			slog.Error("store language counts failed", "error", err)
+		} else {
+			slog.Info("language counts stored", "run_id", runID, "languages", len(langs))
+		}
+	}
 
 	if lowConfidence {
 		slog.Warn("skipping post due to low confidence",

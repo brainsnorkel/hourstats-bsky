@@ -106,8 +106,16 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 	drops := &dropLimiter{window: dropWarnWindow}
 
 	cfg := jetstream.ConsumerConfig{
+		// Posts the bytes-level pre-filter drops never reach OnPost, so they
+		// are counted here; without this the firehose total is only English
+		// plus untagged posts.
+		OnEarlyReject: func(firstLang string) {
+			collector.IncrementFirehosePost()
+			collector.IncrementLanguage(primaryLang(firstLang))
+		},
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
 			collector.IncrementFirehosePost()
+			collector.IncrementLanguage(postLang(rec.Langs))
 
 			if strings.TrimSpace(rec.Text) == "" {
 				return
@@ -185,6 +193,41 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		_ = collector.LogEvent(ctx, "consumer_restart", fmt.Sprintf("unexpected exit: %v", err))
 		slog.Error("jetstream consumer exited unexpectedly, restarting immediately", "error", err)
 	}
+}
+
+// undeterminedLang is the bucket for posts with no usable language tag
+// (BCP-47 "und").
+const undeterminedLang = "und"
+
+// primaryLang reduces a BCP-47 tag to its lower-case primary subtag ("pt-BR"
+// to "pt"). Anything that is not two or three ASCII letters becomes "und".
+func primaryLang(tag string) string {
+	tag = strings.TrimSpace(tag)
+	if i := strings.IndexAny(tag, "-_"); i >= 0 {
+		tag = tag[:i]
+	}
+	if len(tag) < 2 || len(tag) > 3 {
+		return undeterminedLang
+	}
+	for _, r := range tag {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+			return undeterminedLang
+		}
+	}
+	return strings.ToLower(tag)
+}
+
+// postLang is the language a post is counted under: "en" whenever the
+// English filter would accept it, otherwise its first tag's primary subtag.
+// This keeps the "en" bucket aligned with the posts the bot analyses.
+func postLang(langs []string) string {
+	if isEnglish(langs) {
+		return "en"
+	}
+	if len(langs) == 0 {
+		return undeterminedLang
+	}
+	return primaryLang(langs[0])
 }
 
 func isEnglish(langs []string) bool {

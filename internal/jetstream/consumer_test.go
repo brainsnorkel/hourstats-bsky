@@ -444,3 +444,23 @@ func TestConsumer_GetStatsReport(t *testing.T) {
 		t.Errorf("ConnectionUptime = %v, want ~5s", report.ConnectionUptime)
 	}
 }
+
+func TestScanFrameLang(t *testing.T) {
+	cases := []struct {
+		frame      string
+		wantReject bool
+		wantLang   string
+	}{
+		{`{"kind":"commit","commit":{"operation":"create","collection":"app.bsky.feed.post","record":{"langs":["pt-BR"],"text":"oi"}}}`, true, "pt-BR"},
+		{`{"kind":"commit","commit":{"operation":"create","collection":"app.bsky.feed.post","record":{"langs":["ja","en"],"text":"x"}}}`, false, "ja"},
+		{`{"kind":"commit","commit":{"operation":"create","collection":"app.bsky.feed.post","record":{"langs":[],"text":"x"}}}`, true, ""},
+		{`{"kind":"commit","commit":{"operation":"create","collection":"app.bsky.feed.post","record":{"text":"no langs"}}}`, false, ""},
+		{`{"kind":"commit","commit":{"operation":"create","collection":"app.bsky.feed.like","record":{"subject":{}}}}`, false, ""},
+	}
+	for _, tc := range cases {
+		reject, lang := scanFrameLang([]byte(tc.frame))
+		if reject != tc.wantReject || lang != tc.wantLang {
+			t.Errorf("scanFrameLang(%s) = %v, %q; want %v, %q", tc.frame[60:110], reject, lang, tc.wantReject, tc.wantLang)
+		}
+	}
+}

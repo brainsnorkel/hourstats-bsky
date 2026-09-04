@@ -3,6 +3,7 @@ package sparkline
 import (
 	"bytes"
 	"fmt"
+	"image/color"
 	"math"
 	"time"
 
@@ -14,6 +15,10 @@ type DailyVolumePoint struct {
 	Date       time.Time
 	ENPosts    int // English posts analysed
 	TotalPosts int // all firehose posts (0 when not tracked)
+	// Languages is the firehose split by primary language subtag ("en",
+	// "pt", "und" ...). When every day has one the chart stacks the top
+	// languages instead of drawing the firehose as a single line.
+	Languages map[string]int
 }
 
 // MonthlyVolumeMeta carries header figures not derivable from the points.
@@ -33,8 +38,31 @@ func NewMonthlyVolumeGenerator() *MonthlyVolumeGenerator {
 	return &MonthlyVolumeGenerator{width: 1200, height: 800}
 }
 
+// hasLanguagesEveryDay reports whether the stacked language view can be
+// drawn: a month with even one untracked day falls back to the line view
+// rather than showing a false dip.
+func hasLanguagesEveryDay(days []DailyVolumePoint) bool {
+	for _, d := range days {
+		if len(d.Languages) == 0 {
+			return false
+		}
+	}
+	return len(days) > 0
+}
+
+// languageDayTotal is the firehose total for a day from its language split.
+func languageDayTotal(d DailyVolumePoint) int {
+	n := 0
+	for _, v := range d.Languages {
+		n += v
+	}
+	return n
+}
+
 // GenerateMonthlyVolumeChart draws English posts per day as a bold line with
-// day markers, and the full firehose as a soft line behind it when tracked.
+// day markers. Behind it sits either the full firehose as a soft line, or,
+// when every day carries a language split, a stacked area of English plus
+// the largest languages with the remainder folded into "other".
 func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePoint, meta MonthlyVolumeMeta) ([]byte, error) {
 	if len(days) == 0 {
 		return nil, fmt.Errorf("no daily volume points provided")
@@ -47,16 +75,27 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 	dc.SetColor(themeSurface)
 	dc.Clear()
 
+	stacked := hasLanguagesEveryDay(days)
+	var series []LanguageSeries
+	if stacked {
+		series = LanguageBreakdown(days)
+		stacked = len(series) > 0
+	}
+
 	enTotal, allTotal, maxV := 0, 0, 0.0
 	busiest, quietest := 0, 0
 	hasTotal := false
 	for i, d := range days {
 		enTotal += d.ENPosts
-		allTotal += d.TotalPosts
-		if d.TotalPosts > 0 {
+		total := d.TotalPosts
+		if stacked {
+			total = languageDayTotal(d)
+		}
+		allTotal += total
+		if total > 0 {
 			hasTotal = true
 		}
-		maxV = math.Max(maxV, float64(max(d.ENPosts, d.TotalPosts)))
+		maxV = math.Max(maxV, float64(max(d.ENPosts, total)))
 		if d.ENPosts > days[busiest].ENPosts {
 			busiest = i
 		}
@@ -65,12 +104,17 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		}
 	}
 
+	// The stacked view needs a two-row legend, so its plot ends higher.
+	footer := 84 * s
+	if stacked {
+		footer = 112 * s
+	}
 	first, last := days[0].Date, days[len(days)-1].Date
 	plot := plotArea{
 		x:   92 * s,
 		y:   186 * s,
 		w:   W - 92*s - 36*s,
-		h:   H - 186*s - 84*s,
+		h:   H - 186*s - footer,
 		t0:  first.Truncate(24 * time.Hour),
 		t1:  last.Truncate(24 * time.Hour).Add(24 * time.Hour),
 		rng: countRange(maxV),
@@ -89,9 +133,13 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 	if hasTotal && allTotal > 0 {
 		tiles = append(tiles, statTile{Label: "English share", Value: fmt.Sprintf("%.0f%%", float64(enTotal)/float64(allTotal)*100), Sub: "of " + countText(float64(allTotal))})
 	}
+	subtitle := fmt.Sprintf("%s – %s · English posts analysed per day · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
+	if stacked {
+		subtitle = fmt.Sprintf("%s – %s · firehose posts per day by language, English analysed as the line · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
+	}
 	spec := seriesChartSpec{
 		Title:     "Bluesky post volume, " + meta.MonthLabel,
-		Subtitle:  fmt.Sprintf("%s – %s · English posts analysed per day · UTC", first.Format("2 Jan"), last.Format("2 Jan")),
+		Subtitle:  subtitle,
 		HeroLabel: "English posts",
 		HeroValue: countText(float64(enTotal)),
 		HeroSub:   heroSub,
@@ -102,9 +150,16 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 	drawHeader(dc, spec, s, W)
 	drawCountGrid(dc, plot, s)
 	drawWeekAxis(dc, plot, s)
-	drawVolumeLines(dc, plot, days, hasTotal, s)
-	drawVolumeExtremes(dc, plot, days, busiest, quietest, s)
-	drawVolumeFooter(dc, spec, hasTotal, s, W, H)
+	if stacked {
+		drawLanguageStack(dc, plot, days, series, s)
+		drawAnalysedLine(dc, plot, days, s)
+		drawVolumeExtremes(dc, plot, days, busiest, quietest, themeInkPrimary, s)
+		drawLanguageFooter(dc, spec, series, allTotal, s, W, H)
+	} else {
+		drawVolumeLines(dc, plot, days, hasTotal, s)
+		drawVolumeExtremes(dc, plot, days, busiest, quietest, themePositive, s)
+		drawVolumeFooter(dc, spec, hasTotal, s, W, H)
+	}
 
 	var buf bytes.Buffer
 	if err := dc.EncodePNG(&buf); err != nil {
@@ -196,7 +251,147 @@ func drawVolumeLines(dc *gg.Context, p plotArea, days []DailyVolumePoint, hasTot
 	dc.ResetClip()
 }
 
-func drawVolumeExtremes(dc *gg.Context, p plotArea, days []DailyVolumePoint, busiest, quietest int, s float64) {
+// drawLanguageStack fills one band per language series, bottom to top in
+// series order, with a 2px surface gap between bands so adjacent fills never
+// touch.
+func drawLanguageStack(dc *gg.Context, p plotArea, days []DailyVolumePoint, series []LanguageSeries, s float64) {
+	if len(days) < 2 {
+		return
+	}
+	shown := map[string]bool{}
+	for _, sr := range series {
+		shown[sr.Code] = true
+	}
+	dc.DrawRectangle(p.x-2*s, p.y-2*s, p.w+4*s, p.h+4*s)
+	dc.Clip()
+
+	lower := make([]float64, len(days))
+	upper := make([]float64, len(days))
+	for _, sr := range series {
+		for i, d := range days {
+			upper[i] = lower[i] + float64(languageValue(d, sr, shown))
+		}
+		// Band polygon: along the upper edge, back along the lower edge.
+		for i, d := range days {
+			x, y := candleCenter(p, d.Date), p.yAt(upper[i])
+			if i == 0 {
+				dc.MoveTo(x, y)
+			} else {
+				dc.LineTo(x, y)
+			}
+		}
+		for i := len(days) - 1; i >= 0; i-- {
+			dc.LineTo(candleCenter(p, days[i].Date), p.yAt(lower[i]))
+		}
+		dc.ClosePath()
+		dc.SetColor(sr.Color)
+		dc.Fill()
+
+		// Surface-coloured seam between this band and the next.
+		dc.SetColor(themeSurface)
+		dc.SetLineWidth(2 * s)
+		for i, d := range days {
+			x, y := candleCenter(p, d.Date), p.yAt(upper[i])
+			if i == 0 {
+				dc.MoveTo(x, y)
+			} else {
+				dc.LineTo(x, y)
+			}
+		}
+		dc.Stroke()
+		copy(lower, upper)
+	}
+	dc.ResetClip()
+}
+
+// drawAnalysedLine draws the English-posts-analysed series in ink with a
+// surface halo so it reads over any band colour.
+func drawAnalysedLine(dc *gg.Context, p plotArea, days []DailyVolumePoint, s float64) {
+	dc.DrawRectangle(p.x-2*s, p.y-2*s, p.w+4*s, p.h+4*s)
+	dc.Clip()
+	dc.SetLineCap(gg.LineCapRound)
+	dc.SetLineJoin(gg.LineJoinRound)
+	for pass, c := range []color.RGBA{themeSurface, themeInkPrimary} {
+		width := 3 * s
+		if pass == 0 {
+			width = 7 * s
+		}
+		dc.SetColor(c)
+		dc.SetLineWidth(width)
+		for i, d := range days {
+			x, y := candleCenter(p, d.Date), p.yAt(float64(d.ENPosts))
+			if i == 0 {
+				dc.MoveTo(x, y)
+			} else {
+				dc.LineTo(x, y)
+			}
+		}
+		dc.Stroke()
+	}
+	for _, d := range days {
+		drawDot(dc, candleCenter(p, d.Date), p.yAt(float64(d.ENPosts)), 3.5*s, themeInkPrimary, s)
+	}
+	dc.ResetClip()
+}
+
+// drawLanguageFooter lays out the language legend (filled swatch, name and
+// share of the month) plus the analysed-line key, wrapping onto a second row
+// when the entries do not fit.
+func drawLanguageFooter(dc *gg.Context, spec seriesChartSpec, series []LanguageSeries, allTotal int, s, W, H float64) {
+	setFont(dc, 15*s, false)
+	left, right := 36*s, W-36*s
+	if spec.Brand != "" {
+		bw, _ := dc.MeasureString(spec.Brand)
+		right -= bw + 30*s
+	}
+	rows := [][2]float64{{H - 50*s, 0}, {H - 26*s, 0}}
+	row, x := 0, left
+
+	place := func(width float64) (float64, float64, bool) {
+		if x+width > right && row < len(rows)-1 && x > left {
+			row++
+			x = left
+		}
+		if x+width > right {
+			return 0, 0, false
+		}
+		px, py := x, rows[row][0]
+		x += width + 22*s
+		return px, py, true
+	}
+	for _, sr := range series {
+		label := sr.Name
+		if allTotal > 0 {
+			label = fmt.Sprintf("%s %.0f%%", sr.Name, float64(sr.Total)/float64(allTotal)*100)
+		}
+		lw, _ := dc.MeasureString(label)
+		px, py, ok := place(16*s + 8*s + lw)
+		if !ok {
+			break
+		}
+		dc.SetColor(sr.Color)
+		dc.DrawRoundedRectangle(px, py-12*s, 16*s, 14*s, 2*s)
+		dc.Fill()
+		dc.SetColor(themeInkMuted)
+		dc.DrawStringAnchored(label, px+24*s, py, 0, 0)
+	}
+	label := "English posts analysed, per day"
+	lw, _ := dc.MeasureString(label)
+	if px, py, ok := place(26*s + 8*s + lw); ok {
+		dc.SetColor(themeInkPrimary)
+		dc.SetLineWidth(3 * s)
+		dc.DrawLine(px, py-5*s, px+26*s, py-5*s)
+		dc.Stroke()
+		dc.SetColor(themeInkMuted)
+		dc.DrawStringAnchored(label, px+34*s, py, 0, 0)
+	}
+	if spec.Brand != "" {
+		dc.SetColor(themeInkMuted)
+		dc.DrawStringAnchored(spec.Brand, W-36*s, H-26*s, 1, 0)
+	}
+}
+
+func drawVolumeExtremes(dc *gg.Context, p plotArea, days []DailyVolumePoint, busiest, quietest int, dot color.RGBA, s float64) {
 	if busiest == quietest {
 		return
 	}
@@ -204,7 +399,7 @@ func drawVolumeExtremes(dc *gg.Context, p plotArea, days []DailyVolumePoint, bus
 	mark := func(idx int, prefix string, above bool) {
 		d := days[idx]
 		x, y := candleCenter(p, d.Date), p.yAt(float64(d.ENPosts))
-		drawDot(dc, x, y, 5.5*s, themePositive, s)
+		drawDot(dc, x, y, 5.5*s, dot, s)
 		label := fmt.Sprintf("%s %s", prefix, countText(float64(d.ENPosts)))
 		lw, _ := dc.MeasureString(label)
 		lx := math.Min(math.Max(x, p.x+lw/2+4*s), p.right()-lw/2-4*s)

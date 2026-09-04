@@ -80,6 +80,11 @@ type ConsumerConfig struct {
 	SaveCursor     CursorSaver
 	LoadCursor     CursorLoader
 
+	// OnEarlyReject is called, with the frame's first language tag, for each
+	// post create the bytes-level pre-filter drops before parsing. It lets the
+	// caller keep counting those posts in firehose and per-language totals.
+	OnEarlyReject func(firstLang string)
+
 	// CursorRewind is subtracted from the cursor on every (re)connect.
 	// Zero selects DefaultCursorRewind; a negative value disables rewinding.
 	CursorRewind time.Duration
@@ -469,8 +474,11 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 		// creates with no English language tag, before paying for json.Unmarshal.
 		// Non-post events (identity, account, like, etc.) have no "langs" field
 		// and are always passed through to the full parse path.
-		if frameIsNonEnglishPost(message) {
+		if reject, firstLang := scanFrameLang(message); reject {
 			c.stats.EarlyRejectedNonEnglish.Add(1)
+			if c.cfg.OnEarlyReject != nil {
+				c.cfg.OnEarlyReject(firstLang)
+			}
 			continue
 		}
 
@@ -558,18 +566,26 @@ func (c *Consumer) persistCursorNow(ctx context.Context) {
 //
 // The scan is bounded so it cannot run past the end of the slice.
 func frameIsNonEnglishPost(data []byte) bool {
+	reject, _ := scanFrameLang(data)
+	return reject
+}
+
+// scanFrameLang is frameIsNonEnglishPost plus the first language tag seen in
+// the frame's langs array, so a rejected post can still be attributed to its
+// language. firstLang is "" when no tag was read.
+func scanFrameLang(data []byte) (reject bool, firstLang string) {
 	// Guard 1: must look like a feed.post create.
 	if !bytes.Contains(data, []byte(`"app.bsky.feed.post"`)) {
-		return false
+		return false, ""
 	}
 	if !bytes.Contains(data, []byte(`"create"`)) {
-		return false
+		return false, ""
 	}
 
 	// Guard 2: must have a langs field.
 	langsIdx := bytes.Index(data, []byte(`"langs":`))
 	if langsIdx < 0 {
-		return false
+		return false, ""
 	}
 
 	// Advance past `"langs":` (8 bytes) and skip whitespace/array-open.
@@ -579,7 +595,7 @@ func frameIsNonEnglishPost(data []byte) bool {
 	}
 	if pos >= len(data) || data[pos] != '[' {
 		// Unexpected structure — keep the frame.
-		return false
+		return false, ""
 	}
 	pos++ // skip '['
 
@@ -592,7 +608,7 @@ func frameIsNonEnglishPost(data []byte) bool {
 		switch data[pos] {
 		case ']':
 			// Empty array or exhausted — no English tag found; reject.
-			return true
+			return true, firstLang
 		case '"':
 			// Found a string token; read until closing quote (ignoring escapes
 			// for this quick scan — lang tags never contain backslashes).
@@ -602,9 +618,12 @@ func frameIsNonEnglishPost(data []byte) bool {
 				pos++
 			}
 			tag := data[start:pos]
+			if firstLang == "" {
+				firstLang = string(tag)
+			}
 			// Accept "en" exactly or any "en-*" variant.
 			if bytes.Equal(tag, []byte("en")) || bytes.HasPrefix(tag, []byte("en-")) {
-				return false // has English tag — keep frame
+				return false, firstLang // has English tag — keep frame
 			}
 			// Non-English tag found; continue scanning (there may be more tags).
 			if pos < limit {
@@ -616,5 +635,5 @@ func frameIsNonEnglishPost(data []byte) bool {
 	}
 
 	// Scanned limit without finding an English tag — reject.
-	return true
+	return true, firstLang
 }
