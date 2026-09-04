@@ -141,7 +141,7 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 	}
 	subtitle := fmt.Sprintf("%s – %s · English posts analysed per day · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
 	if stacked {
-		subtitle = fmt.Sprintf("%s – %s · firehose posts per day by language, English analysed as the line · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
+		subtitle = fmt.Sprintf("%s – %s · firehose posts per day by language tag, English posts analysed as the line · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
 	}
 	spec := seriesChartSpec{
 		Title:     "Bluesky post volume, " + meta.MonthLabel,

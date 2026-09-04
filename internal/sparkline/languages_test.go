@@ -43,7 +43,7 @@ func TestLanguageBreakdown(t *testing.T) {
 		series[3].Color != languagePalette[5] || series[4].Color != languagePalette[3] || series[5].Color != languagePalette[4] || series[6].Color != languageOther {
 		t.Errorf("colour assignment: %v", series)
 	}
-	if series[2].Name != "Japanese" || series[3].Name != "untagged" {
+	if series[0].Name != "Marked English" || series[2].Name != "Japanese" || series[3].Name != "untagged" {
 		t.Errorf("names: %s %s", series[2].Name, series[3].Name)
 	}
 	other := series[6].Total
