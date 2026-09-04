@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -250,6 +251,23 @@ func (s *Store) GetRecentTopicSnapshots(ctx context.Context, since string, limit
 		result = append(result, r)
 	}
 	return result, rows.Err()
+}
+
+// GetTopicLabelAt returns the label of the topic holding rank in the snapshot
+// written at exactly snapshotTime, or "" when there is no such row.
+func (s *Store) GetTopicLabelAt(ctx context.Context, snapshotTime string, rank int) (string, error) {
+	var label string
+	err := s.readDB.QueryRowContext(ctx,
+		`SELECT label FROM topic_snapshots WHERE snapshot_time = ? AND rank = ? LIMIT 1`,
+		snapshotTime, rank,
+	).Scan(&label)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("query topic label at %s rank %d: %w", snapshotTime, rank, err)
+	}
+	return label, nil
 }
 
 func (s *Store) PurgeTopicSnapshots(ctx context.Context, cutoff string) (int64, error) {

@@ -41,7 +41,7 @@ func (sg *SparklineGenerator) calculateYRange(dataPoints []state.SentimentDataPo
 	for i, dp := range dataPoints {
 		values[i] = dp.NetSentimentPercent
 	}
-	r := fitRange(values, 0.75)
+	r := fitRange(values, 0.75, rangePadFraction)
 	return YRange{
 		Min:    r.Min,
 		Max:    r.Max,
@@ -94,7 +94,7 @@ func (sg *SparklineGenerator) GenerateSentimentSparkline(dataPoints []state.Sent
 	points := make([]seriesPoint, len(dataPoints))
 	values := make([]float64, len(dataPoints))
 	for i, dp := range dataPoints {
-		points[i] = seriesPoint{T: dp.Timestamp, V: dp.NetSentimentPercent}
+		points[i] = seriesPoint{T: dp.Timestamp, V: dp.NetSentimentPercent, Note: dp.TopTopic}
 		values[i] = dp.NetSentimentPercent
 	}
 

@@ -78,6 +78,64 @@ type topicAnalysisOutcome struct {
 	err          error
 }
 
+// topicWaitBeforeSparkline bounds how long the cycle waits for topic analysis
+// before rendering the sparkline. Topic analysis overlaps hydration and in
+// production finishes minutes before this point, so the wait is normally
+// zero; the bound keeps a slow grouping call from ever delaying the chart.
+const topicWaitBeforeSparkline = 60 * time.Second
+
+// awaitTopicOutcome receives the topic analysis outcome, giving up after
+// timeout or when ctx is cancelled. The second result reports whether an
+// outcome was received; on false the value stays in the channel for a later
+// receive.
+func awaitTopicOutcome(ctx context.Context, done <-chan topicAnalysisOutcome, timeout time.Duration) (topicAnalysisOutcome, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case outcome := <-done:
+		return outcome, true
+	case <-timer.C:
+		return topicAnalysisOutcome{}, false
+	case <-ctx.Done():
+		return topicAnalysisOutcome{}, false
+	}
+}
+
+// topTopicStore is the slice of *store.Store that recordTopTopic needs.
+type topTopicStore interface {
+	GetTopicLabelAt(ctx context.Context, snapshotTime string, rank int) (string, error)
+	SetSentimentTopTopic(ctx context.Context, runID, label string) (bool, error)
+}
+
+// recordTopTopic attaches this cycle's rank-1 trending topic to its
+// sentiment_history row so the weekly chart can caption the high and low.
+// Nothing is written when the cycle produced no snapshot or is shutting down
+// (the writes would fail with "context canceled" anyway).
+func recordTopTopic(ctx context.Context, db topTopicStore, runID string, outcome topicAnalysisOutcome) {
+	if ctx.Err() != nil || outcome.err != nil || outcome.snapshotTime == "" {
+		return
+	}
+	label, err := db.GetTopicLabelAt(ctx, outcome.snapshotTime, 1)
+	if err != nil {
+		slog.Warn("top topic lookup failed", "error", err, "run_id", runID, "snapshot_time", outcome.snapshotTime)
+		return
+	}
+	if label == "" {
+		return
+	}
+	updated, err := db.SetSentimentTopTopic(ctx, runID, label)
+	if err != nil {
+		slog.Warn("failed to record top topic on sentiment row", "error", err, "run_id", runID)
+		return
+	}
+	if !updated {
+		// The sentiment insert earlier in the cycle failed and was only logged.
+		slog.Warn("no sentiment row to annotate with top topic", "run_id", runID, "topic", label)
+		return
+	}
+	slog.Info("sentiment row annotated with top topic", "run_id", runID, "topic", label)
+}
+
 // ---------------------------------------------------------------------------
 // 30-minute analysis cycle
 // ---------------------------------------------------------------------------
@@ -310,9 +368,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"net_pct", fmt.Sprintf("%.1f%%", netSentimentPct),
 		)
 		if topicAnalysisDone != nil {
-			if outcome := <-topicAnalysisDone; outcome.err != nil {
+			outcome := <-topicAnalysisDone
+			if outcome.err != nil {
 				slog.Warn("topic analysis failed (low confidence cycle)", "error", outcome.err)
 			}
+			recordTopTopic(ctx, db, runID, outcome)
 		}
 	} else if dryRun {
 		slog.Info("DRY_RUN: would post summary",
@@ -322,9 +382,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"total_posts", len(posts),
 		)
 		if topicAnalysisDone != nil {
-			if outcome := <-topicAnalysisDone; outcome.err != nil {
+			outcome := <-topicAnalysisDone
+			if outcome.err != nil {
 				slog.Warn("topic analysis failed (dry run cycle)", "error", outcome.err)
 			}
+			recordTopTopic(ctx, db, runID, outcome)
 		}
 	} else if ctx.Err() != nil {
 		// Shutdown landed after hydration. The run and sentiment rows above
@@ -364,16 +426,38 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			}
 		}
 
+		// Collect this cycle's topics before the sparkline so the chart can
+		// caption the newest point when it is the weekly high or low. The
+		// trending post itself still goes out after the sparkline.
+		var outcome topicAnalysisOutcome
+		topicsCollected := false
+		if topicAnalysisDone != nil {
+			topicWait := time.Now()
+			outcome, topicsCollected = awaitTopicOutcome(ctx, topicAnalysisDone, topicWaitBeforeSparkline)
+			if topicsCollected {
+				slog.Info("timing: topic analysis goroutine collected",
+					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
+					"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
+				recordTopTopic(ctx, db, runID, outcome)
+			} else {
+				slog.Warn("topic analysis still running, sparkline will not carry this cycle's topic",
+					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()))
+			}
+		}
+
 		rootURI, rootCID := postedURI, postedCID
 		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
 		slog.Info("timing: sparkline complete", "cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 
-		if topicAnalyzer != nil {
-			topicWait := time.Now()
-			outcome := <-topicAnalysisDone
-			slog.Info("timing: topic analysis goroutine collected",
-				"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
-				"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
+		if topicAnalysisDone != nil {
+			if !topicsCollected {
+				topicWait := time.Now()
+				outcome = <-topicAnalysisDone
+				slog.Info("timing: topic analysis goroutine collected (after sparkline)",
+					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
+					"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
+				recordTopTopic(ctx, db, runID, outcome)
+			}
 			if outcome.err != nil {
 				slog.Error("topic analysis cycle failed", "error", outcome.err)
 			} else if ctx.Err() != nil {

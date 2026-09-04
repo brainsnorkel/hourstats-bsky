@@ -77,7 +77,7 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 | **Write Flusher** | 2s ticker / 1500 batch | Batches pending writes to reduce SQLite contention |
 | **Analysis Cycle** | Wall-clock ticker (default 30m, configurable; prod runs 60m at :55 via `ANALYSIS_INTERVAL_MINUTES`/`ANALYSIS_OFFSET_MINUTES`) | Hydrate engagement, VADER sentiment, post summary. Runs in its own goroutine so the other tickers keep firing; an overlapping tick is skipped and logged as `cycle_overlap_skipped` |
 | **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
-| **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled) |
+| **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled). Analysis runs in parallel with hydration; the cycle collects its result (bounded 60s wait) before rendering the sparkline so the rank-1 label can be stored on the cycle's `sentiment_history.top_topic` and captioned next to the weekly high/low on the chart. The trending reply itself is still posted after the sparkline |
 | **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation, top-post quote reply. Runs in its own goroutine, after waiting up to 15m for an in-flight analysis cycle so the aggregate includes the day's last cycle |
 | **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile. Same goroutine/guard as the daily cycle, so chart rendering never overlaps a cycle or a daily run; a skipped tick logs `job_overlap_skipped` |
 | **Stall Detection** | 5m ticker | Warns if no posts received in 5m and force-closes the WebSocket so the consumer reconnects |
@@ -95,6 +95,7 @@ Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
                             VADER sentiment -> Top 3 by engagement -> Post summary
                                     |
                             Sparkline reply -> Trending topics reply
+                            (sparkline captions the 7-day high/low with that hour's top topic)
 ```
 
 Before posting the summary, the #1 post is checked for quote controls via an
