@@ -3,9 +3,12 @@ package topics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func geminiMockHandler(clusters []TopicCluster) http.HandlerFunc {
@@ -374,5 +377,323 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// exemplarValidationHandler replies with the given verdicts, echoing the ids
+// the prompt assigned.
+func exemplarValidationHandler(t *testing.T, verdicts []exemplarValidationResult, capturedPrompt *string) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req geminiRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if capturedPrompt != nil && len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 {
+			*capturedPrompt = req.Contents[0].Parts[0].Text
+		}
+		text, _ := json.Marshal(verdicts)
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{Content: geminiContent{Parts: []geminiPart{{Text: string(text)}}}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+func TestValidateExemplars_MapsVerdictsByID(t *testing.T) {
+	// Three pairs share one topic label, so only the id can tell them apart.
+	verdicts := []exemplarValidationResult{
+		{ID: 1, IsRelevant: false},
+		{ID: 2, IsRelevant: true},
+		{ID: 3, IsRelevant: false},
+	}
+	var prompt string
+	srv := httptest.NewServer(exemplarValidationHandler(t, verdicts, &prompt))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{
+		{TopicLabel: "Hockey", PostText: "first", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "second", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "third", IsRelevant: true},
+	}
+
+	got, err := g.ValidateExemplars(context.Background(), pairs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []bool{false, true, false}
+	for i, w := range want {
+		if got[i].IsRelevant != w {
+			t.Errorf("pair %d IsRelevant = %v, want %v", i+1, got[i].IsRelevant, w)
+		}
+	}
+	if !strings.Contains(prompt, "3. Topic:") {
+		t.Errorf("expected numbered pairs in prompt, got:\n%s", prompt)
+	}
+}
+
+func TestValidateExemplars_ZeroBasedIDsDoNotShiftVerdicts(t *testing.T) {
+	// A model that echoes 0-based ids must not shift every verdict by one and
+	// leave the last pair at its default.
+	verdicts := []exemplarValidationResult{
+		{ID: 0, IsRelevant: false},
+		{ID: 1, IsRelevant: true},
+		{ID: 2, IsRelevant: false},
+	}
+	srv := httptest.NewServer(exemplarValidationHandler(t, verdicts, nil))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{
+		{TopicLabel: "Hockey", PostText: "first", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "second", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "third", IsRelevant: true},
+	}
+
+	got, err := g.ValidateExemplars(context.Background(), pairs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []bool{false, true, false}
+	for i, w := range want {
+		if got[i].IsRelevant != w {
+			t.Errorf("pair %d IsRelevant = %v, want %v (verdicts must not shift)", i+1, got[i].IsRelevant, w)
+		}
+	}
+}
+
+func TestMapVerdicts(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []exemplarValidationResult
+		n       int
+		want    []bool
+		wantErr bool
+	}{
+		{
+			name:    "complete ids out of order",
+			results: []exemplarValidationResult{{ID: 3, IsRelevant: true}, {ID: 1, IsRelevant: false}, {ID: 2, IsRelevant: true}},
+			n:       3,
+			want:    []bool{false, true, true},
+		},
+		{
+			name:    "zero based ids fall back to order",
+			results: []exemplarValidationResult{{ID: 0, IsRelevant: false}, {ID: 1, IsRelevant: true}, {ID: 2, IsRelevant: false}},
+			n:       3,
+			want:    []bool{false, true, false},
+		},
+		{
+			name:    "partial id set is unvalidated",
+			results: []exemplarValidationResult{{ID: 1, IsRelevant: false}, {IsRelevant: true}, {ID: 3, IsRelevant: false}},
+			n:       3,
+			wantErr: true,
+		},
+		{
+			name:    "duplicate ids are unvalidated",
+			results: []exemplarValidationResult{{ID: 1, IsRelevant: false}, {ID: 1, IsRelevant: true}, {ID: 3, IsRelevant: true}},
+			n:       3,
+			wantErr: true,
+		},
+		{
+			name:    "scrambled ids are unvalidated",
+			results: []exemplarValidationResult{{ID: 2, IsRelevant: false}, {ID: 0, IsRelevant: true}, {ID: 1, IsRelevant: true}},
+			n:       3,
+			wantErr: true,
+		},
+		{
+			name:    "missing verdicts are unvalidated",
+			results: []exemplarValidationResult{{ID: 1, IsRelevant: false}, {ID: 3, IsRelevant: false}},
+			n:       3,
+			wantErr: true,
+		},
+		{
+			name:    "extra verdicts are unvalidated",
+			results: []exemplarValidationResult{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+			n:       3,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := mapVerdicts(tt.results, tt.n)
+			if tt.wantErr {
+				if !errors.Is(err, ErrValidationUnavailable) {
+					t.Fatalf("expected ErrValidationUnavailable, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("verdict %d = %v, want %v (%v)", i+1, got[i], tt.want[i], got)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateExemplars_CountMismatchIsUnvalidated(t *testing.T) {
+	verdicts := []exemplarValidationResult{{ID: 1, IsRelevant: false}}
+	srv := httptest.NewServer(exemplarValidationHandler(t, verdicts, nil))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{
+		{TopicLabel: "Hockey", PostText: "first", IsRelevant: true},
+		{TopicLabel: "Hockey", PostText: "second", IsRelevant: true},
+	}
+
+	got, err := g.ValidateExemplars(context.Background(), pairs)
+	if !errors.Is(err, ErrValidationUnavailable) {
+		t.Fatalf("expected ErrValidationUnavailable, got %v", err)
+	}
+	for i := range got {
+		if !got[i].IsRelevant {
+			t.Errorf("pair %d should come back untouched when unvalidated", i+1)
+		}
+	}
+}
+
+func TestValidateExemplars_APIFailureIsUnvalidated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+
+	if _, err := g.ValidateExemplars(context.Background(), pairs); !errors.Is(err, ErrValidationUnavailable) {
+		t.Fatalf("expected ErrValidationUnavailable, got %v", err)
+	}
+}
+
+func TestValidateExemplars_BudgetExhaustedIsUnvalidated(t *testing.T) {
+	g := NewGrouperWithEndpoint("test-key", "http://example.invalid")
+	for i := 0; i < maxDailyCalls; i++ {
+		g.checkAndIncrementRate()
+	}
+
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+	if _, err := g.ValidateExemplars(context.Background(), pairs); !errors.Is(err, ErrValidationUnavailable) {
+		t.Fatalf("expected ErrValidationUnavailable, got %v", err)
+	}
+}
+
+func TestCheckAndIncrementRate_BudgetExhaustedFiresOncePerTrip(t *testing.T) {
+	g := NewGrouperWithEndpoint("test-key", "http://example.invalid")
+
+	var trips int
+	var reported int
+	g.SetBudgetExhaustedHandler(func(dailyCalls int) {
+		trips++
+		reported = dailyCalls
+	})
+
+	for i := 0; i < maxDailyCalls; i++ {
+		if !g.checkAndIncrementRate() {
+			t.Fatalf("call %d should have been allowed", i+1)
+		}
+	}
+	if g.BudgetExhausted() {
+		t.Error("budget should not be flagged before the limit trips")
+	}
+
+	for i := 0; i < 3; i++ {
+		if g.checkAndIncrementRate() {
+			t.Fatal("call past the daily limit should be refused")
+		}
+	}
+	if trips != 1 {
+		t.Errorf("expected the handler to fire once per trip, fired %d times", trips)
+	}
+	if reported != maxDailyCalls {
+		t.Errorf("handler reported %d daily calls, want %d", reported, maxDailyCalls)
+	}
+	if !g.BudgetExhausted() {
+		t.Error("expected BudgetExhausted to report true after the trip")
+	}
+}
+
+func TestBudgetExhausted_ClearsAfterWindow(t *testing.T) {
+	g := NewGrouperWithEndpoint("test-key", "http://example.invalid")
+	for i := 0; i < maxDailyCalls; i++ {
+		g.checkAndIncrementRate()
+	}
+	if g.checkAndIncrementRate() {
+		t.Fatal("expected the budget to be spent")
+	}
+	if !g.BudgetExhausted() {
+		t.Fatal("expected BudgetExhausted to be true inside the window")
+	}
+
+	g.mu.Lock()
+	g.lastReset = time.Now().Add(-25 * time.Hour)
+	g.mu.Unlock()
+
+	if g.BudgetExhausted() {
+		t.Error("expected BudgetExhausted to clear once the 24h window elapsed")
+	}
+	if !g.checkAndIncrementRate() {
+		t.Error("expected calls to be allowed again in the new window")
+	}
+}
+
+func TestNormalizeClusterKeywords(t *testing.T) {
+	terms := []TermScore{{Term: "trump"}, {Term: "election"}, {Term: "weather"}}
+	clusters := []TopicCluster{
+		{
+			Label:    "Donald Trump",
+			Keywords: []string{"Trump", " election ", "hallucinated", "trump"},
+			Synonyms: []string{"Politics", "election", ""},
+		},
+		{
+			Label:    "Invented",
+			Keywords: []string{"nonsense", "madeup"},
+			Synonyms: []string{"whatever"},
+		},
+	}
+
+	got := normalizeClusterKeywords(clusters, terms)
+
+	if len(got) != 1 {
+		t.Fatalf("expected the cluster with no known keywords to be dropped, got %d", len(got))
+	}
+	if strings.Join(got[0].Keywords, ",") != "trump,election" {
+		t.Errorf("keywords = %v, want [trump election] lowercased and deduplicated", got[0].Keywords)
+	}
+	if strings.Join(got[0].Synonyms, ",") != "politics" {
+		t.Errorf("synonyms = %v, want [politics] (lowercased, keyword duplicate dropped)", got[0].Synonyms)
+	}
+}
+
+func TestGroupAndLabel_DropsUnknownKeywords(t *testing.T) {
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{{
+		Label:    "Donald Trump",
+		Keywords: []string{"Trump", "Fabricated"},
+		Synonyms: []string{"POLITICS"},
+	}}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	clusters, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "trump", Score: 9}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(clusters) != 1 {
+		t.Fatalf("expected 1 cluster, got %d", len(clusters))
+	}
+	if strings.Join(clusters[0].Keywords, ",") != "trump" {
+		t.Errorf("keywords = %v, want only the known term", clusters[0].Keywords)
+	}
+	if strings.Join(clusters[0].Synonyms, ",") != "politics" {
+		t.Errorf("synonyms = %v, want lowercased", clusters[0].Synonyms)
 	}
 }

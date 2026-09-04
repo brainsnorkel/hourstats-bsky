@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/bluesky-social/indigo/api/bsky"
@@ -36,6 +37,13 @@ type Analyzer struct {
 	grouper  *Grouper
 	tracker  *Tracker
 	hydrator *ExemplarHydrator
+
+	// docFreq carries this cycle's document frequencies from RunAnalysisCycle
+	// to RunTrendingPost so exemplar ranking can downweight keywords that are
+	// generic in the current corpus. The two run on different goroutines
+	// within a cycle, hence the mutex.
+	mu      sync.Mutex
+	docFreq *DocFreqStats
 }
 
 func NewAnalyzer(s AnalyzerStore, geminiAPIKey, geminiModel, geminiFallbackModel string) *Analyzer {
@@ -52,6 +60,31 @@ func NewAnalyzer(s AnalyzerStore, geminiAPIKey, geminiModel, geminiFallbackModel
 		tracker:  tracker,
 		hydrator: exemplarHydrator,
 	}
+}
+
+// SetBudgetExhaustedHandler registers a callback fired when the daily Gemini
+// call budget is exhausted, so the caller can record it as a stats event.
+func (a *Analyzer) SetBudgetExhaustedHandler(fn func(dailyCalls int)) {
+	a.grouper.SetBudgetExhaustedHandler(fn)
+}
+
+// SetExemplarDroppedHandler registers a callback fired when a trending topic
+// is published without an exemplar because every validated candidate was
+// rejected, so the caller can record it as a stats event.
+func (a *Analyzer) SetExemplarDroppedHandler(fn func(topic string, candidates int)) {
+	a.hydrator.SetDroppedHandler(fn)
+}
+
+func (a *Analyzer) setDocFreq(df *DocFreqStats) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.docFreq = df
+}
+
+func (a *Analyzer) currentDocFreq() *DocFreqStats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.docFreq
 }
 
 const maxTFIDFRows = 20000
@@ -104,6 +137,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 	if len(terms) == 0 {
 		return "", fmt.Errorf("%w: TF-IDF produced no significant terms from %d rows", ErrTopicsUnavailable, len(rows))
 	}
+	a.setDocFreq(newDocFreqStats(terms, len(rows)))
 	slog.Info("topics: TF-IDF computed", "terms", len(terms), "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 
 	clusters, err := a.grouper.GroupAndLabel(ctx, terms)
@@ -220,7 +254,13 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		}
 	}
 
-	latestTopics, err = a.hydrator.HydrateExemplars(ctx, latestTopics)
+	df := a.currentDocFreq()
+	if df == nil {
+		// Happens when the process restarted between analysis and posting;
+		// ranking falls back to the static generic-term list, a weaker signal.
+		slog.Warn("topics: no document frequencies for this cycle, exemplar ranking uses the static generic list")
+	}
+	latestTopics, err = a.hydrator.HydrateExemplars(ctx, latestTopics, df)
 	if err != nil {
 		slog.Warn("topics: exemplar hydration error", "error", err)
 	}
