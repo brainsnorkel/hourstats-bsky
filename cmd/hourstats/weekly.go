@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -30,8 +32,18 @@ type weeklyReport struct {
 	Days       []store.DailySentimentDataPoint // the week, ordered
 	PrevDays   []store.DailySentimentDataPoint // the week before, for the delta
 	TopicLabel string                          // "" when no topic data exists
-	TopicHours int
-	TopPost    *store.Post // nil when no daily top post exists
+	TopicHours int                             // hours the topic trended, from cycle appearances
+	TopPost    *store.Post                     // nil when no daily top post exists
+}
+
+// topicHours converts trending-cycle appearances to hours for the
+// configured analysis interval, capped at the hours in a week.
+func topicHours(appearances, cycleMinutes int) int {
+	if cycleMinutes <= 0 {
+		cycleMinutes = 60
+	}
+	h := int(math.Round(float64(appearances*cycleMinutes) / 60))
+	return min(h, weekHours)
 }
 
 // buildWeeklyReportText renders the root post.
@@ -75,7 +87,12 @@ func truncateRunes(s string, n int) string {
 	if len(r) <= n {
 		return s
 	}
-	return strings.TrimRight(string(r[:n-1]), " ") + "…"
+	cut := r[:n-1]
+	// Do not end on a joiner or modifier that belonged to the next glyph.
+	for len(cut) > 0 && (unicode.Is(unicode.Mn, cut[len(cut)-1]) || cut[len(cut)-1] == 0x200D || cut[len(cut)-1] == 0xFE0F || cut[len(cut)-1] == ' ') {
+		cut = cut[:len(cut)-1]
+	}
+	return string(cut) + "…"
 }
 
 // buildPostOfWeekText renders the reply that quotes the week's top post.
@@ -88,7 +105,7 @@ func buildPostOfWeekText(r weeklyReport) string {
 
 // loadWeeklyReport gathers the previous week's data. ok is false, with the
 // reason logged, when there is not enough to report on.
-func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time) (weeklyReport, bool) {
+func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycleMinutes int) (weeklyReport, bool) {
 	start, end := previousWeek(now)
 	r := weeklyReport{Start: start, End: end}
 
@@ -114,7 +131,7 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time) (week
 	if label, hours, err := db.GetTopTopicForRange(ctx, start.Format(dateFormat), end.Format(dateFormat)); err != nil {
 		slog.Warn("weekly report: top topic lookup failed, omitting topic line", "error", err)
 	} else {
-		r.TopicLabel, r.TopicHours = label, hours
+		r.TopicLabel, r.TopicHours = label, topicHours(hours, cycleMinutes)
 	}
 
 	if top, err := db.GetTopPostForRange(ctx, start.Format(dateFormat), end.Format(dateFormat)); err != nil {
@@ -128,7 +145,7 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time) (week
 // runWeeklyReport posts the week-in-review root and, when a top post is
 // known, the post-of-the-week quote reply. The guard key is set once the
 // root is posted, so a failed reply is not retried by a later re-run.
-func runWeeklyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time) {
+func runWeeklyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time, cycleMinutes int) {
 	start, _ := previousWeek(now)
 	weekKey := start.Format(dateFormat)
 	if last, _ := db.GetKeyValue(ctx, weeklyReportGuardKey); last == weekKey {
@@ -136,7 +153,7 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 		return
 	}
 
-	r, ok := loadWeeklyReport(ctx, db, now)
+	r, ok := loadWeeklyReport(ctx, db, now, cycleMinutes)
 	if !ok {
 		return
 	}
@@ -180,7 +197,9 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 	}
 	slog.Info("weekly report posted", "week_start", weekKey, "uri", rootURI)
 	if err := db.SetKeyValue(ctx, weeklyReportGuardKey, weekKey); err != nil {
-		slog.Warn("persist weekly report guard failed", "error", err)
+		// The guard is the only duplicate suppression; a restart with
+		// REPORTS_RUN_AT_STARTUP would re-post.
+		slog.Error("persist weekly report guard failed", "error", err, "week_start", weekKey)
 	}
 
 	if replyText == "" {

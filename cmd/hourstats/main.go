@@ -267,9 +267,11 @@ func main() {
 						slog.Error("weekly vacuum failed", "error", err)
 					}
 				}
-				// Monday: the Sunday aggregate above completes last week.
-				if reportsEnabled && time.Now().UTC().Weekday() == time.Monday {
-					runWeeklyReport(ctx, db, handle, password, dryRun, time.Now())
+				// Runs daily; the guard key makes it a no-op until a new
+				// complete week exists, so a skipped Monday is caught up
+				// the next night instead of lost.
+				if reportsEnabled {
+					runWeeklyReport(ctx, db, handle, password, dryRun, time.Now(), analysisMinutes)
 				}
 			})
 			if !started {
@@ -282,8 +284,9 @@ func main() {
 			// stacks two memory peaks on a VM that has already OOMed.
 			started := startAfterCycle(ctx, jobs, cycles, "yearly", jobCycleWait, func() {
 				runYearlyPosting(ctx, db, handle, password, dryRun)
-				// This ticker fires daily; only the 1st reports on last month.
-				if reportsEnabled && time.Now().UTC().Day() == 1 {
+				// Fires daily; the guard key makes it a no-op until a new
+				// complete month exists, so a skipped 1st is caught up.
+				if reportsEnabled {
 					runMonthlyReport(ctx, db, handle, password, dryRun, time.Now())
 				}
 			})
@@ -297,7 +300,7 @@ func main() {
 				now := time.Now()
 				runReportRollups(ctx, db, now)
 				if startupWeekly {
-					runWeeklyReport(ctx, db, handle, password, dryRun, now)
+					runWeeklyReport(ctx, db, handle, password, dryRun, now, analysisMinutes)
 				}
 				if startupMonthly {
 					runMonthlyReport(ctx, db, handle, password, dryRun, now)

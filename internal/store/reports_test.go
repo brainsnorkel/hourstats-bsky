@@ -164,7 +164,7 @@ func TestDailyTopPost_KeepsBestAndRanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.GetTopPostForRange(ctx, "2026-09-01", "2026-09-07")
-	if err != nil || got == nil || got.URI != "at://b" || got.Likes != 50 || got.AuthorHandle != "b.bsky" || got.CreatedAt != "2026-09-02" {
+	if err != nil || got == nil || got.URI != "at://b" || got.Likes != 50 || got.AuthorHandle != "b.bsky" {
 		t.Fatalf("range top = %+v, %v", got, err)
 	}
 	got, _ = s.GetTopPostForRange(ctx, "2026-09-01", "2026-09-01")

@@ -84,15 +84,16 @@ func runDailyAggregation(ctx context.Context, db *store.Store) {
 // an annual report.
 const reportRollupRetention = 400 * 24 * time.Hour
 
-// runReportRollups condenses the last two finished days of topic_snapshots
-// and runs (both purged after 48h) into their long-lived rollups, backfills
+// runReportRollups condenses the last three finished days of topic_snapshots
+// (purged after 48h) and runs into their long-lived rollups, backfills
 // firehose totals on daily rows that still lack them, then purges rollups
-// past retention. Every step is idempotent and merge-safe, so covering two
-// days on every run means a missed midnight loses nothing.
+// past retention. Every step is idempotent and merge-safe, so covering three
+// days on every run means a missed midnight loses nothing and a 48h outage
+// loses only the hours the purge already removed.
 func runReportRollups(ctx context.Context, db *store.Store, now time.Time) {
-	backfillDailyFirehoseTotals(ctx, db)
+	backfillDailyFirehoseTotals(ctx, db, now)
 
-	for _, daysAgo := range []int{1, 2} {
+	for _, daysAgo := range []int{1, 2, 3} {
 		date := now.UTC().AddDate(0, 0, -daysAgo).Format("2006-01-02")
 
 		topics, err := db.RollupTopicDaily(ctx, date)
@@ -123,50 +124,51 @@ func runReportRollups(ctx context.Context, db *store.Store, now time.Time) {
 }
 
 // backfillDailyFirehoseTotals fills total_firehose_posts on daily_sentiment
-// rows written before the column existed, for every day that sentiment_history
-// (8-day retention) still covers. It uses the same high-confidence filter as
-// the daily aggregate so the two totals describe the same cycles.
-func backfillDailyFirehoseTotals(ctx context.Context, db *store.Store) {
-	history, err := db.GetSentimentHistory(ctx, 8*24*time.Hour)
+// rows written before the column existed. sentiment_history is never purged
+// in practice, so this reaches the whole rollup retention window. A day is
+// only written when its high-confidence cycles match the daily row exactly
+// (same cycle count and English total), which proves the history still holds
+// the complete day rather than a truncated edge of it.
+func backfillDailyFirehoseTotals(ctx context.Context, db firehoseBackfillStore, now time.Time) {
+	since := now.UTC().Add(-reportRollupRetention).Format(dateFormat)
+	missing, err := db.GetDailySentimentMissingFirehose(ctx, since)
 	if err != nil {
-		slog.Warn("firehose backfill: get sentiment history failed", "error", err)
+		slog.Warn("firehose backfill: list daily rows failed", "error", err)
 		return
 	}
-	sums := map[string]int{}
-	for _, h := range filterHighConfidence(history) {
-		sums[h.Timestamp.Format("2006-01-02")] += h.TotalFirehosePosts
-	}
-	if len(sums) == 0 {
-		return
-	}
-	first, last := "", ""
-	for d := range sums {
-		if first == "" || d < first {
-			first = d
-		}
-		if d > last {
-			last = d
-		}
-	}
-	daily, err := db.GetDailySentimentRange(ctx, first, last)
-	if err != nil {
-		slog.Warn("firehose backfill: get daily range failed", "error", err)
-		return
-	}
-	var filled int
-	for _, d := range daily {
-		if d.TotalFirehosePosts > 0 || sums[d.Date] == 0 {
+	var filled, incomplete, untracked int
+	for _, d := range missing {
+		t, err := db.GetDayCycleTotals(ctx, d.Date, minPostsRequired)
+		if err != nil {
+			slog.Warn("firehose backfill: day totals failed", "date", d.Date, "error", err)
 			continue
 		}
-		if updated, err := db.UpdateDailyFirehoseTotal(ctx, d.Date, sums[d.Date]); err != nil {
+		switch {
+		case t.Cycles != d.TotalRuns || t.EnglishPosts != d.TotalPosts:
+			incomplete++
+			continue
+		case t.FirehosePosts < t.EnglishPosts:
+			// Cycles before firehose counting existed report zero.
+			untracked++
+			continue
+		}
+		if updated, err := db.UpdateDailyFirehoseTotal(ctx, d.Date, t.FirehosePosts); err != nil {
 			slog.Warn("firehose backfill: update failed", "date", d.Date, "error", err)
 		} else if updated {
 			filled++
 		}
 	}
-	if filled > 0 {
-		slog.Info("backfilled daily firehose totals", "days", filled)
+	if len(missing) > 0 {
+		slog.Info("daily firehose backfill", "candidates", len(missing), "filled", filled,
+			"incomplete_history", incomplete, "untracked", untracked)
 	}
+}
+
+// firehoseBackfillStore is the slice of *store.Store the backfill needs.
+type firehoseBackfillStore interface {
+	GetDailySentimentMissingFirehose(ctx context.Context, startDate string) ([]store.DailySentimentDataPoint, error)
+	GetDayCycleTotals(ctx context.Context, date string, minPosts int) (store.DayCycleTotals, error)
+	UpdateDailyFirehoseTotal(ctx context.Context, date string, total int) (bool, error)
 }
 
 // ---------------------------------------------------------------------------
