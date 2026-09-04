@@ -658,6 +658,28 @@ func (c *BlueskyClient) PostWithFacetsRef(ctx context.Context, text string, face
 	return resp.Uri, resp.Cid, nil
 }
 
+// MaxAltTextGraphemes is Bluesky's alt text limit. Runes stand in for
+// graphemes here, which only ever over-counts.
+const MaxAltTextGraphemes = 2000
+
+// ClampAltText keeps alt text inside MaxAltTextGraphemes, cutting at the
+// last sentence end before the limit when one exists and ending with an
+// ellipsis. Alt text is generated from data, so it can grow unbounded; the
+// API would reject the whole post rather than trim it.
+func ClampAltText(alt string) string {
+	r := []rune(alt)
+	if len(r) <= MaxAltTextGraphemes {
+		return alt
+	}
+	cut := r[:MaxAltTextGraphemes-1]
+	if i := strings.LastIndexAny(string(cut), ".;"); i > len(string(cut))/2 {
+		cut = []rune(string(cut)[:i+1])
+	}
+	clamped := strings.TrimRight(string(cut), " ") + "…"
+	slog.Warn("alt text clamped to limit", "original_runes", len(r), "clamped_runes", len([]rune(clamped)))
+	return clamped
+}
+
 // UploadImage uploads an image to Bluesky's blob service and returns the blob reference
 func (c *BlueskyClient) UploadImage(ctx context.Context, imageData []byte, altText string) (*bsky.EmbedImages_Image, error) {
 	if c.client == nil {
@@ -688,7 +710,7 @@ func (c *BlueskyClient) UploadImage(ctx context.Context, imageData []byte, altTe
 			MimeType: contentType,
 			Size:     int64(len(imageData)),
 		},
-		Alt: altText,
+		Alt: ClampAltText(altText),
 	}
 
 	slog.Info("successfully uploaded image blob", "ref", blob.Blob.Ref, "size_bytes", len(imageData), "mime_type", contentType)
