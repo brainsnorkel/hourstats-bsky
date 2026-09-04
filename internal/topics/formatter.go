@@ -85,7 +85,7 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, an
 
 func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int) string {
 	var b strings.Builder
-	b.WriteString("Trending topics exemplar posts:\n\n")
+	b.WriteString("Trending topic exemplar posts:\n\n")
 
 	for i, topic := range ranked {
 		line := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)

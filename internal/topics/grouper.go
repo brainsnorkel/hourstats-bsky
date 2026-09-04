@@ -755,7 +755,21 @@ func mapVerdicts(results []exemplarValidationResult, n int) ([]bool, error) {
 		}
 		return out, nil
 	}
-	slog.Warn("validate-exemplars: unusable verdict ids, falling back to response order", "pairs", n)
+	// The one id mistake we can read safely is a zero-based echo in order
+	// (0..n-1). Anything else (scrambled, duplicated or missing ids) would
+	// pin verdicts on the wrong posts if read positionally, so the batch is
+	// reported as unvalidated and the caller keeps its top picks.
+	zeroBased := true
+	for i, r := range results {
+		if r.ID != i {
+			zeroBased = false
+			break
+		}
+	}
+	if !zeroBased {
+		return nil, fmt.Errorf("%w: unusable verdict ids for %d pairs", ErrValidationUnavailable, n)
+	}
+	slog.Warn("validate-exemplars: zero-based verdict ids, reading in response order", "pairs", n)
 	for i, r := range results {
 		out[i] = r.IsRelevant
 	}

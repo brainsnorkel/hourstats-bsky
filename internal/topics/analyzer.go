@@ -68,6 +68,13 @@ func (a *Analyzer) SetBudgetExhaustedHandler(fn func(dailyCalls int)) {
 	a.grouper.SetBudgetExhaustedHandler(fn)
 }
 
+// SetExemplarDroppedHandler registers a callback fired when a trending topic
+// is published without an exemplar because every validated candidate was
+// rejected, so the caller can record it as a stats event.
+func (a *Analyzer) SetExemplarDroppedHandler(fn func(topic string, candidates int)) {
+	a.hydrator.SetDroppedHandler(fn)
+}
+
 func (a *Analyzer) setDocFreq(df *DocFreqStats) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -247,7 +254,13 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		}
 	}
 
-	latestTopics, err = a.hydrator.HydrateExemplars(ctx, latestTopics, a.currentDocFreq())
+	df := a.currentDocFreq()
+	if df == nil {
+		// Happens when the process restarted between analysis and posting;
+		// ranking falls back to the static generic-term list, a weaker signal.
+		slog.Warn("topics: no document frequencies for this cycle, exemplar ranking uses the static generic list")
+	}
+	latestTopics, err = a.hydrator.HydrateExemplars(ctx, latestTopics, df)
 	if err != nil {
 		slog.Warn("topics: exemplar hydration error", "error", err)
 	}
