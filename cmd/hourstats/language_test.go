@@ -45,7 +45,7 @@ func TestMonthlyLanguageLine(t *testing.T) {
 		t.Errorf("volume text %d runes over limit", n)
 	}
 	alt := buildMonthlyVolumeAltText(r)
-	if !strings.Contains(alt, "stacked area") || !strings.Contains(alt, "largest after English were Portuguese") {
+	if !strings.Contains(alt, "stacked area") || !strings.Contains(alt, "largest after posts marked as English were Portuguese") {
 		t.Errorf("alt: %s", alt)
 	}
 	pts := toDailyVolumePoints(r)

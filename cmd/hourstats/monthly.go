@@ -233,7 +233,7 @@ func buildMonthlyVolumeAltText(r monthlyReport) string {
 		text += fmt.Sprintf(" English posts were %.0f%% of the %s firehose.", float64(total)/float64(fh)*100, compactCount(fh))
 	}
 	if langs := r.languageLine(); langs != "" {
-		text += " The firehose is stacked by language behind the line; the largest after English were " + langs + "."
+		text += " The firehose is stacked by language tag behind the line; the largest after posts marked as English were " + langs + "."
 	}
 	return text
 }

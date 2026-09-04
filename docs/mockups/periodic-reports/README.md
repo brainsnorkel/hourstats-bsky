@@ -115,8 +115,9 @@ chart degrades to for days where firehose totals are not tracked.
 
 When every day of the month has a language split (`language_daily`, collected
 from the firehose since the language-volume change), the firehose line becomes
-a stacked area: English at the bottom, then the largest languages up to five,
-then "other". Untagged posts get their own band when large enough. Colours are
+a stacked area: posts marked as English at the bottom (labelled "Marked
+English", since that is wider than the English posts analysed), then the
+largest languages up to five, then "other". Untagged posts get their own band when large enough. Colours are
 pinned per language (English blue, Portuguese orange, Japanese aqua, Spanish
 yellow, German magenta) so a language keeps its colour month to month; the
 English-analysed line is drawn in ink with a surface halo over the fills.

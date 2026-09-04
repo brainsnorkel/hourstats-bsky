@@ -12,10 +12,12 @@ import (
 // into "other". Six is the categorical palette's validated depth.
 const MaxLanguageSeries = 6
 
-// languageNames maps primary subtags to display names. Unknown codes fall
-// back to the upper-cased code.
+// languageNames maps primary subtags to display names. English is labelled
+// "Marked English" because the band counts posts carrying an English
+// language tag, which is wider than the English posts the bot analyses.
+// Unknown codes fall back to the upper-cased code.
 var languageNames = map[string]string{
-	"en": "English", "pt": "Portuguese", "ja": "Japanese", "es": "Spanish", "de": "German",
+	"en": "Marked English", "pt": "Portuguese", "ja": "Japanese", "es": "Spanish", "de": "German",
 	"fr": "French", "ko": "Korean", "it": "Italian", "nl": "Dutch", "ru": "Russian",
 	"zh": "Chinese", "tr": "Turkish", "pl": "Polish", "sv": "Swedish", "id": "Indonesian",
 	"th": "Thai", "ar": "Arabic", "fa": "Persian", "uk": "Ukrainian", "vi": "Vietnamese",
