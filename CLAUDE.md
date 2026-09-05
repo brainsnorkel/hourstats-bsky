@@ -103,11 +103,14 @@ Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
 ```
 
 Before posting the summary, the #1 post is checked for quote controls via an
-authenticated `app.bsky.feed.getPosts` (`Viewer.EmbeddingDisabled`; viewer state
-is only populated when authenticated). When quoting is disabled the summary is
-posted without the record embed — which would otherwise render as "Removed by
-author" — and its first line gains `· no embed, post is quote controlled`. The
-check fails open: an API error leaves the embed in place.
+authenticated `app.bsky.feed.getPosts`: `Viewer.EmbeddingDisabled` (quote
+control), the author's `Viewer.BlockedBy`/`Blocking`/`BlockingByList` (a block in
+either direction renders the card as "Blocked"), and absence from the response
+(deleted or hidden). Viewer state is only populated when authenticated. When any
+of these hold the summary is posted without the record embed — which would
+otherwise render as "Removed by author" or "Blocked" — and its first line gains
+`· no embed, post can't be quoted`. The check fails open: an API error leaves the
+embed in place. The weekly post-of-the-week reply reuses the same check.
 
 ### Internal Packages
 

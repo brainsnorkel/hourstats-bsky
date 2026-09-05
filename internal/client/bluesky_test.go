@@ -416,9 +416,9 @@ func TestEmbeddingDisabled(t *testing.T) {
 		disabledURI: true,
 		allowedURI:  false,
 		silentURI:   false,
-		// A post the AppView did not return is not a post we know to be
-		// quote-controlled, so it must not suppress the embed.
-		missingURI: false,
+		// A post the authenticated view did not return (deleted, or hidden
+		// by a block) cannot render a usable card, so the embed is dropped.
+		missingURI: true,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d entries, want %d: %v", len(got), len(want), got)
@@ -520,7 +520,7 @@ func TestPostTrendingSummaryQuoteControlledTopPost(t *testing.T) {
 		t.Errorf("record carries embed %v, want none for a quote-controlled top post", embed)
 	}
 	text, _ := record["text"].(string)
-	if !strings.Contains(text, "1. @alice.bsky.social · no embed, post is quote controlled\n") {
+	if !strings.Contains(text, "1. @alice.bsky.social · no embed, post can't be quoted\n") {
 		t.Errorf("text = %q, want the quote-control note on the #1 line", text)
 	}
 }
@@ -576,7 +576,7 @@ func TestPostTrendingSummaryEmbedsWhenNotQuoteControlled(t *testing.T) {
 // "@alice.bsky.social" and stop before the separator.
 func TestCreateUserHandleFacetsWithQuoteControlNote(t *testing.T) {
 	text := "Bluesky is #happy +1.0% sentiment\n\nTop recent posts\n" +
-		"1. @alice.bsky.social · no embed, post is quote controlled\n2. @bob.bsky.social\n"
+		"1. @alice.bsky.social · no embed, post can't be quoted\n2. @bob.bsky.social\n"
 	posts := []Post{
 		{URI: "at://did:plc:aaa/app.bsky.feed.post/111", Author: "alice.bsky.social", QuoteControlled: true},
 		{URI: "at://did:plc:bbb/app.bsky.feed.post/222", Author: "bob.bsky.social"},

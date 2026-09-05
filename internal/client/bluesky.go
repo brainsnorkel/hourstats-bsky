@@ -422,7 +422,9 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 // maxGetPostsURIs is Bluesky's per-call limit for app.bsky.feed.getPosts.
 const maxGetPostsURIs = 25
 
-// EmbeddingDisabled reports, per URI, whether the author disabled quoting.
+// EmbeddingDisabled reports, per URI, whether a quote embed of the post would
+// render as an unusable card: quoting disabled by the author, a block in
+// either direction, or the post missing from the authenticated view.
 //
 // The answer lives in the post's viewer state, which the AppView only
 // populates for authenticated requests, so this deliberately uses the
@@ -448,17 +450,52 @@ func (c *BlueskyClient) EmbeddingDisabled(ctx context.Context, uris []string) (m
 		return nil, fmt.Errorf("failed to get posts for quote-control check: %w", err)
 	}
 
+	// A post absent from the authenticated view (deleted, or hidden by a
+	// block) would also render as an unusable card, so it counts too.
 	disabled := make(map[string]bool, len(uris))
 	for _, uri := range uris {
-		disabled[uri] = false
+		disabled[uri] = true
 	}
+	seen := make(map[string]bool, len(out.Posts))
 	for _, postView := range out.Posts {
-		if postView == nil || postView.Viewer == nil || postView.Viewer.EmbeddingDisabled == nil {
+		if postView == nil {
 			continue
 		}
-		disabled[postView.Uri] = *postView.Viewer.EmbeddingDisabled
+		seen[postView.Uri] = true
+		unavailable, reason := quoteUnavailable(postView)
+		disabled[postView.Uri] = unavailable
+		if unavailable {
+			slog.Info("quote embed unavailable", "uri", postView.Uri, "reason", reason)
+		}
+	}
+	for _, uri := range uris {
+		if !seen[uri] {
+			slog.Info("quote embed unavailable", "uri", uri, "reason", "missing from authenticated view")
+		}
 	}
 	return disabled, nil
+}
+
+// quoteUnavailable reports whether quoting the post would render an unusable
+// card and why: the author disabled embedding ("Removed by author"), or a
+// block exists in either direction between the author and this account
+// ("Blocked"). Viewer state is only populated on an authenticated call.
+func quoteUnavailable(pv *bsky.FeedDefs_PostView) (bool, string) {
+	if pv.Viewer != nil && pv.Viewer.EmbeddingDisabled != nil && *pv.Viewer.EmbeddingDisabled {
+		return true, "embedding disabled by author"
+	}
+	if pv.Author != nil && pv.Author.Viewer != nil {
+		if pv.Author.Viewer.BlockedBy != nil && *pv.Author.Viewer.BlockedBy {
+			return true, "author blocks this account"
+		}
+		if pv.Author.Viewer.Blocking != nil && *pv.Author.Viewer.Blocking != "" {
+			return true, "this account blocks the author"
+		}
+		if pv.Author.Viewer.BlockingByList != nil {
+			return true, "author blocked via list"
+		}
+	}
+	return false, ""
 }
 
 // createEmbedCard creates an embed card for a post

@@ -93,7 +93,7 @@ func TestFormatPostContent_QuoteControlledTopPost(t *testing.T) {
 	result := FormatPostContent(posts, "positive", 30, 1000, 11.0)
 
 	want := "Bluesky is #" + getMoodWord100(11.0) + " +11.0% sentiment\n\nTop recent posts\n" +
-		"1. @alice.bsky.social · no embed, post is quote controlled\n2. @bob.bsky.social\n"
+		"1. @alice.bsky.social · no embed, post can't be quoted\n2. @bob.bsky.social\n"
 	if result != want {
 		t.Errorf("unexpected content:\n got %q\nwant %q", result, want)
 	}
