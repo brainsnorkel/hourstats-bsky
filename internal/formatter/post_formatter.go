@@ -14,14 +14,15 @@ type Post struct {
 	Replies         int
 	Sentiment       string
 	EngagementScore float64
-	// QuoteControlled marks a post whose author disabled quoting. Only the
+	// QuoteControlled marks a post that cannot be quoted: the author
+	// disabled quoting, or a block hides it from this account. Only the
 	// first listed post is checked, and only it carries quoteControlNote.
 	QuoteControlled bool
 }
 
 // quoteControlNote is appended to the first listed post when its author
 // disabled quoting, explaining why the summary carries no quote embed.
-const quoteControlNote = " · no embed, post is quote controlled"
+const quoteControlNote = " · no embed, post can't be quoted"
 
 // FormatPostContent generates the post content that will be posted to Bluesky.
 //

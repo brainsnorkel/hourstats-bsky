@@ -425,7 +425,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 				slog.Warn("quote-control check failed, embedding as usual", "error", err, "uri", topPosts[0].URI)
 			} else if disabled[topPosts[0].URI] {
 				quoteControlled = true
-				slog.Info("top post is quote-controlled, posting without embed", "uri", topPosts[0].URI)
+				slog.Info("top post cannot be quoted (quote control or block), posting without embed", "uri", topPosts[0].URI)
 			}
 		}
 
