@@ -30,6 +30,9 @@ var (
 	sentimentAnalyzerOnce sync.Once
 	sentimentAnalyzer     *analyzer.SentimentAnalyzer
 
+	emojiAnalyzerOnce sync.Once
+	emojiAnalyzer     *analyzer.SentimentAnalyzer
+
 	hydrationFetcherOnce sync.Once
 	hydrationFetcher     hydrator.PostFetcher // nil when HYDRATION_HOST=pds
 	hydrationHost        string
@@ -69,6 +72,19 @@ func sharedAnalyzer() *analyzer.SentimentAnalyzer {
 		sentimentAnalyzer = analyzer.New()
 	})
 	return sentimentAnalyzer
+}
+
+// sharedEmojiAnalyzer returns the process-wide emoji-aware VADER analyzer.
+//
+// It is built and reused on the same terms as sharedAnalyzer: construction
+// parses the full lexicon, and the instance is read-only afterwards. This
+// analyzer only ever produces the shadow score stored on the sentiment row;
+// nothing posted to Bluesky reads it.
+func sharedEmojiAnalyzer() *analyzer.SentimentAnalyzer {
+	emojiAnalyzerOnce.Do(func() {
+		emojiAnalyzer = analyzer.NewEmojiAware()
+	})
+	return emojiAnalyzer
 }
 
 // topicAnalysisOutcome carries the result of the parallel topic analysis
@@ -290,6 +306,27 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	overallSentiment, netSentimentPct := calculateOverallSentiment(analyzed)
 	rootSentimentPct, replySentimentPct := calculateSplitSentiment(analyzed)
 
+	// Shadow scoring: the same window, scored again with the emoji-aware
+	// analyzer. Stored on the sentiment row for later recalibration and
+	// never used for the headline, the run state or anything posted.
+	var netSentimentPctEmoji *float64
+	emojiStart := time.Now()
+	emojiAnalyzed, emojiErr := sharedEmojiAnalyzer().AnalyzePosts(analyzerPosts)
+	emojiMS := time.Since(emojiStart).Milliseconds()
+	if emojiErr != nil {
+		slog.Warn("emoji-aware sentiment analysis failed", "error", emojiErr, "run_id", runID)
+	} else {
+		_, emojiPct := calculateOverallSentiment(emojiAnalyzed)
+		netSentimentPctEmoji = &emojiPct
+		slog.Info("sentiment scorers",
+			"run_id", runID,
+			"net_pct", netSentimentPct,
+			"net_pct_emoji", emojiPct,
+			"delta", fmt.Sprintf("%.2f", emojiPct-netSentimentPct),
+			"emoji_ms", emojiMS,
+		)
+	}
+
 	collector.RecordAnalysis(len(posts), result.Hydrated, result.Errors, overallSentiment, lowConfidence)
 
 	sort.Slice(analyzed, func(i, j int) bool {
@@ -355,6 +392,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		TotalFirehosePosts:   firehoseSnapshot,
 		RootSentimentPct:     rootSentimentPct,
 		ReplySentimentPct:    replySentimentPct,
+		NetSentimentPctEmoji: netSentimentPctEmoji,
 		CreatedAt:            time.Now().UTC(),
 		TTL:                  time.Now().Add(30 * 24 * time.Hour).Unix(),
 	}

@@ -28,11 +28,37 @@ type Post struct {
 
 type SentimentAnalyzer struct {
 	analyzer *govader.SentimentIntensityAnalyzer
+	// prepare rewrites post text before scoring. Nil means identity, which
+	// is what stock VADER gets.
+	prepare func(string) string
 }
 
 func New() *SentimentAnalyzer {
 	return &SentimentAnalyzer{
 		analyzer: govader.NewSentimentIntensityAnalyzer(),
+	}
+}
+
+// NewEmojiAware returns an analyzer whose emoji handling is replaced by the
+// curated table in emoji.go: variation selectors, zero-width joiners and
+// skin-tone modifiers are stripped from the text first, then each known emoji
+// scores its curated valence instead of the sentiment of its Unicode name.
+//
+// This is a shadow scorer. Every analysis cycle scores its window twice — once
+// with New() for the headline and once here — and only the second mean is
+// stored (sentiment_history.net_sentiment_pct_emoji) so the two series can be
+// compared over time. Nothing posted to Bluesky uses it.
+//
+// Promoting this to the headline scorer is not a one-line swap: it shifts the
+// distribution of net sentiment, so the word bands in
+// internal/formatter/sentiment_100_words.go have to be recalibrated against
+// the new series first. See docs/SENTIMENT_CALIBRATION_REVIEW_2026-09.md.
+func NewEmojiAware() *SentimentAnalyzer {
+	sa := govader.NewSentimentIntensityAnalyzer()
+	applyEmojiOverrides(sa)
+	return &SentimentAnalyzer{
+		analyzer: sa,
+		prepare:  stripEmojiModifiers,
 	}
 }
 
@@ -51,7 +77,11 @@ func (sa *SentimentAnalyzer) AnalyzePosts(posts []Post) ([]AnalyzedPost, error) 
 }
 
 func (sa *SentimentAnalyzer) analyzePost(post Post) (AnalyzedPost, error) {
-	sentiment := sa.analyzer.PolarityScores(post.Text)
+	text := post.Text
+	if sa.prepare != nil {
+		text = sa.prepare(text)
+	}
+	sentiment := sa.analyzer.PolarityScores(text)
 	sentimentCategory := sa.categorizeSentiment(sentiment)
 	engagementScore := sa.calculateEngagementScore(post, sentiment.Compound)
 

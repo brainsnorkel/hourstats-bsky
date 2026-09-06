@@ -74,9 +74,14 @@ type SentimentDataPoint struct {
 	ReplySentimentPct    float64
 	// TopTopic is the rank-1 trending topic label for the cycle, set once
 	// topic analysis completes. Empty when trending is disabled or failed.
-	TopTopic  string
-	CreatedAt time.Time
-	TTL       int64
+	TopTopic string
+	// NetSentimentPctEmoji is the same window scored by the emoji-aware
+	// shadow analyzer (analyzer.NewEmojiAware). Nil for rows written before
+	// the column existed and for cycles where the shadow scorer failed. It is
+	// stored for recalibration only and is never posted.
+	NetSentimentPctEmoji *float64
+	CreatedAt            time.Time
+	TTL                  int64
 }
 
 // DailySentimentDataPoint aggregates a full day of runs.
@@ -503,6 +508,10 @@ func (s *Store) migrate() error {
 		`ALTER TABLE sentiment_history ADD COLUMN root_sentiment_pct REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE sentiment_history ADD COLUMN reply_sentiment_pct REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE sentiment_history ADD COLUMN top_topic TEXT NOT NULL DEFAULT ''`,
+		// Nullable with no default: rows written before this column existed,
+		// and cycles where the shadow scorer failed, must read back as NULL
+		// rather than as a real 0% reading.
+		`ALTER TABLE sentiment_history ADD COLUMN net_sentiment_pct_emoji REAL`,
 
 		`CREATE TABLE IF NOT EXISTS daily_sentiment (
 			date TEXT PRIMARY KEY,
