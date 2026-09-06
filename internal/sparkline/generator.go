@@ -50,11 +50,23 @@ func (sg *SparklineGenerator) calculateYRange(dataPoints []state.SentimentDataPo
 	}
 }
 
+// PostCanvasWidth and PostCanvasHeight are the 3:2 canvas for the series
+// charts posted to Bluesky (the seven-day sparkline and the yearly chart).
+// Bluesky's CDN serves the full-size image at native resolution up to 2000px
+// on the long edge and the feed thumbnail at 1000px, so 2000 wide is the
+// largest source that still shows every pixel in the lightbox; anything
+// larger is downscaled. Every size in series_chart.go scales from a 1200px
+// design width, so the layout is identical at any canvas width.
+const (
+	PostCanvasWidth  = 2000
+	PostCanvasHeight = 1333
+)
+
 // DefaultConfig returns a default sparkline configuration
 func DefaultConfig() *SparklineConfig {
 	return &SparklineConfig{
-		Width:        1200, // Canvas 1200x800 (3:2 aspect ratio)
-		Height:       800,  // Canvas 1200x800 (3:2 aspect ratio)
+		Width:        PostCanvasWidth,
+		Height:       PostCanvasHeight,
 		Padding:      80,
 		LineWidth:    3.5,
 		PointRadius:  6.5,

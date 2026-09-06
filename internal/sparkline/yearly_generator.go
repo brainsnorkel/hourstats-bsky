@@ -48,13 +48,13 @@ func (yg *YearlySparklineGenerator) calculateYearlyYRange(dataPoints []state.Yea
 	}
 }
 
-// DefaultYearlyConfig returns a default yearly sparkline configuration (25% larger)
+// DefaultYearlyConfig returns a default yearly sparkline configuration
 func DefaultYearlyConfig() *YearlySparklineConfig {
 	return &YearlySparklineConfig{
-		Width:        1500, // 25% larger than 1200
-		Height:       1000, // 25% larger than 800
-		Padding:      100,  // Scaled proportionally
-		LineWidth:    4.0,  // Scaled proportionally
+		Width:        PostCanvasWidth,
+		Height:       PostCanvasHeight,
+		Padding:      100, // Scaled proportionally
+		LineWidth:    4.0, // Scaled proportionally
 		PointRadius:  6.5,
 		Background:   themeSurface,
 		PositiveLine: themePositive,

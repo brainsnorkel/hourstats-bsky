@@ -10,9 +10,9 @@ import (
 func TestYearlySparklineConfig(t *testing.T) {
 	config := DefaultYearlyConfig()
 
-	// Test that the config is 25% larger than the default sparkline config
-	expectedWidth := 1200 + (1200 * 25 / 100) // 1500
-	expectedHeight := 800 + (800 * 25 / 100)  // 1000
+	// The yearly chart shares the posted-series canvas with the sparkline
+	expectedWidth := PostCanvasWidth
+	expectedHeight := PostCanvasHeight
 
 	if config.Width != expectedWidth {
 		t.Errorf("Expected width %d, got %d", expectedWidth, config.Width)

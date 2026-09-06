@@ -159,7 +159,7 @@ Firehose counting: the Jetstream consumer drops non-English post creates with a 
 - Posts limited to 300 graphemes (use `[]rune` for length checks, not `len(string)`)
 - Rich text facets use byte offsets (not rune offsets) for `ByteStart`/`ByteEnd`
 - AT URIs: `at://did:plc:xxx/app.bsky.feed.post/yyy`
-- Image upload: blob reference then embed in post record
+- Image upload: blob reference then embed in post record. `UploadImage` decodes the PNG header and sets the embed's `aspectRatio`; without it clients draw the image in a square frame with blank bands. The sparkline and yearly charts render at 2000×1333 (`sparkline.PostCanvasWidth/Height`), the CDN's full-size cap; feed thumbnails are served at 1000px wide regardless
 
 ### Testing
 - Standard `go test ./...`

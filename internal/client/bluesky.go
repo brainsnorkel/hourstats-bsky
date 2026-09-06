@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
+	_ "image/jpeg" // registers the JPEG decoder for imageAspectRatio
+	_ "image/png"  // registers the PNG decoder for imageAspectRatio
 	"log/slog"
 	"strings"
 	"time"
@@ -749,11 +752,26 @@ func (c *BlueskyClient) UploadImage(ctx context.Context, imageData []byte, altTe
 			MimeType: contentType,
 			Size:     int64(len(imageData)),
 		},
-		Alt: ClampAltText(altText),
+		Alt:         ClampAltText(altText),
+		AspectRatio: imageAspectRatio(imageData),
 	}
 
-	slog.Info("successfully uploaded image blob", "ref", blob.Blob.Ref, "size_bytes", len(imageData), "mime_type", contentType)
+	slog.Info("successfully uploaded image blob", "ref", blob.Blob.Ref, "size_bytes", len(imageData), "mime_type", contentType, "aspect_ratio", imageRef.AspectRatio)
 	return imageRef, nil
+}
+
+// imageAspectRatio reads the pixel dimensions from the image header so the
+// embed can carry app.bsky.embed.defs#aspectRatio. Without it Bluesky clients
+// have no size hint before the image loads and fall back to a square frame,
+// letterboxing a 3:2 chart with blank bands above and below in the feed. Only
+// the header is decoded, so this is cheap. Returns nil when the data is not a
+// decodable PNG or JPEG, which leaves the embed exactly as it was before.
+func imageAspectRatio(imageData []byte) *bsky.EmbedDefs_AspectRatio {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(imageData))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil
+	}
+	return &bsky.EmbedDefs_AspectRatio{Width: int64(cfg.Width), Height: int64(cfg.Height)}
 }
 
 // PostWithImage posts a text with an embedded image and returns the post URI and CID
