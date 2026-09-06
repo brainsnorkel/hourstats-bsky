@@ -12,6 +12,7 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/hydrator"
+	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/christophergentle/hourstats-bsky/internal/stats"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 	"github.com/christophergentle/hourstats-bsky/internal/topics"
@@ -108,7 +109,8 @@ type topTopicStore interface {
 }
 
 // recordTopTopic attaches this cycle's rank-1 trending topic to its
-// sentiment_history row so the weekly chart can caption the high and low.
+// sentiment_history row so the trending reply can name the topic beside the
+// weekly high and low.
 // Nothing is written when the cycle produced no snapshot or is shutting down
 // (the writes would fail with "context canceled" anyway).
 func recordTopTopic(ctx context.Context, db topTopicStore, runID string, outcome topicAnalysisOutcome) {
@@ -438,9 +440,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			}
 		}
 
-		// Collect this cycle's topics before the sparkline so the chart can
-		// caption the newest point when it is the weekly high or low. The
-		// trending post itself still goes out after the sparkline.
+		// Collect this cycle's topics before the sparkline so the trending
+		// reply's week high/low footer can name the newest point's topic when
+		// that point is the weekly extreme. The trending post itself still
+		// goes out after the sparkline.
 		var outcome topicAnalysisOutcome
 		topicsCollected := false
 		if topicAnalysisDone != nil {
@@ -452,15 +455,24 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 					"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 				recordTopTopic(ctx, db, runID, outcome)
 			} else if ctx.Err() != nil {
-				slog.Info("shutdown during topic wait, sparkline will not carry this cycle's topic")
+				slog.Info("shutdown during topic wait, this cycle's topic will not be named with the week extremes")
 			} else {
-				slog.Warn("topic analysis still running, sparkline will not carry this cycle's topic",
+				slog.Warn("topic analysis still running, this cycle's topic will not be named with the week extremes",
 					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()))
 			}
 		}
 
+		// One read of the seven-day history feeds both the chart and the
+		// trending post's week high/low footer.
+		var weekPoints []state.SentimentDataPoint
+		if history, histErr := db.GetSentimentHistory(ctx, 7*24*time.Hour); histErr != nil {
+			slog.Error("get sentiment history failed, skipping sparkline and week extremes", "error", histErr)
+		} else {
+			weekPoints = toStateSentimentPoints(filterHighConfidence(history))
+		}
+
 		rootURI, rootCID := postedURI, postedCID
-		sparkURI, sparkCID := postSparkline(ctx, db, bskyClient, rootURI, rootCID, postedURI, postedCID, dryRun)
+		sparkURI, sparkCID := postSparkline(ctx, bskyClient, weekPoints, rootURI, rootCID, postedURI, postedCID, dryRun)
 		slog.Info("timing: sparkline complete", "cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 
 		if topicAnalysisDone != nil {
@@ -481,11 +493,15 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			} else {
 				// Reply under the sparkline when we have one, otherwise post
 				// standalone. Either way the snapshot must be this cycle's.
+				// A standalone post also drops the week high/low footer: the
+				// figures only read as a caption on the chart above them.
 				trendRoot, trendRootCID, trendParent, trendParentCID := rootURI, rootCID, sparkURI, sparkCID
+				trendExtremes := weekExtremes(weekPoints)
 				if sparkURI == "" || sparkCID == "" {
 					trendRoot, trendRootCID, trendParent, trendParentCID = "", "", "", ""
+					trendExtremes = nil
 				}
-				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, outcome.snapshotTime, trendRoot, trendRootCID, trendParent, trendParentCID); err != nil {
+				if err := topicAnalyzer.RunTrendingPost(ctx, bskyClient, dryRun, outcome.snapshotTime, trendRoot, trendRootCID, trendParent, trendParentCID, trendExtremes); err != nil {
 					slog.Error("trending post failed", "error", err)
 				} else {
 					slog.Info("timing: trending post complete", "cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))

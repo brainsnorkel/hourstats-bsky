@@ -396,6 +396,7 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 	postRecord := &bsky.FeedPost{
 		Text:      summaryText,
 		CreatedAt: time.Now().Format(time.RFC3339),
+		Langs:     postLangs,
 		Facets:    facets,
 		Embed:     embed,
 	}
@@ -673,6 +674,7 @@ func (c *BlueskyClient) PostWithFacetsRef(ctx context.Context, text string, face
 	postRecord := &bsky.FeedPost{
 		Text:      text,
 		CreatedAt: time.Now().Format(time.RFC3339),
+		Langs:     postLangs,
 	}
 
 	// Add facets if provided
@@ -771,6 +773,7 @@ func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageDat
 	postRecord := &bsky.FeedPost{
 		Text:      text,
 		CreatedAt: time.Now().Format(time.RFC3339),
+		Langs:     postLangs,
 		Embed: &bsky.FeedPost_Embed{
 			EmbedImages: &bsky.EmbedImages{
 				Images: []*bsky.EmbedImages_Image{imageRef},
@@ -812,6 +815,7 @@ func (c *BlueskyClient) PostWithFacetsAsReply(ctx context.Context, text string, 
 	postRecord := &bsky.FeedPost{
 		Text:      text,
 		CreatedAt: time.Now().Format(time.RFC3339),
+		Langs:     postLangs,
 		Reply: &bsky.FeedPost_ReplyRef{
 			Root: &atproto.RepoStrongRef{
 				Uri: rootURI,
@@ -861,6 +865,7 @@ func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, i
 	postRecord := &bsky.FeedPost{
 		Text:      text,
 		CreatedAt: time.Now().Format(time.RFC3339),
+		Langs:     postLangs,
 		Embed: &bsky.FeedPost_Embed{
 			EmbedImages: &bsky.EmbedImages{
 				Images: []*bsky.EmbedImages_Image{imageRef},
@@ -901,6 +906,7 @@ func (c *BlueskyClient) PostReplyWithQuote(ctx context.Context, text string, roo
 	postRecord := &bsky.FeedPost{
 		Text:      text,
 		CreatedAt: time.Now().Format(time.RFC3339),
+		Langs:     postLangs,
 		Reply: &bsky.FeedPost_ReplyRef{
 			Root: &atproto.RepoStrongRef{
 				Uri: rootURI,
@@ -1016,3 +1022,7 @@ func (c *BlueskyClient) PinPost(ctx context.Context, postURI string, postCID str
 	slog.Info("successfully pinned post", "uri", postURI)
 	return nil
 }
+
+// postLangs declares every post as English so Bluesky clients do not offer a
+// "Translate" link on short numeric texts whose language they cannot detect.
+var postLangs = []string{"en"}

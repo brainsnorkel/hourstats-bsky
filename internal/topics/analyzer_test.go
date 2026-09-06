@@ -183,7 +183,7 @@ func TestRunTrendingPost_DryRun(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), nil, true, "2026-01-01T06:00:00Z", "", "", "", "")
+	err := a.RunTrendingPost(context.Background(), nil, true, "2026-01-01T06:00:00Z", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestRunTrendingPost_NoSnapshots(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), nil, false, "2026-01-01T06:00:00Z", "", "", "", "")
+	err := a.RunTrendingPost(context.Background(), nil, false, "2026-01-01T06:00:00Z", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestRunTrendingPost_Posts(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "", "", "", "")
+	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestRunTrendingPost_AsReply(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "at://root/uri", "rootcid", "at://spark/uri", "sparkcid")
+	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "at://root/uri", "rootcid", "at://spark/uri", "sparkcid", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestRunTrendingPost_ReplyFallback(t *testing.T) {
 		hydrator: NewExemplarHydrator(ms),
 	}
 
-	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "at://root/uri", "rootcid", "at://spark/uri", "sparkcid")
+	err := a.RunTrendingPost(context.Background(), poster, false, "2026-01-01T06:00:00Z", "at://root/uri", "rootcid", "at://spark/uri", "sparkcid", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

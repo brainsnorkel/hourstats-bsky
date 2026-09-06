@@ -43,13 +43,17 @@ func TestCreateWikipediaLinkFacets(t *testing.T) {
 			t.Fatalf("got %d facets, want 2", len(facets))
 		}
 
-		for _, f := range facets {
+		for i, want := range []string{"2026_January_3", "2026_January_20"} {
+			f := facets[i]
 			if f.Features[0].RichtextFacet_Link == nil {
 				t.Fatal("expected link facet")
 			}
 			uri := f.Features[0].RichtextFacet_Link.Uri
-			if !strings.HasPrefix(uri, "https://en.wikipedia.org/wiki/Portal:Current_events/January_2026") {
+			if uri != "https://en.wikipedia.org/wiki/Portal:Current_events/"+want {
 				t.Errorf("unexpected Wikipedia URL: %q", uri)
+			}
+			if strings.Contains(uri, "#") {
+				t.Errorf("day page URL should carry no anchor: %q", uri)
 			}
 		}
 	})
@@ -74,11 +78,11 @@ func TestCreateWikipediaLinkFacets(t *testing.T) {
 		}
 
 		uri := facets[0].Features[0].RichtextFacet_Link.Uri
-		if !strings.Contains(uri, "January_2026") {
-			t.Errorf("expected January_2026 in URL, got %q", uri)
+		if !strings.Contains(uri, "Portal:Current_events/2026_January_3") {
+			t.Errorf("expected the 2026_January_3 day page, got %q", uri)
 		}
-		if !strings.Contains(uri, "#2026_January_3") {
-			t.Errorf("expected #2026_January_3 anchor in URL, got %q", uri)
+		if strings.Contains(uri, "#") {
+			t.Errorf("day page URL should carry no anchor: %q", uri)
 		}
 	})
 
@@ -95,13 +99,13 @@ func TestCreateWikipediaLinkFacets(t *testing.T) {
 		}
 
 		novURI := facets[0].Features[0].RichtextFacet_Link.Uri
-		if !strings.Contains(novURI, "November_2025") {
-			t.Errorf("expected November_2025, got %q", novURI)
+		if !strings.Contains(novURI, "Portal:Current_events/2025_November_15") {
+			t.Errorf("expected 2025_November_15, got %q", novURI)
 		}
 
 		janURI := facets[1].Features[0].RichtextFacet_Link.Uri
-		if !strings.Contains(janURI, "January_2026") {
-			t.Errorf("expected January_2026, got %q", janURI)
+		if !strings.Contains(janURI, "Portal:Current_events/2026_January_10") {
+			t.Errorf("expected 2026_January_10, got %q", janURI)
 		}
 	})
 

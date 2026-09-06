@@ -8,7 +8,7 @@ import (
 )
 
 // topicsWithLabels builds ranked topics with an exemplar each, so the formatter
-// has to drop exemplars first and only then start dropping topics.
+// has to drop whole trailing topics to fit.
 func topicsWithLabels(labels ...string) []IdentifiedTopic {
 	ranked := make([]IdentifiedTopic, len(labels))
 	for i, label := range labels {
@@ -24,8 +24,8 @@ func topicsWithLabels(labels ...string) []IdentifiedTopic {
 }
 
 // TestFormatTrendingPost_DropsTopicsWhenExemplarsExhausted is the regression
-// case: once every exemplar has been dropped the formatter used to return
-// over-limit text, which Bluesky then rejected.
+// case: the formatter used to return over-limit text once it ran out of
+// things to drop, which Bluesky then rejected.
 func TestFormatTrendingPost_DropsTopicsWhenExemplarsExhausted(t *testing.T) {
 	ranked := topicsWithLabels(
 		strings.Repeat("Alpha", 12),
@@ -35,7 +35,7 @@ func TestFormatTrendingPost_DropsTopicsWhenExemplarsExhausted(t *testing.T) {
 		strings.Repeat("Echo", 12),
 	)
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	if got := utf8.RuneCountInString(text); got > maxGraphemes {
 		t.Errorf("text is %d runes, want <= %d: %q", got, maxGraphemes, text)
@@ -75,7 +75,7 @@ func assertLastLineIsCompleteTopic(t *testing.T, text string, ranked []Identifie
 func TestFormatTrendingPost_HardTruncatesOversizeSingleTopic(t *testing.T) {
 	ranked := topicsWithLabels(strings.Repeat("A", 500))
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	if got := utf8.RuneCountInString(text); got != maxGraphemes {
 		t.Errorf("text is %d runes, want exactly %d after hard truncation", got, maxGraphemes)
@@ -91,7 +91,7 @@ func TestFormatTrendingPost_HardTruncatesOversizeSingleTopic(t *testing.T) {
 func TestFormatTrendingPost_TruncationKeepsRuneBoundaries(t *testing.T) {
 	ranked := topicsWithLabels(strings.Repeat("日", 500))
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	if got := utf8.RuneCountInString(text); got != maxGraphemes {
 		t.Errorf("text is %d runes, want exactly %d", got, maxGraphemes)
@@ -111,7 +111,7 @@ func TestFormatTrendingPost_ManyTopicsAlwaysFits(t *testing.T) {
 	}
 	ranked := topicsWithLabels(labels...)
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	if got := utf8.RuneCountInString(text); got > maxGraphemes {
 		t.Errorf("text is %d runes, want <= %d", got, maxGraphemes)
@@ -131,4 +131,37 @@ func assertFacetsInBounds(t *testing.T, text string, facets []Facet) {
 			t.Errorf("facet %d [%d,%d) out of bounds for %d-byte text", i, f.ByteStart, f.ByteEnd, len(text))
 		}
 	}
+}
+
+// TestFormatTrendingPost_DropsTopicRatherThanItsLink pins the rule that a
+// topic which no longer has room for its exemplar link is dropped whole:
+// the surviving topics all keep their links and no bare line is left.
+func TestFormatTrendingPost_DropsTopicRatherThanItsLink(t *testing.T) {
+	ranked := topicsWithLabels(
+		strings.Repeat("Alpha", 12),
+		strings.Repeat("Bravo", 12),
+		strings.Repeat("Charlie", 12),
+	)
+	full, _ := FormatTrendingPost(ranked, nil, 2, nil)
+	if utf8.RuneCountInString(full) > maxGraphemes {
+		t.Fatalf("test sizing: three linked topics already overflow (%d runes)", utf8.RuneCountInString(full))
+	}
+	ranked = append(ranked[:2], topicsWithLabels(strings.Repeat("Charlie", 20))...)
+	ranked[2].Rank = 3
+
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
+
+	if got := utf8.RuneCountInString(text); got > maxGraphemes {
+		t.Errorf("text is %d runes, want <= %d", got, maxGraphemes)
+	}
+	if strings.Contains(text, "3. ") {
+		t.Errorf("third topic should have been dropped rather than listed without its link: %q", text)
+	}
+	if got := strings.Count(text, "@someverylonghandlename.bsky.social"); got != 2 {
+		t.Errorf("want both surviving topics linked, got %d mentions: %q", got, text)
+	}
+	if len(facets) != 2 {
+		t.Errorf("want 2 link facets, got %d", len(facets))
+	}
+	assertFacetsInBounds(t, text, facets)
 }

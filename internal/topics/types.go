@@ -1,5 +1,7 @@
 package topics
 
+import "time"
+
 const (
 	MinDocFrequency   = 10
 	MinUniqueAuthors  = 3
@@ -36,4 +38,19 @@ type IdentifiedTopic struct {
 	Rank           int
 	ExemplarURI    string
 	ExemplarHandle string
+}
+
+// SentimentExtreme is one end of the seven-day sentiment range: the hour that
+// hit it and the trending topic recorded for that hour.
+type SentimentExtreme struct {
+	Value float64   // net sentiment, in percent
+	At    time.Time // the hour the reading belongs to
+	Topic string    // rank-1 topic that hour, "" when none was recorded
+}
+
+// WeekExtremes carries the week's highest and lowest hour so the trending post
+// can close with them.
+type WeekExtremes struct {
+	High SentimentExtreme
+	Low  SentimentExtreme
 }

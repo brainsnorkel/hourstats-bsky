@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
+	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
@@ -83,20 +83,13 @@ func postSummary(ctx context.Context, bskyClient summaryPoster, topPosts []analy
 // Sparkline
 // ---------------------------------------------------------------------------
 
-func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.BlueskyClient, rootURI, rootCID, parentURI, parentCID string, dryRun bool) (string, string) {
-	history, err := db.GetSentimentHistory(ctx, 7*24*time.Hour)
-	if err != nil {
-		slog.Error("get sentiment history failed", "error", err)
+// postSparkline renders and posts the seven-day chart. The caller supplies the
+// history so the same points can feed the trending post's week extremes.
+func postSparkline(ctx context.Context, bskyClient *client.BlueskyClient, statePoints []state.SentimentDataPoint, rootURI, rootCID, parentURI, parentCID string, dryRun bool) (string, string) {
+	if len(statePoints) < 2 {
+		slog.Info("insufficient data for sparkline after low-confidence filter", "points", len(statePoints))
 		return "", ""
 	}
-
-	history = filterHighConfidence(history)
-	if len(history) < 2 {
-		slog.Info("insufficient data for sparkline after low-confidence filter", "points", len(history))
-		return "", ""
-	}
-
-	statePoints := toStateSentimentPoints(history)
 
 	gen := sparkline.NewSparklineGenerator(nil)
 	imgData, err := gen.GenerateSentimentSparkline(statePoints)
@@ -109,7 +102,7 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 	altText := generateSparklineAltText(statePoints)
 
 	if dryRun {
-		slog.Info("DRY_RUN: would post sparkline", "points", len(history), "image_bytes", len(imgData))
+		slog.Info("DRY_RUN: would post sparkline", "points", len(statePoints), "image_bytes", len(imgData))
 		return "", ""
 	}
 
@@ -134,6 +127,6 @@ func postSparkline(ctx context.Context, db *store.Store, bskyClient *client.Blue
 	if sparkURI == "" || sparkCID == "" {
 		slog.Warn("sparkline URI/CID empty; trending attachment will be skipped")
 	}
-	slog.Info("sparkline posted", "points", len(history))
+	slog.Info("sparkline posted", "points", len(statePoints))
 	return sparkURI, sparkCID
 }

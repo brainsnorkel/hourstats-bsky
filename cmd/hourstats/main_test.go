@@ -517,16 +517,14 @@ func TestGenerateSparklineAltText(t *testing.T) {
 		t.Errorf("single point fallback: %q", got)
 	}
 
-	// Recorded top topics are named next to the high and low they belong to.
+	// Recorded top topics belong to the sparkline reply text, not the image,
+	// so the alt text must not name them.
 	points[167].TopTopic = "  Charlie  Kirk shooting "
 	points[0].TopTopic = "Football"
 	got = generateSparklineAltText(points)
-	for _, want := range []string{
-		"High +12.0% on Thu 23:00 (top topic: Charlie Kirk shooting)",
-		"low +9.0% on Fri 00:00 (top topic: Football)",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in: %q", want, got)
+	for _, unwanted := range []string{"top topic", "Charlie Kirk shooting", "Football"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("unexpected %q in alt text: %q", unwanted, got)
 		}
 	}
 }

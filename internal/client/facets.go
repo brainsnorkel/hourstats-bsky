@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/api/bsky"
+	"github.com/christophergentle/hourstats-bsky/internal/wikipedia"
 )
 
 // EventDate represents a date for Wikipedia link generation
@@ -103,12 +104,6 @@ func CreateWikipediaLinkFacets(text string, eventDates ...EventDate) []*bsky.Ric
 			}
 		}
 
-		// Generate Wikipedia URL for this date
-		monthName := date.Format("January")
-		day := date.Day()
-		wikiURL := fmt.Sprintf("https://en.wikipedia.org/wiki/Portal:Current_events/%s_%d#%d_%s_%d",
-			monthName, year, year, monthName, day)
-
 		// Create a link facet for the entire date + "events" phrase
 		facet := &bsky.RichtextFacet{
 			Index: &bsky.RichtextFacet_ByteSlice{
@@ -118,7 +113,7 @@ func CreateWikipediaLinkFacets(text string, eventDates ...EventDate) []*bsky.Ric
 			Features: []*bsky.RichtextFacet_Features_Elem{
 				{
 					RichtextFacet_Link: &bsky.RichtextFacet_Link{
-						Uri: wikiURL,
+						Uri: wikipedia.CurrentEventsDayURL(date),
 					},
 				},
 			},

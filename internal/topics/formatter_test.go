@@ -11,9 +11,9 @@ func TestFormatTrendingPost_AllNew(t *testing.T) {
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Weather"}}, TopicID: "t2", Rank: 2},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
-	if !strings.HasPrefix(text, "Trending topic exemplar posts:\n\n") {
+	if !strings.HasPrefix(text, "Trending topic samples:\n\n") {
 		t.Errorf("expected exemplar posts header, text: %q", text)
 	}
 	if !strings.Contains(text, "1. Politics") {
@@ -61,7 +61,7 @@ func TestFormatTrendingPost_NoMovementIndicators(t *testing.T) {
 		{TopicID: "t2", Rank: 2},
 	}
 
-	text, _ := FormatTrendingPost(ranked, previous, 2)
+	text, _ := FormatTrendingPost(ranked, previous, 2, nil)
 
 	if strings.Contains(text, "(+") || strings.Contains(text, "(-") || strings.Contains(text, "(->)") || strings.Contains(text, "(NEW)") {
 		t.Errorf("expected no movement indicators, text: %q", text)
@@ -86,7 +86,7 @@ func TestFormatTrendingPost_CapsAtThreeTopics(t *testing.T) {
 		})
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	if !strings.Contains(text, "3. C") {
 		t.Errorf("expected third topic, text: %q", text)
@@ -104,7 +104,7 @@ func TestFormatTrendingPost_NoTagFacets(t *testing.T) {
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Test"}}, TopicID: "t1", Rank: 1},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	if strings.Contains(text, "#") {
 		t.Errorf("trending post should contain no hashtags, text: %q", text)
@@ -127,7 +127,7 @@ func TestFormatTrendingPost_ExemplarLinkFacetOffset(t *testing.T) {
 		},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	var linkFacet *Facet
 	for i := range facets {
@@ -168,7 +168,7 @@ func TestFormatTrendingPost_NoExemplar(t *testing.T) {
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Test"}}, TopicID: "t1", Rank: 1},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 	if strings.Contains(text, "@") {
 		t.Errorf("expected no @ mention without exemplar, text: %q", text)
 	}
@@ -192,7 +192,7 @@ func TestFormatTrendingPost_MemeTopicSearchLink(t *testing.T) {
 		},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	if !strings.Contains(text, "1. Post a Banger 🔍") {
 		t.Errorf("expected meme topic with 🔍, text: %q", text)
@@ -241,7 +241,7 @@ func TestFormatTrendingPost_MixedMemeAndExemplar(t *testing.T) {
 		},
 	}
 
-	text, facets := FormatTrendingPost(ranked, nil, 2)
+	text, facets := FormatTrendingPost(ranked, nil, 2, nil)
 
 	if !strings.Contains(text, "1. Donald Trump @alice.bsky.social") {
 		t.Errorf("expected exemplar for non-meme topic, text: %q", text)

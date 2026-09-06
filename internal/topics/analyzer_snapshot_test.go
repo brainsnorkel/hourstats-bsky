@@ -39,7 +39,7 @@ func TestRunTrendingPost_EmptySnapshotTimeSuppresses(t *testing.T) {
 	ms := twoWindowStore()
 	poster := &mockPoster{}
 
-	err := analyzerFor(ms).RunTrendingPost(context.Background(), poster, false, "", "", "", "", "")
+	err := analyzerFor(ms).RunTrendingPost(context.Background(), poster, false, "", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestRunTrendingPost_UsesGivenSnapshotNotLatest(t *testing.T) {
 	ms := twoWindowStore()
 	poster := &mockPoster{}
 
-	err := analyzerFor(ms).RunTrendingPost(context.Background(), poster, false, "2026-01-01T00:00:00Z", "", "", "", "")
+	err := analyzerFor(ms).RunTrendingPost(context.Background(), poster, false, "2026-01-01T00:00:00Z", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestRunTrendingPost_UnknownSnapshotTimeSuppresses(t *testing.T) {
 	ms := twoWindowStore()
 	poster := &mockPoster{}
 
-	err := analyzerFor(ms).RunTrendingPost(context.Background(), poster, false, "2026-01-01T12:00:00Z", "", "", "", "")
+	err := analyzerFor(ms).RunTrendingPost(context.Background(), poster, false, "2026-01-01T12:00:00Z", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

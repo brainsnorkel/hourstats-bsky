@@ -79,11 +79,11 @@ Everything runs inside `cmd/hourstats/main.go` on Fly.io:
 | **Write Flusher** | 2s ticker / 1500 batch | Batches pending writes to reduce SQLite contention |
 | **Analysis Cycle** | Wall-clock ticker (default 30m, configurable; prod runs 60m at :55 via `ANALYSIS_INTERVAL_MINUTES`/`ANALYSIS_OFFSET_MINUTES`) | Hydrate engagement, VADER sentiment, post summary. Runs in its own goroutine so the other tickers keep firing; an overlapping tick is skipped and logged as `cycle_overlap_skipped` |
 | **Sparkline** | After analysis | 7-day sentiment chart posted as reply |
-| **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled). Analysis runs in parallel with hydration; the cycle collects its result (bounded 60s wait) before rendering the sparkline so the rank-1 label can be stored on the cycle's `sentiment_history.top_topic` and captioned next to the weekly high/low on the chart. The trending reply itself is still posted after the sparkline |
+| **Trending Topics** | After sparkline | TF-IDF + grouping (Gemini primary → `GROUP_FALLBACK_MODEL` → offline co-occurrence clustering → suppress), reply to sparkline (if enabled). Analysis runs in parallel with hydration; the cycle collects its result (bounded 60s wait) before the single seven-day `sentiment_history` read that opens the posting block, so this cycle's rank-1 label is already on its `top_topic` row when that read happens. Those same points feed both the chart and the trending reply's footer. The trending reply is posted after the sparkline and ends with a footer naming the week's highest and lowest hour, each hour's top topic when one is known, and a link to that day's Wikipedia current events page. The footer is the first thing dropped when the post would exceed 300 graphemes: its topic labels shrink from 28 to 12 runes, then go, then the whole footer, all before any topic is dropped. After that, trailing topics are dropped whole rather than listed without their exemplar link; only the rank-1 topic gives up its link before its label is cut. It is also dropped when the sparkline failed and the trending post goes out standalone, since the figures only read as a caption on the chart above them |
 | **Daily Cycle** | Midnight UTC | SQLite backup to S3, daily aggregation (now including the day's firehose total), report rollups (`topic_daily` for the last 3 days, `daily_top_post` for every day `runs` still covers, firehose backfill for daily rows that predate the column), top-post quote reply. Runs in its own goroutine, after waiting up to 15m for an in-flight analysis cycle so the aggregate includes the day's last cycle |
 | **Weekly Report** | End of the daily cycle (`REPORTS_ENABLED`) | Week-in-review text root (mood, delta vs prior week, happiest/unhappiest day, stickiest topic, posts analysed) plus a reply quoting the post of the week. Covers the last complete Monday–Sunday week; the guard key `weekly_report_last_week` makes it a no-op until a new week exists, so it posts on Monday and catches up if that run was skipped. Skipped with fewer than 5 daily rows |
 | **Monthly Report** | After yearly posting (`REPORTS_ENABLED`) | Candlestick chart root plus a volume chart reply (English and, when tracked for every day, the full firehose; when every day also has a language split, the firehose is stacked as English plus the top 5 languages plus "other"). Covers the previous calendar month; guard key `monthly_report_last_month` (posts on the 1st, catches up if skipped). Skipped with fewer than 20 daily rows |
-| **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile. Same goroutine/guard as the daily cycle, so chart rendering never overlaps a cycle or a daily run; a skipped tick logs `job_overlap_skipped` |
+| **Yearly Posting** | 1st of month 01:00 UTC | 365-day sentiment chart, pinned to profile. Same goroutine/guard as the daily cycle, so chart rendering never overlaps a cycle or a daily run; a skipped tick logs `job_overlap_skipped`. Its `<Mon> <D> events` link facets and the trending footer's bare `<Mon> <D>` dates point at the per-day `Portal:Current_events/YYYY_Month_D` subpage (built by `internal/wikipedia`) rather than an anchor into the monthly page |
 | **Stall Detection** | 5m ticker | Warns if no posts received in 5m and force-closes the WebSocket so the consumer reconnects |
 | **WAL Checkpoint** | 5m ticker | Pressure-based WAL checkpoint: PASSIVE under threshold, TRUNCATE over threshold (default 50MB) |
 
@@ -99,7 +99,7 @@ Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
                             VADER sentiment -> Top 3 by engagement -> Post summary
                                     |
                             Sparkline reply -> Trending topics reply
-                            (sparkline captions the 7-day high/low with that hour's top topic)
+                            (trending reply ends with the 7-day high/low hour, its top topic, and a link to the day's Wikipedia current events)
 ```
 
 Before posting the summary, the #1 post is checked for quote controls via an
@@ -129,6 +129,7 @@ embed in place. The weekly post-of-the-week reply reuses the same check.
 | `internal/statsapi` | HTTP stats API server (port 9111) |
 | `internal/state` | Type definitions for sentiment data points |
 | `internal/config` | Configuration types |
+| `internal/wikipedia` | Wikipedia link building (`Portal:Current_events` per-day URLs) |
 
 **Legacy packages** (AWS Lambda era, still in repo): `internal/backup`, `internal/awsutil`, `internal/lambda`, `internal/scheduler`
 

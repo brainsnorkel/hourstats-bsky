@@ -283,8 +283,8 @@ func runDailyTopPostQuote(ctx context.Context, db *store.Store, handle, password
 	}
 
 	yesterdayTime, _ := time.Parse("2006-01-02", yesterday)
-	text := fmt.Sprintf("Most engaged post %s by @%s",
-		yesterdayTime.Format("Mon Jan 2"),
+	text := fmt.Sprintf("Top engagement %s by @%s",
+		yesterdayTime.Format("Jan 2"),
 		topPost.AuthorHandle,
 	)
 

@@ -5,6 +5,10 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/christophergentle/hourstats-bsky/internal/formatter"
+	"github.com/christophergentle/hourstats-bsky/internal/wikipedia"
 )
 
 type FacetType int
@@ -28,7 +32,25 @@ const maxGraphemes = 300
 // published list is shortened.
 const maxPostedTopics = 3
 
-func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, analysisHours int) (string, []Facet) {
+// Rune caps on the topic named beside each weekly extreme in the footer.
+// footerNoTopics keeps the footer but drops both labels; footerDropped drops
+// the footer outright.
+const (
+	footerTopicMaxRunes = 28
+	footerTopicMinRunes = 12
+	footerTopicStep     = 4
+	footerNoTopics      = 0
+	footerDropped       = -1
+)
+
+// FormatTrendingPost renders the trending reply: the ranked topic list and,
+// when extremes is non-nil, a footer naming the week's highest and lowest
+// hour with a link to that day's Wikipedia current events page.
+//
+// Everything must fit inside maxGraphemes. The footer is the cheapest thing
+// to give up, so it shrinks and then disappears before any topic content is
+// touched.
+func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, analysisHours int, extremes *WeekExtremes) (string, []Facet) {
 	if len(ranked) > maxPostedTopics {
 		ranked = ranked[:maxPostedTopics]
 	}
@@ -37,55 +59,128 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, an
 		showExemplar[i] = true
 	}
 
-	text := buildTrendingText(ranked, showExemplar, analysisHours)
-	for len([]rune(text)) > maxGraphemes {
-		dropped := false
-		for i := len(ranked) - 1; i >= 0; i-- {
-			if showExemplar[i] {
-				showExemplar[i] = false
-				dropped = true
-				break
-			}
+	footerTopicCap := footerDropped
+	if extremes != nil {
+		footerTopicCap = footerTopicMaxRunes
+	}
+	build := func() (string, []Facet) {
+		return buildPost(ranked, showExemplar, analysisHours, extremes, footerTopicCap)
+	}
+	overflows := func(text string) bool { return utf8.RuneCountInString(text) > maxGraphemes }
+
+	text, facets := build()
+
+	// Shrink the footer's topic labels, then drop them, then drop the footer.
+	for overflows(text) && footerTopicCap != footerDropped {
+		switch {
+		case footerTopicCap-footerTopicStep >= footerTopicMinRunes:
+			footerTopicCap -= footerTopicStep
+		case footerTopicCap > footerNoTopics:
+			footerTopicCap = footerNoTopics
+		default:
+			footerTopicCap = footerDropped
 		}
-		if !dropped {
-			break
-		}
-		text = buildTrendingText(ranked, showExemplar, analysisHours)
+		text, facets = build()
 	}
 
-	// Exemplars are exhausted and the text still doesn't fit. Drop trailing
-	// (lowest-ranked) topics until it does, keeping at least the top topic so
-	// the post still says something.
-	for len([]rune(text)) > maxGraphemes && len(ranked) > 1 {
+	// A topic listed without its exemplar link says little, so when the list
+	// itself has to shrink, trailing topics go whole rather than losing their
+	// links. Only the top topic is kept at any cost.
+	for overflows(text) && len(ranked) > 1 {
 		ranked = ranked[:len(ranked)-1]
 		showExemplar = showExemplar[:len(ranked)]
-		text = buildTrendingText(ranked, showExemplar, analysisHours)
+		text, facets = build()
+	}
+
+	// One topic left: give up its exemplar before cutting into its label.
+	if overflows(text) && len(showExemplar) > 0 && showExemplar[0] {
+		showExemplar[0] = false
+		text, facets = build()
 	}
 
 	// Last resort: one topic whose label alone overflows. Cut on a rune
 	// boundary — Bluesky rejects anything over 300 graphemes, and facets are
-	// built from the final text so no offset can point past the end.
+	// rebuilt from the final text so no offset can point past the end.
 	if runes := []rune(text); len(runes) > maxGraphemes {
 		text = string(runes[:maxGraphemes])
+		facets = buildFacets(text, visibleTopics(ranked, showExemplar))
 	}
 
-	filtered := make([]IdentifiedTopic, len(ranked))
+	return text, facets
+}
+
+// buildPost renders the topic list and, when asked for, the extremes footer,
+// returning the text with facets whose offsets are relative to it.
+func buildPost(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int, extremes *WeekExtremes, footerTopicCap int) (string, []Facet) {
+	text := buildTrendingText(ranked, showExemplar, analysisHours)
+	facets := buildFacets(text, visibleTopics(ranked, showExemplar))
+	if extremes == nil || footerTopicCap == footerDropped {
+		return text, facets
+	}
+
+	// The footer is appended after the topic list, so the exemplar facets
+	// above keep their offsets and the footer's are taken from the running
+	// length rather than by searching for the phrase (a topic label could
+	// contain it).
+	text += "\n\n"
+	text, high := appendExtremeLine(text, "Week high", extremes.High, footerTopicCap)
+	text += "\n"
+	text, low := appendExtremeLine(text, "Week low", extremes.Low, footerTopicCap)
+	return text, append(facets, high, low)
+}
+
+// appendExtremeLine writes one footer line and returns the link facet
+// covering its "Jan 2" date, which links to that day's Wikipedia page.
+func appendExtremeLine(text, prefix string, e SentimentExtreme, topicCap int) (string, Facet) {
+	at := e.At.UTC()
+	text += fmt.Sprintf("%s %s, %s UTC", prefix, formatter.SignedPercent(e.Value), at.Format("Mon 15:04"))
+	if topic := truncateLabel(e.Topic, topicCap); topic != "" {
+		text += " · " + topic
+	}
+	text += " · "
+	byteStart := len(text)
+	text += at.Format("Jan 2")
+	return text, Facet{
+		ByteStart: byteStart,
+		ByteEnd:   len(text),
+		Type:      FacetLink,
+		Value:     wikipedia.CurrentEventsDayURL(e.At),
+	}
+}
+
+// truncateLabel collapses whitespace and shortens a label to maxRunes,
+// ending it with an ellipsis when it was cut. A cap of zero or less drops the
+// label entirely.
+func truncateLabel(label string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	label = strings.Join(strings.Fields(label), " ")
+	r := []rune(label)
+	if len(r) <= maxRunes {
+		return label
+	}
+	return strings.TrimRight(string(r[:maxRunes-1]), " ") + "…"
+}
+
+// visibleTopics blanks the exemplar of any topic whose exemplar was dropped,
+// so buildFacets only links what the text actually shows.
+func visibleTopics(ranked []IdentifiedTopic, showExemplar []bool) []IdentifiedTopic {
+	visible := make([]IdentifiedTopic, len(ranked))
 	for i, t := range ranked {
-		filtered[i] = t
+		visible[i] = t
 		if !showExemplar[i] {
-			filtered[i].ExemplarHandle = ""
-			filtered[i].ExemplarURI = ""
-			filtered[i].Cluster.IsMeme = false
+			visible[i].ExemplarHandle = ""
+			visible[i].ExemplarURI = ""
+			visible[i].Cluster.IsMeme = false
 		}
 	}
-
-	facets := buildFacets(text, filtered)
-	return text, facets
+	return visible
 }
 
 func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int) string {
 	var b strings.Builder
-	b.WriteString("Trending topic exemplar posts:\n\n")
+	b.WriteString("Trending topic samples:\n\n")
 
 	for i, topic := range ranked {
 		line := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)

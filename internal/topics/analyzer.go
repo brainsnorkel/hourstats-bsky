@@ -191,7 +191,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 // stops a failed analysis from republishing the previous window's topics as if
 // they were current. An empty snapshotTime means this cycle produced nothing,
 // so there is nothing to post.
-func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, dryRun bool, snapshotTime, rootURI, rootCID, parentURI, parentCID string) error {
+func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, dryRun bool, snapshotTime, rootURI, rootCID, parentURI, parentCID string, extremes *WeekExtremes) error {
 	start := time.Now()
 
 	if snapshotTime == "" {
@@ -265,7 +265,7 @@ func (a *Analyzer) RunTrendingPost(ctx context.Context, poster TrendingPoster, d
 		slog.Warn("topics: exemplar hydration error", "error", err)
 	}
 
-	text, facets := FormatTrendingPost(latestTopics, previous, 2)
+	text, facets := FormatTrendingPost(latestTopics, previous, 2, extremes)
 
 	if dryRun {
 		slog.Info("topics: DRY RUN trending post", "text", text, "facets", len(facets))

@@ -5,7 +5,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
+	"github.com/christophergentle/hourstats-bsky/internal/formatter"
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 )
 
@@ -15,15 +15,7 @@ import (
 // it is in, the extremes with their timing, and which way the trend moved.
 
 // signedPct formats a percentage with an explicit sign for positive values.
-func signedPct(v float64) string {
-	switch {
-	case v >= 0.05:
-		return fmt.Sprintf("+%.1f%%", v)
-	case v > -0.05:
-		return "0.0%"
-	}
-	return fmt.Sprintf("%.1f%%", v)
-}
+func signedPct(v float64) string { return formatter.SignedPercent(v) }
 
 // zonePhrase names the sentiment zone a value falls in, matching the chart's
 // shaded band (-10% to +10% is neutral).
@@ -99,28 +91,18 @@ func generateSparklineAltText(points []state.SentimentDataPoint) string {
 
 	text := fmt.Sprintf(
 		"Chart of Bluesky net sentiment, hourly readings from %s to %s UTC, drawn as dots with a smoothed trend line. "+
-			"Latest %s, %s, %s. High %s on %s%s; low %s on %s%s.",
+			"Latest %s, %s, %s. High %s on %s; low %s on %s.",
 		first.Timestamp.Format("Mon 2 Jan"), latest.Timestamp.Format("Mon 2 Jan"),
 		signedPct(latest.NetSentimentPercent),
 		deltaPhrase(latest.NetSentimentPercent, avg, "7-day average"),
 		zonePhrase(latest.NetSentimentPercent),
-		signedPct(values[hi]), points[hi].Timestamp.Format("Mon 15:04"), topTopicPhrase(points[hi]),
-		signedPct(values[lo]), points[lo].Timestamp.Format("Mon 15:04"), topTopicPhrase(points[lo]),
+		signedPct(values[hi]), points[hi].Timestamp.Format("Mon 15:04"),
+		signedPct(values[lo]), points[lo].Timestamp.Format("Mon 15:04"),
 	)
 	if trend := trendPhrase(values, "week"); trend != "" {
 		text += " " + trend
 	}
 	return text
-}
-
-// topTopicPhrase names the hour's top trending topic for the alt text, or
-// returns "" when none was recorded.
-func topTopicPhrase(p state.SentimentDataPoint) string {
-	topic := sparkline.TruncateNote(p.TopTopic)
-	if topic == "" {
-		return ""
-	}
-	return fmt.Sprintf(" (top topic: %s)", topic)
 }
 
 // yearlyDay formats a yearly point's date as "2 Jan", preferring the Date

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image/color"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/fogleman/gg"
@@ -32,35 +31,6 @@ import (
 type seriesPoint struct {
 	T time.Time
 	V float64
-	// Note is optional context drawn beside the point when it is marked as
-	// an extreme (the weekly chart passes the hour's top trending topic).
-	Note string
-}
-
-// MaxNoteRunes caps an extreme note so it stays a short caption on the plot.
-// Alt text uses the same cap so the image and its description agree.
-const MaxNoteRunes = 28
-
-// TruncateNote collapses whitespace and shortens a note to MaxNoteRunes,
-// ending it with an ellipsis when it was cut.
-func TruncateNote(note string) string {
-	note = strings.Join(strings.Fields(note), " ")
-	r := []rune(note)
-	if len(r) <= MaxNoteRunes {
-		return note
-	}
-	return strings.TrimRight(string(r[:MaxNoteRunes-1]), " ") + "…"
-}
-
-// hasNotes reports whether any point carries a caption note, which needs a
-// taller margin above the high and below the low.
-func hasNotes(points []seriesPoint) bool {
-	for _, p := range points {
-		if TruncateNote(p.Note) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 // statTile is a small label/value/caption block in the header.
@@ -109,18 +79,9 @@ type chartRange struct {
 	Min, Max, Tick float64
 }
 
-// Fraction of the data spread left clear above the high and below the low.
-// The wider margin is used when extremes carry a two-line caption (value plus
-// topic note) so the stack fits inside the plot without flipping.
-const (
-	rangePadFraction      = 0.12
-	rangePadFractionNotes = 0.18
-)
-
-// fitRange chooses a y-range hugging the data: padFraction of the spread on
-// each side (never less than minPad) and then snapped outward to tick
-// boundaries.
-func fitRange(values []float64, minPad, padFraction float64) chartRange {
+// fitRange chooses a y-range hugging the data: 12% of the spread on each side
+// (never less than minPad) and then snapped outward to tick boundaries.
+func fitRange(values []float64, minPad float64) chartRange {
 	if len(values) == 0 {
 		return chartRange{Min: -100, Max: 100, Tick: 50}
 	}
@@ -129,7 +90,7 @@ func fitRange(values []float64, minPad, padFraction float64) chartRange {
 		lo = math.Min(lo, v)
 		hi = math.Max(hi, v)
 	}
-	pad := (hi - lo) * padFraction
+	pad := (hi - lo) * 0.12
 	if pad < minPad {
 		pad = minPad
 	}
@@ -202,7 +163,7 @@ func renderSeriesChart(spec seriesChartSpec) ([]byte, error) {
 		h:   H - 186*s - 84*s,
 		t0:  spec.Points[0].T,
 		t1:  spec.Points[len(spec.Points)-1].T,
-		rng: fitRange(values, 0.75, plotPadFraction(spec)),
+		rng: fitRange(values, 0.75),
 	}
 
 	drawHeader(dc, spec, s, W)
@@ -515,49 +476,7 @@ func drawAverage(dc *gg.Context, p plotArea, spec seriesChartSpec, s float64) {
 	drawHaloText(dc, label, p.right()-6*s, y-6*s, 1, 0, themeInkSecondary, s)
 }
 
-// plotPadFraction picks the vertical margin for the plot.
-func plotPadFraction(spec seriesChartSpec) float64 {
-	if spec.MarkExtremes && hasNotes(spec.Points) {
-		return rangePadFractionNotes
-	}
-	return rangePadFraction
-}
-
-// captionStack lays out n caption lines stacked outward from a dot at y,
-// starting a gap away and then lineGap apart. It returns whether the lines go
-// above the dot and the y handed to DrawStringAnchored for each line: the
-// baseline when above (ay=0), the top of the glyph box when below (ay=1).
-// A stack that would leave the plot (top..bottom) flips to the other side.
-func captionStack(y, top, bottom, lh, gap, lineGap float64, n int, above bool) (bool, []float64) {
-	if n <= 0 {
-		return above, nil
-	}
-	stack := gap + lh + float64(n-1)*(lineGap+lh)
-	if above && y-stack < top {
-		above = false
-	} else if !above && y+stack > bottom {
-		above = true
-	}
-	ys := make([]float64, n)
-	edge, g := y, gap
-	for i := range ys {
-		if above {
-			ys[i] = edge - g
-			edge -= g + lh
-		} else {
-			ys[i] = edge + g
-			edge += g + lh
-		}
-		g = lineGap
-	}
-	return above, ys
-}
-
-// drawExtremes marks the highest and lowest raw observations. The value
-// label sits nearest the dot and the point's Note, if any, stacks beyond it.
-// The latest point gets only its note, since the hero figure already carries
-// its value. A stack that would run off the plot flips to the other side of
-// the dot.
+// drawExtremes marks the highest and lowest raw observations.
 func drawExtremes(dc *gg.Context, p plotArea, spec seriesChartSpec, s float64) {
 	if len(spec.Points) < 2 {
 		return
@@ -576,38 +495,22 @@ func drawExtremes(dc *gg.Context, p plotArea, spec seriesChartSpec, s float64) {
 	}
 	last := len(spec.Points) - 1
 
-	type caption struct {
-		text string
-		ink  color.RGBA
-	}
+	setFont(dc, 16*s, false)
 	mark := func(idx int, prefix string, above bool) {
 		pt := spec.Points[idx]
 		x, y := p.xAt(pt.T), p.yAt(pt.V)
 		strong, _ := polarityColor(pt.V)
 		drawDot(dc, x, y, 5*s, strong, s)
-
-		var lines []caption
-		if idx != last {
-			lines = append(lines, caption{fmt.Sprintf("%s %.1f%%", prefix, pt.V), themeInkSecondary})
+		if idx == last {
+			return // the latest marker and hero already carry this value
 		}
-		if note := TruncateNote(pt.Note); note != "" {
-			lines = append(lines, caption{note, themeInkPrimary})
-		}
-		if len(lines) == 0 {
-			return
-		}
-
-		setFont(dc, 16*s, false)
-		_, lh := dc.MeasureString("") // gg reports the font height regardless of the string
-		above, ys := captionStack(y, p.y+2*s, p.bottom()-2*s, lh, 12*s, 5*s, len(lines), above)
-		for i, ln := range lines {
-			lw, _ := dc.MeasureString(ln.text)
-			lx := math.Min(math.Max(x, p.x+lw/2+4*s), p.right()-lw/2-4*s)
-			if above {
-				drawHaloText(dc, ln.text, lx, ys[i], 0.5, 0, ln.ink, s)
-			} else {
-				drawHaloText(dc, ln.text, lx, ys[i], 0.5, 1, ln.ink, s)
-			}
+		label := fmt.Sprintf("%s %.1f%%", prefix, pt.V)
+		lw, _ := dc.MeasureString(label)
+		lx := math.Min(math.Max(x, p.x+lw/2+4*s), p.right()-lw/2-4*s)
+		if above {
+			drawHaloText(dc, label, lx, y-12*s, 0.5, 0, themeInkSecondary, s)
+		} else {
+			drawHaloText(dc, label, lx, y+12*s, 0.5, 1, themeInkSecondary, s)
 		}
 	}
 	mark(hiIdx, "High", true)
