@@ -19,8 +19,13 @@ import (
 // 😭 is deliberately 0: on Bluesky it is ambiguous between laughing and
 // crying, so it should carry no signal rather than the stock -2.1.
 //
-// The table only covers single-rune emoji. Multi-rune sequences (ZWJ
-// families, flags, keycaps) are a follow-up: hs-kls.
+// The table only covers single-rune emoji. Multi-rune sequences were
+// measured on 2026-09-07 (hs-kls) and need no special handling: innuendo
+// pairs such as 🍆💦 did not occur at all in 3,106 English posts, ZWJ
+// sequences score as their stripped components, and laughter idioms such as
+// 💀😭 are already covered by the 💀 and 😭 entries below. The 2026-09-07
+// additions at the end are the most frequent emoji in the English stream
+// that the stock dictionary scored as 0.
 var emojiValences = map[rune]float64{
 	'🔥': 2.5,
 	'❤': 3.0, // U+2764, without the U+FE0F variation selector
@@ -61,6 +66,14 @@ var emojiValences = map[rune]float64{
 	'🖕': -3.0,
 	'🤡': -1.5,
 	'💔': -2.5,
+	// Added 2026-09-07 from a frequency capture (hs-kls): all scored 0 in stock
+	// govader because their Unicode names carry no lexicon words.
+	'🤩': 2.5,
+	'🫂': 2.0,
+	'🥺': 1.0,
+	'🩷': 2.5,
+	'🩵': 2.5,
+	'🩶': 2.0,
 }
 
 // applyEmojiOverrides rewires sa so that every emoji in emojiValences scores

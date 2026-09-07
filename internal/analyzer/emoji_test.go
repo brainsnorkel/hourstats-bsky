@@ -62,6 +62,9 @@ func TestNewEmojiAwareScores(t *testing.T) {
 		{"heart in a sentence", "I \u2764\uFE0F this", func(v float64) bool { return v > 0 }, "> 0"},
 		{"thumbs up with skin tone", "\U0001F44D\U0001F3FD", func(v float64) bool { return v > 0 }, "> 0"},
 		{"ambiguous sob carries no signal", "😭", func(v float64) bool { return v == 0 }, "== 0"},
+		{"star-struck (silent in stock)", "🤩", func(v float64) bool { return v >= 0.3 }, ">= 0.3"},
+		{"pink heart (silent in stock)", "🩷", func(v float64) bool { return v >= 0.3 }, ">= 0.3"},
+		{"laughter idiom leans positive", "💀😭", func(v float64) bool { return v > 0 }, "> 0"},
 	}
 
 	for _, tt := range tests {
