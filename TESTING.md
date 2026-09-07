@@ -1,11 +1,11 @@
 # Testing Guide for HourStats Bluesky Bot
 
-This document describes how to test the HourStats Bluesky bot locally and in different environments. The bot uses a multi-Lambda serverless architecture with comprehensive testing at multiple levels.
+This document describes how to test the HourStats Bluesky bot locally and in different environments. The bot is a single Go binary (`cmd/hourstats`) deployed to Fly.io; every component — the Jetstream consumer, the analysis cycle, the daily and yearly jobs, the stats API — runs as a goroutine inside that one process against a local SQLite database. Tests are plain `go test` packages using the stdlib `testing` package only; there is no external test framework and no cloud dependency.
 
 ## Prerequisites
 
-- Go 1.25 or later
-- A Bluesky account with app password
+- Go 1.24 or later
+- A Bluesky account with app password (only for manual runs against the live API)
 - Internet connection for API calls
 
 ## Running Tests
@@ -20,38 +20,37 @@ make test
 Run tests for a specific package:
 ```bash
 go test ./internal/analyzer/
-go test ./cmd/lambda-orchestrator/
+go test ./internal/store/
+go test ./cmd/hourstats/
 ```
 
 Run tests with verbose output:
 ```bash
 go test ./internal/analyzer/ -v
-go test ./cmd/lambda-orchestrator/ -v
+go test ./cmd/hourstats/ -v
 ```
 
-### Lambda Function Tests
+### Packages With Tests
 
-Test individual Lambda functions:
+| Package | Covers |
+|---|---|
+| `cmd/hourstats` | Cycle wiring, post assembly, extremes, alt text |
+| `internal/analyzer` | VADER sentiment scoring and the emoji-aware shadow scorer |
+| `internal/client` | AT Protocol posting, facets, image upload, quote controls |
+| `internal/formatter` | Grapheme counting and Bluesky 300-character limits |
+| `internal/hydrator` | Engagement hydration (interface-driven, no live API needed) |
+| `internal/jetstream` | Event parsing, language filtering, cursor management |
+| `internal/sparkline` | Chart generation (sparkline, yearly, volume, bump) |
+| `internal/stats`, `internal/statsapi`, `internal/procmem` | Runtime statistics and the HTTP stats API |
+| `internal/store` | Schema, queries, purges, backups, WAL management |
+| `internal/topics` | TF-IDF extraction, grouping, identity tracking |
+| `internal/wikipedia` | Current-events URL building |
+
+### Chart Rendering
+
+`cmd/graph-lab` renders every chart type from synthetic data with no Bluesky or Gemini credentials, writing PNGs to `test-results/graph-lab/`:
 ```bash
-make test-lambdas
-```
-
-This will test each Lambda function individually:
-- `lambda-orchestrator` - Workflow orchestration
-- `lambda-fetcher` - Post collection
-- `lambda-analyzer` - Sentiment analysis
-- `lambda-aggregator` - Data aggregation
-- `lambda-poster` - Post publishing
-
-### Integration Tests
-
-Test the complete Step Functions workflow:
-```bash
-# Test with dry-run mode (recommended)
-make test-multi-lambda
-
-# Test with real execution (requires AWS credentials)
-make test-workflow
+make graph-lab
 ```
 
 ## Local Testing
@@ -66,22 +65,23 @@ export BLUESKY_PASSWORD="your-app-password"
 
 ### 2. Dry Run Mode
 
-Test the application without posting to Bluesky:
+Run the whole binary without posting to Bluesky:
 ```bash
-make dry-run
+mkdir -p data
+DATA_DIR=./data DRY_RUN=true go run ./cmd/hourstats
 ```
 
 This will:
 - Authenticate with Bluesky
-- Fetch posts from the timeline
-- Perform sentiment analysis
-- Log the results without posting
+- Consume the Jetstream firehose into a local SQLite database
+- Hydrate engagement and perform sentiment analysis on each cycle
+- Log what it would post without posting
 
 ### 3. Full Test Run
 
 Run the application with real posting (be careful!):
 ```bash
-make run
+DATA_DIR=./data go run ./cmd/hourstats
 ```
 
 ## Test Scenarios
@@ -96,47 +96,41 @@ The analyzer package includes comprehensive tests for:
 - Engagement score calculation
 - 100-word sentiment scale implementation
 
-### Lambda Function Tests
+### Component Tests
 
-Each Lambda function has specific test scenarios:
+Each component has specific test scenarios:
 
-#### Orchestrator Lambda
-- Event structure validation
-- Run ID generation
-- Response structure validation
-- DynamoDB state management
-
-#### Fetcher Lambda
-- Bluesky API authentication
-- Post collection and filtering
-- Cursor-based pagination
+#### Jetstream Consumer (`internal/jetstream`)
+- Event parsing and the bytes-level language pre-filter
 - Adult content filtering
-- Time-based filtering
+- Cursor persistence, rewind, and max-age handling
+- Reconnect and stall behaviour
 
-#### Analyzer Lambda
-- Sentiment analysis on collected posts
-- Engagement score calculation
-- Post ranking logic
-- Data validation
+#### Store (`internal/store`)
+- Schema migration and per-table purges
+- Batched writes and read-pool pragmas
+- Backup file creation via `ATTACH DATABASE`
 
-#### Aggregator Lambda
-- Post ranking by engagement
-- Community sentiment calculation
-- Top posts selection
-- Data aggregation
+#### Hydrator (`internal/hydrator`)
+- Batched `app.bsky.feed.getPosts` calls against the `PostFetcher`/`PostUpdater` interfaces
+- Unhydrated-share thresholds and low-confidence runs
 
-#### Poster Lambda
-- Post formatting
-- Bluesky API posting
-- Rich text facets
+#### Analyzer (`internal/analyzer`)
+- Sentiment scoring on post text
+- The emoji-aware shadow scorer
+
+#### Formatter and Client (`internal/formatter`, `internal/client`)
+- Post formatting and 300-grapheme limits
+- Rich text facets (byte offsets)
+- Quote-control and block detection before embedding
 - Error handling
 
-### Workflow Integration Tests
+### Cycle Integration Tests
 
-- End-to-end Step Functions execution
-- DynamoDB state persistence
-- Lambda function coordination
-- Error handling and recovery
+`cmd/hourstats` tests exercise the analysis, daily, weekly, monthly and yearly cycles end to end against a temporary SQLite database with fake clients:
+- Cycle wiring and overlap skipping
+- Sentiment history persistence
+- Post text assembly and truncation order
 - Dry-run mode validation
 
 ## Manual Testing
@@ -144,7 +138,7 @@ Each Lambda function has specific test scenarios:
 ### 1. Test Authentication
 
 ```bash
-go run cmd/trendjournal/main.go
+DATA_DIR=./data DRY_RUN=true go run ./cmd/hourstats
 ```
 
 Look for: "Successfully authenticated with Bluesky"
@@ -205,9 +199,11 @@ timeline, err := bsky.FeedGetTimeline(ctx, c.client, "reverse-chronological", ""
 
 Monitor memory usage during long runs:
 ```bash
-go run cmd/trendjournal/main.go &
-ps aux | grep trendjournal
+DATA_DIR=./data DRY_RUN=true go run ./cmd/hourstats &
+ps aux | grep hourstats
 ```
+
+In production the same figure is reported by `internal/procmem` (via `/proc/self/statm`) and exposed on the stats API and health charts.
 
 ## Continuous Integration
 
@@ -224,7 +220,7 @@ jobs:
     - uses: actions/checkout@v2
     - uses: actions/setup-go@v2
       with:
-        go-version: 1.25
+        go-version: "1.24"
     - run: go test ./...
 ```
 
@@ -289,11 +285,10 @@ Track key metrics:
 
 ### ✅ Implemented
 - Unit tests for sentiment analysis
-- Unit tests for orchestrator Lambda
-- Integration tests for Step Functions workflow
+- Unit tests for the store, jetstream consumer, hydrator, formatter, client and topics packages
+- Cycle-level tests in `cmd/hourstats` against a temporary SQLite database
+- Chart rendering coverage via `cmd/graph-lab`
 - Local testing with dry-run mode
-- AWS Lambda function testing
-- End-to-end workflow testing
 
 ### 🔄 In Progress
 - Performance benchmarks for large datasets
@@ -306,5 +301,5 @@ Track key metrics:
 - [ ] Add end-to-end testing with mock data
 - [ ] Add automated testing for different sentiment scenarios
 - [ ] Add testing for edge cases (empty timelines, malformed data)
-- [ ] Add chaos engineering tests for AWS service failures
+- [ ] Add fault-injection tests for Jetstream disconnects and Bluesky API failures
 - [ ] Add monitoring and alerting tests

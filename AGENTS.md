@@ -173,11 +173,8 @@ hourstats-bsky/
 │
 ├── cmd/                              # ── Executables ──────────────────
 │   ├── hourstats/                    #   Main binary (Fly.io entry point)
-│   ├── force-trending/               #   Tool: manual trending trigger
 │   ├── graph-lab/                    #   Tool: chart experimentation
-│   ├── import-dynamodb/              #   Tool: DynamoDB → SQLite seed
-│   ├── hourstats-stats/              #   Tool: stats CLI
-│   └── lambda-*/                     #   [Legacy] AWS Lambda handlers
+│   └── hourstats-stats/              #   Tool: stats CLI
 │
 ├── internal/                         # ── Core Packages ────────────────
 │   ├── jetstream/                    #   WebSocket consumer + cursor mgmt
@@ -190,16 +187,15 @@ hourstats-bsky/
 │   ├── sparkline/                    #   Chart generation (all chart types)
 │   ├── stats/                        #   Runtime statistics collector
 │   ├── statsapi/                     #   HTTP stats API (port 9111)
-│   ├── config/                       #   Configuration types
 │   ├── state/                        #   Sentiment data point types
-│   └── {legacy}/                     #   awsutil, backup, lambda, scheduler
+│   ├── procmem/                      #   Process RSS (/proc/self/statm)
+│   └── wikipedia/                    #   Current-events link building
 │
 ├── openspec/                         # ── Architecture Specs ───────────
 │   ├── specs/                        #   Main specs (post-fetching, etc.)
-│   └── changes/                      #   Change proposals
+│   └── changes/                      #   Change proposals (+ changes/archive/)
 │
-├── terraform/                        #   [Legacy] AWS infrastructure
-├── docs/                             #   Feature documentation
+├── docs/                             #   Feature docs, diagrams, docs/archive/
 ├── scripts/                          #   Operational scripts
 │
 ├── fly.prod.toml                     #   Fly.io production config
@@ -376,7 +372,8 @@ a fenced `text` block.
 | [CLAUDE.md](CLAUDE.md) | Coding conventions, package reference, tech stack |
 | [README.md](README.md) | Project overview, getting started, features |
 | [TESTING.md](TESTING.md) | Test infrastructure and patterns |
-| [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) | [Legacy] AWS deployment guide |
+| [docs/architecture/README.md](docs/architecture/README.md) | Rendered architecture diagrams |
+| [docs/MAINTENANCE.md](docs/MAINTENANCE.md) | Maintenance: keys, dependencies, and recurring chores |
 | [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md) | Backup strategy and disaster recovery |
 | [docs/TRENDING_TOPICS.md](docs/TRENDING_TOPICS.md) | Trending topics technical walkthrough |
 | [docs/WRITE_BOTTLENECK_FIX.md](docs/WRITE_BOTTLENECK_FIX.md) | Write path design and scaling |

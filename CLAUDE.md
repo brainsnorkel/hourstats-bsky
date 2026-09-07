@@ -128,10 +128,9 @@ embed in place. The weekly post-of-the-week reply reuses the same check.
 | `internal/stats` | Runtime statistics collector |
 | `internal/statsapi` | HTTP stats API server (port 9111) |
 | `internal/state` | Type definitions for sentiment data points |
-| `internal/config` | Configuration types |
 | `internal/wikipedia` | Wikipedia link building (`Portal:Current_events` per-day URLs) |
 
-**Legacy packages** (AWS Lambda era, still in repo): `internal/backup`, `internal/awsutil`, `internal/lambda`, `internal/scheduler`
+Binaries: `cmd/hourstats` (the Fly.io process), `cmd/hourstats-stats` (CLI for the stats API), `cmd/graph-lab` (chart experiments, no API access needed).
 
 ### SQLite Database
 
@@ -193,4 +192,4 @@ Firehose counting: the Jetstream consumer drops non-English post creates with a 
 - The Jetstream consumer auto-restarts with exponential backoff (1s to 60s)
 - Cursor is persisted in SQLite `key_value` table for resume-on-restart
 - `DRY_RUN=true` prevents all posting but still runs analysis and stores data
-- Legacy AWS Lambda code remains in repo but is not used by the Fly.io binary
+- The AWS Lambda/DynamoDB code is gone from the repo (git history only); the only AWS dependency left is the daily S3 backup in `internal/store/backup.go`

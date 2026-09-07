@@ -2,7 +2,9 @@
 
 HourStats is a Bluesky sentiment analysis bot. It ingests every public English-language Bluesky post in real time via Jetstream, analyzes sentiment using VADER, and posts 30-minute summaries with the top 5 most engaged posts, sparkline charts, and trending topics.
 
-> **Note:** The project was migrated from AWS Lambda to Fly.io. Production runs on Fly.io. Legacy Lambda code remains in the repository under `cmd/lambda-*` and `internal/lambda/` for reference.
+> **Rendered diagrams:** see [docs/architecture/README.md](docs/architecture/README.md).
+>
+> **Note:** The project was migrated from AWS Lambda to Fly.io. Production runs on Fly.io as a single binary; the Lambda code has been removed from the repository.
 
 ## System Overview (Fly.io Architecture)
 
@@ -151,16 +153,8 @@ On startup, `RunStartupMaintenance()` forces a WAL checkpoint (TRUNCATE) **first
 hourstats-bsky/
 ├── cmd/
 │   ├── hourstats/             # Main binary — Fly.io entry point (single process)
-│   ├── import-dynamodb/       # Tool: seed SQLite from DynamoDB exports
-│   ├── force-trending/        # Tool: manually trigger trending topic analysis
-│   ├── graph-lab/             # Tool: chart design experimentation
-│   ├── lambda-fetcher/        # [Legacy] AWS Lambda fetcher
-│   ├── lambda-processor/      # [Legacy] AWS Lambda processor
-│   ├── lambda-sparkline-poster/ # [Legacy] AWS Lambda sparkline
-│   ├── lambda-daily-aggregator/ # [Legacy] AWS Lambda daily aggregation
-│   ├── lambda-yearly-poster/  # [Legacy] AWS Lambda yearly chart (still in use by production)
-│   ├── dynamodb-backup/       # [Legacy] DynamoDB backup utility
-│   └── dynamodb-restore/      # [Legacy] DynamoDB restore utility
+│   ├── hourstats-stats/       # Tool: CLI client for the stats API (port 9111)
+│   └── graph-lab/             # Tool: chart design experimentation
 ├── internal/
 │   ├── store/                 # SQLite storage layer (post buffer, runs, sentiment, topics, backups)
 │   ├── jetstream/             # Jetstream WebSocket consumer (event parsing, cursor management)
@@ -172,20 +166,17 @@ hourstats-bsky/
 │   ├── sparkline/             # Chart generation (sparkline, volume, yearly, trending)
 │   ├── stats/                 # Runtime statistics collector
 │   ├── statsapi/              # HTTP stats API server (port 9111)
-│   ├── state/                 # [Legacy] DynamoDB state management
-│   ├── lambda/                # [Legacy] SSM config loader for Lambda
-│   ├── awsutil/               # [Legacy] AWS utilities
-│   ├── backup/                # [Legacy] DynamoDB backup/restore
-│   └── config/                # Configuration types
+│   ├── state/                 # Shared sentiment data point types
+│   ├── procmem/               # Process RSS from /proc/self/statm (0 on non-Linux)
+│   └── wikipedia/             # Wikipedia Portal:Current_events link building
 ├── fly.prod.toml              # Fly.io production config (sjc, shared-cpu-1x, 512MB)
 ├── fly.staging.toml           # Fly.io staging config (sjc, shared-cpu-1x, 512MB)
 ├── Dockerfile                 # Multi-stage build (golang:1.24-alpine → alpine:3.21)
 ├── Makefile                   # Build, test, deploy targets
-├── terraform/                 # [Legacy] AWS infrastructure as Code
 ├── openspec/                  # Architecture specifications
 │   ├── specs/                 # Main specs (post-fetching, sentiment, charting, etc.)
-│   └── changes/               # Change proposals (jetstream-migration, trending-topics, etc.)
-└── docs/                      # Feature documentation
+│   └── changes/               # Change proposals, with completed ones under changes/archive/
+└── docs/                      # Feature documentation, diagrams, and docs/archive/
 ```
 
 ## Key Design Decisions
@@ -202,7 +193,7 @@ hourstats-bsky/
 
 6. **Wall-clock aligned scheduling**: Tickers fire at UTC clock boundaries rather than at intervals from process start. An optional offset (`ANALYSIS_OFFSET_MINUTES`) shifts the fire point within each interval. This ensures consistent posting times regardless of deploys or restarts.
 
-7. **English-only filter**: The Jetstream consumer requires explicit `lang=en` tags on posts for sentiment analysis parity with the production Lambda system.
+7. **English-only filter**: The Jetstream consumer requires explicit `lang=en` tags on posts for sentiment analysis parity with the original Lambda system.
 
 ## Deployment
 
@@ -228,4 +219,4 @@ hourstats-bsky/
 
 ## Legacy Architecture (AWS Lambda)
 
-The original system ran on AWS Lambda. See [AWS_SERVERLESS_DESIGN.md](AWS_SERVERLESS_DESIGN.md) for the legacy architecture documentation. Legacy Lambda code (`cmd/lambda-*`, `internal/lambda/`, `internal/scheduler/`) remains in the repository for reference but is no longer deployed.
+The original system ran on AWS Lambda, DynamoDB and EventBridge. See [docs/archive/AWS_SERVERLESS_DESIGN.md](docs/archive/AWS_SERVERLESS_DESIGN.md) for the legacy architecture documentation. None of that code is in the repository any more — it lives only in git history. The one piece of AWS still in production is the daily SQLite backup to S3 (`internal/store/backup.go`).

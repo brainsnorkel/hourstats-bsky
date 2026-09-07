@@ -45,20 +45,10 @@ Thumbs.db
 /dist/
 /build/
 
-# Lambda binary artifacts
-cmd/*/bootstrap
-cmd/*/main
-
 # Root-level compiled binaries
-/lambda-*
-/dynamodb-backup
-/dynamodb-restore
 /graph-lab
 /hourstats
 /hourstats-stats
-/import-dynamodb
-/force-trending
-/cleanup-kv
 
 # Backup data
 backups/
@@ -68,15 +58,19 @@ backups-*/
 config.yaml
 config.json
 secrets.yaml
+secrets.json
 
-# Environment files
-.env
-.env.local
-.env.production
-terraform/.terraform/
-terraform/*.zip
-terraform/*.tfstate*
-*.json
-!terraform/step-functions-definition.json
-!internal/topics/testdata/*.json
+# Generated output
+# `make graph-lab` writes chart PNGs to test-results/graph-lab/
 test-results/
+docs/architecture/png/
+
+# Agent tooling state
+.omc/
+.claude/
+mcp_audit.*.zip
+.beads/.beads-credential-key
+.beads/ephemeral.sqlite3
+.beads/dolt-server.*
+.beads/embeddeddolt/
+.beads/backup/

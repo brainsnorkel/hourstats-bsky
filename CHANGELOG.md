@@ -87,7 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New DynamoDB Table**: `hourstats-daily-sentiment` with optimized indexes
 - **EventBridge Scheduling**: Automated daily (midnight UTC) and monthly (1st at 1:00 AM UTC) triggers
 - **Comprehensive Testing**: Unit tests for daily sentiment and yearly sparkline functionality
-- **Design Documentation**: Complete technical specification in `docs/YEARLY_SENTIMENT_DESIGN.md`
+- **Design Documentation**: Complete technical specification in `docs/archive/YEARLY_SENTIMENT_DESIGN.md`
 
 ### Technical Details
 - **Daily Aggregation**: Calculates average, minimum, and maximum sentiment from 24 hours of 30-minute runs

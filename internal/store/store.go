@@ -1,5 +1,5 @@
-// Package store provides a SQLite-based storage layer for hourstats,
-// replacing the DynamoDB-based internal/state package for the Fly.io deployment.
+// Package store provides the SQLite-based storage layer for hourstats on Fly.io.
+// It replaced the DynamoDB persistence used by the original Lambda deployment.
 package store
 
 import (

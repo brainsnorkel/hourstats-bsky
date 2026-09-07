@@ -62,7 +62,6 @@ State is stored in a local SQLite database (WAL mode) on a persistent Fly.io vol
 - **Database**: SQLite (WAL mode) via [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) (pure Go, no CGO)
 - **Deployment**: [Fly.io](https://fly.io) (single VM + persistent volume)
 - **Backups**: AWS S3
-- **Legacy**: AWS Lambda, DynamoDB, EventBridge, Terraform (original architecture, still in repo)
 
 ## Getting Started
 
@@ -202,7 +201,15 @@ fly ssh console -a hourstats-prod   # SSH into production
 fly sftp shell -a hourstats-prod    # Transfer files (e.g. database)
 ```
 
-> **Legacy**: The original AWS Lambda/DynamoDB deployment is documented in [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) (marked as legacy).
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — component-level architecture and data flow
+- [docs/architecture/README.md](docs/architecture/README.md) — rendered diagrams
+- [docs/MAINTENANCE.md](docs/MAINTENANCE.md) — maintenance: keys, dependencies, and recurring chores
+- [docs/TRENDING_TOPICS.md](docs/TRENDING_TOPICS.md) — trending topics pipeline
+- [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md) — backup and recovery procedures
+- [TESTING.md](TESTING.md) — test layout and commands
+- [docs/archive/](docs/archive/) — historical documents from the AWS Lambda era
 
 ## Project Structure
 
@@ -210,18 +217,8 @@ fly sftp shell -a hourstats-prod    # Transfer files (e.g. database)
 hourstats-bsky/
 ├── cmd/
 │   ├── hourstats/                # Main binary (Jetstream + scheduler + all cycles)
-│   ├── import-dynamodb/          # DynamoDB → SQLite migration tool
-│   ├── force-trending/           # Manual trending topics trigger
-│   ├── graph-lab/                # Chart experimentation tool
-│   ├── lambda-fetcher/           # [Legacy] AWS Lambda fetcher
-│   ├── lambda-processor/         # [Legacy] AWS Lambda processor
-│   ├── lambda-sparkline-poster/  # [Legacy] AWS Lambda sparkline
-│   ├── lambda-daily-aggregator/  # [Legacy] AWS Lambda daily aggregator
-│   ├── lambda-yearly-poster/     # [Legacy] AWS Lambda yearly poster
-│   ├── dynamodb-backup/          # [Legacy] DynamoDB backup utility
-│   ├── dynamodb-restore/         # [Legacy] DynamoDB restore utility
-│   ├── diagnostics/              # [Legacy] Production diagnostics tool
-│   └── local-test/               # [Legacy] Local testing harness
+│   ├── hourstats-stats/          # CLI for the stats API (port 9111)
+│   └── graph-lab/                # Chart experimentation tool (no API access needed)
 ├── internal/
 │   ├── store/                    # SQLite database layer (schema, queries, backup)
 │   ├── jetstream/                # Jetstream WebSocket consumer
@@ -231,11 +228,12 @@ hourstats-bsky/
 │   ├── analyzer/                 # Sentiment analysis (VADER)
 │   ├── formatter/                # Post formatting
 │   ├── sparkline/                # Chart generation (sparkline, yearly, volume, trending)
+│   ├── state/                    # Shared sentiment data point types
 │   ├── stats/                    # Runtime statistics collector
 │   ├── statsapi/                 # HTTP stats API server (port 9111)
-│   ├── state/                    # [Legacy] DynamoDB state management
-│   ├── awsutil/                  # [Legacy] AWS utilities
-│   └── backup/                   # [Legacy] DynamoDB backup logic
+│   ├── procmem/                  # Process RSS reader (Linux /proc)
+│   └── wikipedia/                # Wikipedia current-events link building
+├── docs/                         # Documentation, diagrams, and archive
 ├── openspec/                     # Architecture specifications
 ├── Dockerfile                    # Multi-stage build (Go 1.24 → Alpine 3.21)
 ├── fly.prod.toml                 # Fly.io production config
