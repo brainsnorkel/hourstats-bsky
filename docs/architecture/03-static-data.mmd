@@ -1,0 +1,57 @@
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":24,"rankSpacing":40,"padding":12}}}%%
+flowchart TB
+  %% Static data view: every table, who writes it, and how long rows live.
+  %% Retention is enforced by explicit purge calls; the ttl columns are not enforced.
+  %% Blue: ingest and per-cycle rows, purged. Green: kept for reports. Grey: operational.
+
+  subgraph ingest["Ingest · short-lived"]
+    direction TB
+    post_buffer["<b>post_buffer</b><br/>English posts + engagement<br/>written by flusher, hydrator<br/>purged at 3 h, each cycle and at boot"]
+    topic_tokens["<b>topic_tokens</b><br/>tokens per root post<br/>written by flusher<br/>purged at 26 h"]
+    cursor["<b>cursor</b><br/>one row · Jetstream time_us<br/>written by consumer every 10 s"]
+    token_postings["<b>token_postings</b><br/>dropped and rebuilt at boot<br/>not maintained on the hot path"]
+    post_buffer ~~~ topic_tokens ~~~ cursor ~~~ token_postings
+  end
+
+  subgraph percycle["Per-cycle results"]
+    direction TB
+    runs["<b>runs</b><br/>one row per cycle, top_posts JSON<br/>written by analysis cycle<br/>never purged"]
+    sentiment_history["<b>sentiment_history</b><br/>net %, root/reply split, top_topic,<br/>emoji shadow score<br/>written by analysis cycle · never purged"]
+    language_counts["<b>language_counts</b><br/>firehose counts by language per cycle<br/>written by analysis cycle · purged at 8 days"]
+    topic_snapshots["<b>topic_snapshots</b><br/>ranked topics per cycle<br/>written by topics analyzer · purged at 48 h"]
+    topic_identity["<b>topic_identity</b><br/>stable topic ids, Jaccard 0.3<br/>written by topics analyzer · purged at 7 days"]
+    runs ~~~ sentiment_history ~~~ language_counts ~~~ topic_snapshots ~~~ topic_identity
+  end
+
+  subgraph rollups["Daily rollups · written by the daily job"]
+    direction TB
+    daily_sentiment["<b>daily_sentiment</b><br/>avg/min/max/quartiles, posts, firehose<br/>never purged"]
+    topic_daily["<b>topic_daily</b><br/>appearances, best rank, authors<br/>purged at 400 days"]
+    language_daily["<b>language_daily</b><br/>per-day language counts<br/>purged at 400 days"]
+    daily_top_post["<b>daily_top_post</b><br/>highest engagement post of the day<br/>purged at 400 days"]
+    daily_sentiment ~~~ topic_daily ~~~ language_daily ~~~ daily_top_post
+  end
+
+  subgraph ops["Operational"]
+    direction TB
+    key_value["<b>key_value</b><br/>guard keys, yearly post uri/cid, schedule hints<br/>written by daily, yearly, weekly, monthly jobs<br/>permanent"]
+    stats_snapshots["<b>stats_snapshots</b><br/>every 30 min<br/>written by stats collector · purged at 90 days"]
+    stats_events["<b>stats_events</b><br/>stall, restart, overlap, WAL, memory peaks<br/>written by stats collector · purged at 90 days"]
+    key_value ~~~ stats_snapshots ~~~ stats_events
+  end
+
+  backup[("<b>Daily backup · 9 essential tables</b><br/>runs · sentiment_history · daily_sentiment · topic_snapshots · topic_identity<br/>topic_daily · daily_top_post · language_daily · key_value<br/>local /data/backups kept BACKUP_RETAIN_DAYS (7 in prod) · S3 {profile}/{timestamp}.db")]
+
+  ingest ~~~ backup
+  percycle ~~~ backup
+  rollups ~~~ backup
+  ops ~~~ backup
+
+  classDef short fill:#e8eefb,stroke:#3b5bdb,color:#1c2a5b
+  classDef keep fill:#e6fcf5,stroke:#0ca678,color:#0b4d3c
+  classDef opsc fill:#f4f4f5,stroke:#868e96,color:#212529
+  classDef bk fill:#f3f0ff,stroke:#7048e8,color:#2b1d5c
+  class post_buffer,cursor,topic_tokens,token_postings,language_counts,topic_snapshots,topic_identity short
+  class runs,sentiment_history,daily_sentiment,topic_daily,language_daily,daily_top_post keep
+  class key_value,stats_snapshots,stats_events opsc
+  class backup bk

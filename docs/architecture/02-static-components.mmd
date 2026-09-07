@@ -1,0 +1,55 @@
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":40,"rankSpacing":70,"padding":14}}}%%
+flowchart TB
+  %% Static view: the goroutines inside the one process, which packages each one drives,
+  %% the shared SQLite store, and the outside systems each part talks to.
+  %% Package-to-package imports are in 02b-package-dependencies.
+
+  js["Jetstream firehose"]
+  op["Operator<br/>fly proxy 9111 · hourstats-stats CLI"]
+
+  subgraph proc["hourstats process"]
+    direction TB
+    consumer["<b>Jetstream consumer</b><br/>internal/jetstream · stats<br/>English filter, tokenize, cursor every 10 s"]
+    flusher["<b>Write flusher</b><br/>batch 1500 rows or 2 s"]
+    sched["<b>Scheduler loop</b><br/>wall-clock tickers + SIGTERM<br/>5 min stall check · 5 min WAL checkpoint<br/>30 min stats snapshot"]
+    cycle["<b>Analysis cycle</b> · cycleGuard<br/>hydrator · analyzer · topics · sparkline · client<br/>prod: hourly at :55"]
+    job["<b>Background job</b> · jobs guard<br/>backup · sparkline · client<br/>daily 00:00 · yearly 01:00 · reports"]
+    api["<b>Stats HTTP API</b><br/>internal/statsapi · sparkline<br/>:9111 GET /stats/*"]
+  end
+
+  store[("<b>internal/store</b> · SQLite WAL · /data/hourstats-{profile}.db<br/>writeDB 1 conn, busy 30 s · readDB 3 conns prod, read-only · maintDB 1 conn, busy 1 s")]
+
+  subgraph ext["External services"]
+    direction LR
+    appview["Public AppView<br/>getPosts hydration"]
+    pds["PDS bsky.social<br/>session, posts, blobs, pin"]
+    gemini["Gemini + Google News"]
+    s3[("AWS S3")]
+  end
+
+  js -- "WebSocket" --> consumer
+  op --> api
+  consumer -- "writeCh · 50k buffer · ≤2 s send" --> flusher
+  sched -- "stall → ForceReconnect" --> consumer
+  sched -- "analysisCh" --> cycle
+  sched -- "backupCh · yearlyPostCh" --> job
+
+  flusher --> store
+  consumer -- "cursor" --> store
+  sched -- "checkpoint, snapshot" --> store
+  cycle --> store
+  job --> store
+  api --> store
+
+  cycle --> appview
+  cycle --> pds
+  cycle --> gemini
+  job --> pds
+  job --> s3
+
+  classDef go fill:#e8eefb,stroke:#3b5bdb,color:#1c2a5b
+  classDef pool fill:#e6fcf5,stroke:#0ca678,color:#0b4d3c
+  classDef extc fill:#f4f4f5,stroke:#868e96,color:#212529
+  class consumer,flusher,sched,cycle,job,api go
+  class store pool
+  class js,op,appview,pds,gemini,s3 extc

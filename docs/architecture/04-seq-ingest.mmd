@@ -1,0 +1,39 @@
+%%{init: {"theme":"neutral","sequence":{"mirrorActors":false,"actorMargin":40,"messageMargin":32,"width":170,"boxMargin":8,"noteMargin":8}}}%%
+sequenceDiagram
+  autonumber
+  participant JS as Jetstream<br/>(wss)
+  participant C as Consumer<br/>goroutine
+  participant S as Stats<br/>collector
+  participant Q as writeCh<br/>(50k buffer)
+  participant F as Write<br/>flusher
+  participant DB as SQLite<br/>writeDB
+
+  C->>DB: GetCursor
+  Note over C: cursor older than 6 h → start from live tail<br/>otherwise rewind 5 s so in-flight events replay
+  C->>JS: connect ?wantedCollections=app.bsky.feed.post&cursor=…
+  Note over JS,C: read deadline 60 s · ping every 30 s
+
+  loop every frame
+    JS-->>C: commit event (JSON)
+    C->>C: bytes-level lang scan, first 256 bytes of "langs"
+    alt non-English post create
+      C->>S: firehose +1 · language[tag] +1 (OnEarlyReject)
+    else parsed event
+      C->>S: firehose +1 · language[tag] +1
+      opt English, non-empty text
+        C->>C: tokenize for topics (root posts, ≤1 hashtag, not repetitive)
+        C->>Q: PendingWrite (blocks ≤2 s when full, then drop + count)
+      end
+    end
+  end
+
+  loop every 2 s or 1500 rows
+    Q-->>F: batch
+    F->>DB: FlushPostBatch → post_buffer
+    F->>DB: FlushTokenBatch → topic_tokens
+    Note over F: flush over 1 s logs slow_flush
+  end
+
+  loop every 10 s
+    C->>DB: SaveCursor(time_us of last event)
+  end

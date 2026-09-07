@@ -1,0 +1,48 @@
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":80,"padding":10}}}%%
+flowchart LR
+  %% Non-test imports between internal packages. A clean DAG: store is the shared leaf.
+  %% cmd/hourstats imports every package shown; those edges are omitted to keep the graph readable.
+
+  main["cmd/hourstats<br/>imports all packages below"]
+  lab["cmd/graph-lab"]
+  cli["cmd/hourstats-stats<br/>HTTP client only"]
+
+  subgraph mid["Composed packages"]
+    direction TB
+    client["client"]
+    hydrator["hydrator"]
+    topics["topics"]
+    sparkline["sparkline"]
+    stats["stats"]
+    statsapi["statsapi"]
+  end
+
+  subgraph leaf["Leaf packages"]
+    direction TB
+    wikipedia["wikipedia"]
+    formatter["formatter"]
+    store["store"]
+    state["state"]
+    jetstream["jetstream"]
+    procmem["procmem"]
+    analyzer["analyzer"]
+  end
+
+  main --> mid
+  main --> analyzer
+  lab --> sparkline & state
+  cli -. "GET :9111/stats/*" .-> statsapi
+
+  client --> formatter & wikipedia
+  hydrator --> store
+  topics --> store & formatter & wikipedia
+  sparkline --> state & store
+  stats --> jetstream & procmem & store
+  statsapi --> sparkline & store
+
+  classDef cmd fill:#e8eefb,stroke:#3b5bdb,color:#1c2a5b
+  classDef pk fill:#fff3bf,stroke:#e67700,color:#5c3a00
+  classDef lf fill:#e6fcf5,stroke:#0ca678,color:#0b4d3c
+  class main,lab,cli cmd
+  class client,hydrator,topics,sparkline,stats,statsapi pk
+  class store,jetstream,analyzer,formatter,wikipedia,state,procmem lf

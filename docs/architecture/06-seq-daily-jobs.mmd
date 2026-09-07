@@ -1,0 +1,58 @@
+%%{init: {"theme":"neutral","sequence":{"mirrorActors":false,"actorMargin":32,"messageMargin":30,"width":150,"boxMargin":8,"noteMargin":8}}}%%
+sequenceDiagram
+  autonumber
+  participant SCH as Scheduler
+  participant JOB as Background<br/>job
+  participant CY as Analysis<br/>cycle
+  participant DB as SQLite
+  participant FS as /data/backups
+  participant S3 as AWS S3
+  participant PDS as PDS<br/>bsky.social
+
+  rect rgb(245,245,245)
+    Note over SCH,PDS: Daily job · 00:00 UTC · backupCh
+    SCH->>JOB: startAfterCycle("daily")
+    opt cycle in flight (prod cycle starts at :55)
+      JOB->>CY: wait ≤15 min
+      CY-->>JOB: done (or timeout → run without the last cycle)
+    end
+    JOB->>JOB: start memory sampler
+    JOB->>DB: ATTACH read-only, copy 9 essential tables
+    JOB->>FS: hourstats-{profile}-{ts}.db · prune older than BACKUP_RETAIN_DAYS
+    JOB->>S3: PutObject {profile}/{ts}.db
+    JOB->>DB: daily_sentiment for yesterday (skip if row exists)
+    Note over JOB,DB: avg/min/max/quartiles from high-confidence cycles,<br/>firehose total from all cycles
+    JOB->>DB: backfill missing firehose totals (400-day window)
+    JOB->>DB: rollups for the last 3 days: topic_daily, language_daily, daily_top_post
+    JOB->>DB: backfill daily_top_post · purge language_counts 8 d · rollups 400 d
+    alt yearly_post_uri/cid present and not yet quoted today
+      JOB->>PDS: reply under yearly post quoting yesterday's top post
+      JOB->>DB: daily_quote_last_date = today (only on success)
+    end
+    opt Sunday
+      JOB->>DB: VACUUM if freelist > VACUUM_FREELIST_PCT (20%)
+    end
+    opt REPORTS_ENABLED and a new complete Mon–Sun week
+      JOB->>DB: 7 daily rows (needs ≥5) · top post of the week
+      JOB->>PDS: "Week in review" root
+      JOB->>DB: weekly_report_last_week = Monday
+      JOB->>PDS: "Post of the week" reply with quote (fails open)
+    end
+    JOB->>DB: cycle_memory_peak event
+  end
+
+  rect rgb(245,245,245)
+    Note over SCH,PDS: Yearly job · 01:00 UTC daily · yearlyPostCh
+    SCH->>JOB: startAfterCycle("yearly")
+    JOB->>DB: GetYearlySentimentData (needs ≥7 days)
+    JOB->>JOB: render 365-day chart 2000×1333, alt text, Wikipedia facets
+    JOB->>PDS: uploadBlob + createRecord
+    JOB->>DB: yearly_post_uri, yearly_post_cid
+    JOB->>PDS: putRecord app.bsky.actor.profile pinnedPost (swap on CID)
+    opt REPORTS_ENABLED and a new complete month
+      JOB->>DB: daily_sentiment + language_daily for the month (needs ≥20 days)
+      JOB->>PDS: candlestick chart root
+      JOB->>DB: monthly_report_last_month = YYYY-MM
+      JOB->>PDS: volume chart reply (English, firehose, top languages)
+    end
+  end

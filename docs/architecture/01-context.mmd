@@ -1,0 +1,46 @@
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":36,"rankSpacing":70,"padding":12}}}%%
+flowchart LR
+  %% C4 level 1: HourStats and the people and systems around it.
+
+  readers(["Bluesky readers<br/>follow @hourstats.bsky.social"])
+  operator(["Operator<br/>fly CLI · fly ssh · fly proxy 9111"])
+
+  hs["<b>HourStats bot</b><br/>single Go binary on Fly.io<br/>hourstats-prod · hourstats-staging"]
+
+  js["Bluesky Jetstream firehose<br/>jetstream2.us-west.bsky.network<br/>WebSocket · app.bsky.feed.post commits"]
+
+  subgraph bsky["Bluesky network"]
+    direction TB
+    appview["Public AppView<br/>public.api.bsky.app<br/>app.bsky.feed.getPosts · no auth"]
+    pds["PDS bsky.social<br/>createSession · createRecord · uploadBlob<br/>putRecord (pin) · getPosts (viewer state)"]
+  end
+
+  subgraph google["Google"]
+    direction TB
+    gemini["Gemini API<br/>generativelanguage.googleapis.com<br/>gemini-2.5-pro, fallback gemini-2.5-flash"]
+    gnews["Google News RSS<br/>news.google.com/rss · US, GB, AU"]
+  end
+
+  s3[("AWS S3<br/>hourstats-sqlite-backups<br/>us-west-2")]
+  wiki["Wikipedia<br/>Portal:Current_events/YYYY_Month_D"]
+  fly["Fly.io platform<br/>machine · volume · secrets · logs · metrics"]
+
+  js -- "firehose events, ~all public posts" --> hs
+  hs -- "hydrate engagement<br/>25 URIs per call, 10 workers" --> appview
+  hs -- "summary, sparkline, trending reply, daily quote,<br/>yearly chart, weekly and monthly reports" --> pds
+  hs -- "group TF-IDF terms · alt text · validate exemplars<br/>budget 150 calls per rolling 24 h" --> gemini
+  hs -- "headline context for grouping (3 s, best effort)" --> gnews
+  hs -- "daily backup of essential tables" --> s3
+  hs -. "link targets only, no HTTP calls" .-> wiki
+  pds -- "posts appear in feeds and threads" --> readers
+  operator -- "deploy, logs, ssh, stats API" --> fly
+  fly -- "hosts" --> hs
+
+  classDef person fill:#e8eefb,stroke:#3b5bdb,color:#1c2a5b
+  classDef system fill:#fff3bf,stroke:#e67700,color:#5c3a00,font-weight:bold
+  classDef ext fill:#f4f4f5,stroke:#868e96,color:#212529
+  classDef store fill:#e6fcf5,stroke:#0ca678,color:#0b4d3c
+  class readers,operator person
+  class hs system
+  class js,appview,pds,gemini,gnews,wiki,fly ext
+  class s3 store

@@ -1,0 +1,70 @@
+%%{init: {"theme":"neutral","sequence":{"mirrorActors":false,"actorMargin":28,"messageMargin":30,"width":150,"boxMargin":8,"noteMargin":8}}}%%
+sequenceDiagram
+  autonumber
+  participant SCH as Scheduler
+  participant CY as Analysis<br/>cycle
+  participant DB as SQLite
+  participant TP as Topics<br/>analyzer
+  participant GG as Gemini +<br/>Google News
+  participant HY as Hydrator
+  participant AV as Public<br/>AppView
+  participant PDS as PDS<br/>bsky.social
+
+  SCH->>CY: analysisCh tick (prod: hourly at :55)
+  Note right of CY: cycleGuard: a tick during a running cycle<br/>is skipped and logged as cycle_overlap_skipped
+  CY->>CY: start memory sampler (500 ms)
+  CY->>DB: GetPostsSince(now − interval) from post_buffer
+  CY->>PDS: createSession (fresh client per cycle)
+
+  par topic analysis (topic_tokens only)
+    CY->>TP: RunAnalysisCycle
+    TP->>DB: purge topic_tokens 26 h, topic_snapshots 48 h
+    TP->>DB: tokens from last 2 h (cap 20k rows, min corpus 100)
+    TP->>TP: TF-IDF → top 50 terms (≥10 docs, ≥3 authors)
+    TP->>GG: headlines RSS (3 s, best effort)
+    TP->>GG: generateContent gemini-2.5-pro
+    alt 429 / 5xx / empty
+      TP->>GG: generateContent gemini-2.5-flash (once)
+    end
+    alt both fail
+      TP->>TP: offline co-occurrence clustering
+    end
+    TP->>TP: merge similar → rank → assign identities (7 d, Jaccard 0.3)
+    TP->>DB: insert topic_snapshots at snapshotTime
+    TP-->>CY: snapshotTime on channel
+  and hydration
+    CY->>HY: Hydrate(posts)
+    loop 25 URIs per batch · 10 workers · 8.3 req/s · 2 retries
+      HY->>AV: app.bsky.feed.getPosts
+      AV-->>HY: likes, reposts, replies, handle, labels
+    end
+    HY->>DB: update post_buffer engagement
+    HY-->>CY: stats (12 min timeout → hydration_timeout event)
+  end
+
+  CY->>CY: drop posts with no handle (unhydrated)
+  Note over CY: low_confidence when posts < 500<br/>or unhydrated share > HYDRATION_MAX_UNHYDRATED_PCT, 10%
+  CY->>CY: VADER: net %, root/reply split, category ±0.3
+  CY->>CY: emoji-aware shadow score (stored, never posted)
+  CY->>CY: top 3 by engagement, one per author
+  CY->>DB: CreateRun · StoreSentimentDataPoint · StoreLanguageCounts
+  CY->>DB: purge post_buffer 3 h · stats 90 d (also on the early-exit paths)
+
+  alt low_confidence or DRY_RUN or shutting down
+    CY->>CY: collect topic outcome, record top_topic, skip posting
+  else publish
+    CY->>PDS: getPosts(top post) → quote-controlled? (fails open)
+    CY->>PDS: createRecord summary (embed dropped if quote-controlled)
+    CY->>DB: UpdateRun(top post uri/cid)
+    CY->>CY: wait ≤60 s for topic outcome
+    CY->>DB: SetSentimentTopTopic(rank-1 label)
+    CY->>DB: 7-day sentiment_history (high-confidence points)
+    CY->>CY: render 2000×1333 sparkline · week high/low footer
+    CY->>PDS: uploadBlob + createRecord sparkline reply
+    CY->>TP: RunTrendingPost(snapshotTime, extremes)
+    TP->>DB: exemplar candidates (6 h window, 60 per topic)
+    TP->>GG: validate exemplars (one call, ≤15 pairs)
+    TP->>PDS: createRecord trending reply (root = summary, parent = sparkline)
+    TP->>DB: trending_post_last_time
+  end
+  CY->>CY: stop sampler → cycle_memory_peak event

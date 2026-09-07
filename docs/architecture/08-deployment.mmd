@@ -1,0 +1,58 @@
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":30,"rankSpacing":70,"padding":12}}}%%
+flowchart LR
+  %% Deployment view: what runs where, and how it gets there.
+
+  subgraph devbox["Developer machine"]
+    direction TB
+    dev["make deploy-prod<br/>fly deploy -c fly.prod.toml --ha=false"]
+    ops["fly secrets set · fly ssh console · fly proxy 9111<br/>fly logs: JSON lines the process writes to stdout<br/>Fly metrics: Prometheus with a FlyV1 token"]
+  end
+
+  subgraph build["Image build · Dockerfile on Fly builders"]
+    direction TB
+    b1["golang:1.24-alpine<br/>go mod download · go build ./cmd/hourstats"] --> b2["alpine:3.21 + ca-certificates, tzdata, sqlite<br/>/usr/local/bin/hourstats"]
+  end
+
+  subgraph flyio["Fly.io · region sjc"]
+    direction TB
+    subgraph prod["App hourstats-prod · one machine, --ha=false"]
+      direction LR
+      vm["shared-cpu-1x · 1 GB RAM · 512 MB swap<br/>GOMEMLIMIT 800MiB · GOGC 75 · TZ UTC<br/>kill_signal SIGTERM · kill_timeout 15 s"]
+      bin["hourstats process<br/>profile prod · cycle hourly at :55<br/>TRENDING on · REPORTS on · stats API :9111"]
+      vol[("Volume data → /data<br/>hourstats-prod.db, -wal, -shm<br/>backups/ kept 7 days")]
+      vm --- bin --- vol
+    end
+    subgraph staging["App hourstats-staging · stopped when idle"]
+      direction LR
+      svm["Same image and shape<br/>profile staging · cycle at :25 · own volume"]
+    end
+    secrets["Fly secrets<br/>BLUESKY_HANDLE · BLUESKY_PASSWORD<br/>GOOGLE_AI_API_KEY · AWS_ACCESS_KEY_ID · AWS_SECRET_ACCESS_KEY"]
+  end
+
+  subgraph ext["External services"]
+    direction TB
+    js["Jetstream · jetstream2.us-west.bsky.network<br/>3 other public hosts as fallbacks"]
+    av["public.api.bsky.app"]
+    pds["bsky.social"]
+    gem["generativelanguage.googleapis.com<br/>news.google.com"]
+    s3[("S3 hourstats-sqlite-backups<br/>us-west-2 · prod/{ts}.db")]
+  end
+
+  dev --> build
+  build -- "image" --> prod
+  ops -. "private network only" .-> bin
+  secrets -. "env at boot" .-> bin
+  bin -- "wss" --> js
+  bin -- "https" --> av
+  bin -- "https" --> pds
+  bin -- "https" --> gem
+  bin -- "https · 00:00 UTC" --> s3
+
+  classDef machine fill:#e8eefb,stroke:#3b5bdb,color:#1c2a5b
+  classDef vol fill:#e6fcf5,stroke:#0ca678,color:#0b4d3c
+  classDef extc fill:#f4f4f5,stroke:#868e96,color:#212529
+  classDef sec fill:#fff3bf,stroke:#e67700,color:#5c3a00
+  class vm,bin,svm,b1,b2 machine
+  class vol,s3 vol
+  class js,av,pds,gem,dev,ops extc
+  class secrets sec

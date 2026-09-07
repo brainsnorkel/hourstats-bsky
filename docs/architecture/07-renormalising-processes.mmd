@@ -1,0 +1,52 @@
+%%{init: {"theme":"neutral","flowchart":{"curve":"linear","nodeSpacing":22,"rankSpacing":40,"padding":10}}}%%
+flowchart TB
+  %% Re-normalising processes: what pulls the system back to steady state after a disturbance.
+  %% Each lane reads left to right: trigger → response → normal state restored.
+
+  subgraph ingest["Firehose ingest"]
+    direction LR
+    i1["Socket error or<br/>read deadline 60 s"] --> i2["Reconnect with backoff<br/>1 s → 30 s, ±20% jitter<br/>cursor − 5 s so nothing is lost"] --> i3["3 drops in 3 min:<br/>rotate to next Jetstream host<br/>2 min healthy resets both"]
+    i4["No posts for 5 min<br/>(stall check ticker)"] --> i5["ForceReconnect closes the socket;<br/>consumer reconnect path takes over<br/>stall_detected event"]
+    i6["Restart with a cursor<br/>older than 6 h"] --> i7["Discard cursor, start at live tail<br/>avoids wire-speed backlog replay"]
+    i8["writeCh full (50k)"] --> i9["Producer blocks ≤2 s (TCP backpressure)<br/>then drops and counts, one warn per 5 s"]
+    i10["Consumer.Run returns"] --> i11["New consumer immediately<br/>consumer_restart event"]
+  end
+
+  subgraph storage["Storage housekeeping"]
+    direction LR
+    s1["Every 5 min"] --> s2["WAL < 50 MB: PASSIVE checkpoint on maintDB (1 s busy)<br/>WAL ≥ 50 MB: TRUNCATE on writeDB, wal_pressure_checkpoint event"]
+    s3["Sunday 00:00 in the daily job"] --> s4["VACUUM only if freelist > 20% of pages"]
+    s5["Every cycle"] --> s6["Purge post_buffer 3 h · topic_tokens 26 h<br/>topic_snapshots 48 h · identities 7 d · stats 90 d"]
+    s7["Boot"] --> s8["TRUNCATE checkpoint · rebuild token_postings<br/>purge post_buffer 3 h and topic_tokens 26 h"]
+  end
+
+  subgraph cycle["Analysis cycle"]
+    direction LR
+    c1["Tick while a cycle runs"] --> c2["Skip this interval<br/>cycle_overlap_skipped"]
+    c3["Daily/yearly tick while a cycle runs"] --> c4["Wait ≤15 min for it, then run<br/>(without it on timeout); never two jobs at once"]
+    c5["Hydration timeout 12 min,<br/>429/5xx, deleted posts"] --> c6["2 retries with backoff;<br/>unhydrated > 10% or posts < 500 → low_confidence:<br/>store sentiment, publish nothing"]
+    c7["Gemini 429/5xx/empty"] --> c8["gemini-2.5-flash once → offline clustering → suppress<br/>150 calls per 24 h budget → gemini_budget_exhausted"]
+    c9["Topic outcome late"] --> c10["Sparkline waits ≤60 s, then posts;<br/>trending reply waits for the result"]
+    c11["Post > 300 graphemes"] --> c12["Drop footer labels → footer → link → trailing topics"]
+    c13["Quote-controlled or blocked #1 post"] --> c14["Summary without embed; check fails open"]
+  end
+
+  subgraph catchup["Catch-up and idempotence"]
+    direction LR
+    k1["Daily job missed"] --> k2["Rollups cover the last 3 days;<br/>daily_sentiment skips if the row exists;<br/>backfills scan 400 days"]
+    k3["Monday / 1st missed"] --> k4["Weekly and monthly run every night;<br/>guard keys make them no-ops until a new period exists"]
+    k5["Daily quote failed"] --> k6["daily_quote_last_date only set on success;<br/>retried next night"]
+    k7["Startup"] --> k8["Backup immediately; REPORTS_RUN_AT_STARTUP<br/>runs reports once after 30 s"]
+  end
+
+  subgraph shutdown["Shutdown (SIGTERM, kill_timeout 15 s)"]
+    direction LR
+    d1["Cancel producers"] --> d2["Flusher drains writeCh ≤5 s"] --> d3["Consumer persists cursor ≤2 s"] --> d4["Cycle ≤2 s · job ≤1 s"] --> d5["Final stats snapshot,<br/>stop API, close store last<br/>budget 12 s"]
+  end
+
+  ingest ~~~ storage ~~~ cycle ~~~ catchup ~~~ shutdown
+
+  classDef trig fill:#fff3bf,stroke:#e67700,color:#5c3a00
+  classDef act fill:#e8eefb,stroke:#3b5bdb,color:#1c2a5b
+  class i1,i4,i6,i8,i10,s1,s3,s5,s7,c1,c3,c5,c7,c9,c11,c13,k1,k3,k5,k7,d1 trig
+  class i2,i3,i5,i7,i9,i11,s2,s4,s6,s8,c2,c4,c6,c8,c10,c12,c14,k2,k4,k6,k8,d2,d3,d4,d5 act
