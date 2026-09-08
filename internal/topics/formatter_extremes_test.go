@@ -33,8 +33,8 @@ func TestTruncateLabel(t *testing.T) {
 	}
 }
 
-// sampleExtremes is a high on Fri 4 Sep 23:00 UTC and a low on Sat 5 Sep
-// 06:00 UTC, the two days apart so their links differ.
+// sampleExtremes is a high on Fri 4 Sep 23:00 UTC with a known top topic and
+// a low on Sat 5 Sep 06:00 UTC with none.
 func sampleExtremes() *WeekExtremes {
 	return &WeekExtremes{
 		High: SentimentExtreme{
@@ -71,14 +71,19 @@ func footerOf(t *testing.T, text string) string {
 	return footer
 }
 
-// footerFacets returns the last two facets, which are the week high and low
-// links when a footer is present.
-func footerFacets(t *testing.T, facets []Facet) (Facet, Facet) {
+// assertOnlyMentionFacets checks that every facet covers an @handle mention:
+// the footer carries no links of its own.
+func assertOnlyMentionFacets(t *testing.T, text string, facets []Facet) {
 	t.Helper()
-	if len(facets) < 2 {
-		t.Fatalf("want at least 2 facets, got %d", len(facets))
+	for _, f := range facets {
+		if f.ByteStart < 0 || f.ByteEnd > len(text) || f.ByteStart > f.ByteEnd {
+			t.Errorf("facet %+v is out of range for a %d byte text", f, len(text))
+			continue
+		}
+		if got := text[f.ByteStart:f.ByteEnd]; !strings.HasPrefix(got, "@") {
+			t.Errorf("facet slices %q, want an @handle mention", got)
+		}
 	}
-	return facets[len(facets)-2], facets[len(facets)-1]
 }
 
 func TestFormatTrendingPost_ExtremesFooter(t *testing.T) {
@@ -87,44 +92,23 @@ func TestFormatTrendingPost_ExtremesFooter(t *testing.T) {
 	want := "Trending topic samples:\n\n" +
 		"1. Politics @alice.bsky.social\n" +
 		"2. Weather\n\n" +
-		"Week high +29.0%, Fri 23:00 UTC · Charlie Kirk shooting · Sep 4\n" +
-		"Week low -8.0%, Sat 06:00 UTC · Sep 5"
+		"Week high +29.0%, Fri 23:00 UTC · Top topic: Charlie Kirk shooting\n" +
+		"Week low -8.0%, Sat 06:00 UTC"
 	if text != want {
 		t.Errorf("text =\n%q\nwant\n%q", text, want)
 	}
 
-	if len(facets) != 3 {
-		t.Fatalf("want 3 facets (exemplar + two days), got %d", len(facets))
+	if len(facets) != 1 {
+		t.Fatalf("want 1 facet (exemplar only, the footer has no links), got %d", len(facets))
 	}
 	// The exemplar facet must still point at the mention it did before.
 	if got := text[facets[0].ByteStart:facets[0].ByteEnd]; got != "@alice.bsky.social" {
 		t.Errorf("exemplar facet slices %q", got)
 	}
-
-	high, low := footerFacets(t, facets)
-	for _, tc := range []struct {
-		name  string
-		facet Facet
-		span  string
-		uri   string
-	}{
-		{"high", high, "Sep 4", "https://en.wikipedia.org/wiki/Portal:Current_events/2026_September_4"},
-		{"low", low, "Sep 5", "https://en.wikipedia.org/wiki/Portal:Current_events/2026_September_5"},
-	} {
-		if got := text[tc.facet.ByteStart:tc.facet.ByteEnd]; got != tc.span {
-			t.Errorf("%s facet slices %q, want %q", tc.name, got, tc.span)
-		}
-		if tc.facet.Type != FacetLink {
-			t.Errorf("%s facet type = %v, want FacetLink", tc.name, tc.facet.Type)
-		}
-		if tc.facet.Value != tc.uri {
-			t.Errorf("%s facet URI = %q, want %q", tc.name, tc.facet.Value, tc.uri)
-		}
-	}
 }
 
-// Multibyte labels and handles sit before the footer, so its offsets have to
-// be byte offsets rather than rune offsets.
+// Multibyte labels and handles sit before the footer; the exemplar facet
+// offsets must stay byte offsets and the footer must not disturb them.
 func TestFormatTrendingPost_ExtremesFooterMultibyteOffsets(t *testing.T) {
 	ranked := []IdentifiedTopic{
 		{RankedTopic: RankedTopic{Cluster: TopicCluster{Label: "Καθημερινή ζωή — Café"}}, TopicID: "t1", Rank: 1, ExemplarHandle: "ünïcode.bsky.social", ExemplarURI: "at://did:plc:abc/app.bsky.feed.post/123"},
@@ -135,18 +119,17 @@ func TestFormatTrendingPost_ExtremesFooterMultibyteOffsets(t *testing.T) {
 
 	text, facets := FormatTrendingPost(ranked, nil, 2, extremes)
 
-	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC · Café façade ünïcode · Sep 4") {
+	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC · Top topic: Café façade ünïcode\n") {
 		t.Errorf("unexpected high line in %q", text)
 	}
-	if !strings.Contains(text, "Week low -8.0%, Sat 06:00 UTC · ααα βββ γγγ · Sep 5") {
+	if !strings.HasSuffix(text, "Week low -8.0%, Sat 06:00 UTC · Top topic: ααα βββ γγγ") {
 		t.Errorf("unexpected low line in %q", text)
 	}
-	high, low := footerFacets(t, facets)
-	if got := text[high.ByteStart:high.ByteEnd]; got != "Sep 4" {
-		t.Errorf("high facet slices %q", got)
+	if len(facets) != 1 {
+		t.Fatalf("want 1 facet (exemplar only), got %d", len(facets))
 	}
-	if got := text[low.ByteStart:low.ByteEnd]; got != "Sep 5" {
-		t.Errorf("low facet slices %q", got)
+	if got := text[facets[0].ByteStart:facets[0].ByteEnd]; got != "@ünïcode.bsky.social" {
+		t.Errorf("exemplar facet slices %q", got)
 	}
 }
 
@@ -155,11 +138,14 @@ func TestFormatTrendingPost_ExtremesFooterOmitsMissingTopic(t *testing.T) {
 	extremes.High.Topic = "   " // whitespace only counts as missing
 
 	text, _ := FormatTrendingPost(twoTopics(), nil, 2, extremes)
-	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC · Sep 4") {
+	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC\n") {
 		t.Errorf("missing topic should drop the segment: %q", text)
 	}
-	if !strings.Contains(text, "Week low -8.0%, Sat 06:00 UTC · Sep 5") {
+	if !strings.HasSuffix(text, "Week low -8.0%, Sat 06:00 UTC") {
 		t.Errorf("unexpected low line in %q", text)
+	}
+	if strings.Contains(text, "Top topic") {
+		t.Errorf("no topic is known, so no 'Top topic:' prefix should appear: %q", text)
 	}
 }
 
@@ -182,7 +168,7 @@ func TestFormatTrendingPost_NilExtremesUnchanged(t *testing.T) {
 // A long topic list shrinks the footer's labels before anything else gives.
 func TestFormatTrendingPost_ShrinksFooterTopics(t *testing.T) {
 	ranked := topicsWithLabels(
-		strings.Repeat("Alpha", 6),
+		strings.Repeat("Alpha", 5),
 		strings.Repeat("Bravo", 6),
 	)
 	extremes := sampleExtremes()
@@ -194,15 +180,15 @@ func TestFormatTrendingPost_ShrinksFooterTopics(t *testing.T) {
 	if got := utf8.RuneCountInString(text); got > maxGraphemes {
 		t.Fatalf("text is %d runes, want <= %d: %q", got, maxGraphemes, text)
 	}
-	if !strings.Contains(text, "Sep 4") || !strings.Contains(text, "Sep 5") {
+	if !strings.Contains(text, "Week high") || !strings.Contains(text, "Week low") {
 		t.Fatalf("footer was dropped, want it shrunk: %q", text)
 	}
 	// This body overflows at 28 runes and fits at the next step down, so both
 	// labels must sit at exactly footerTopicMaxRunes-footerTopicStep. Pinning
 	// the cut here means a change to the step size fails loudly.
 	for _, want := range []string{
-		"· " + strings.Repeat("h", 23) + "… · Sep 4",
-		"· " + strings.Repeat("l", 23) + "… · Sep 5",
+		"· Top topic: " + strings.Repeat("h", 23) + "…\n",
+		"· Top topic: " + strings.Repeat("l", 23) + "…",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("want a label cut to 24 runes (%q) in: %q", want, text)
@@ -212,18 +198,12 @@ func TestFormatTrendingPost_ShrinksFooterTopics(t *testing.T) {
 	if !strings.Contains(text, "@someverylonghandlename.bsky.social") {
 		t.Errorf("an exemplar was dropped before the footer shrank: %q", text)
 	}
-	high, low := footerFacets(t, facets)
-	if got := text[high.ByteStart:high.ByteEnd]; got != "Sep 4" {
-		t.Errorf("high facet slices %q", got)
-	}
-	if got := text[low.ByteStart:low.ByteEnd]; got != "Sep 5" {
-		t.Errorf("low facet slices %q", got)
-	}
+	assertOnlyMentionFacets(t, text, facets)
 }
 
-// A longer list pushes past the label floor: the labels go but the hour and
-// its link stay.
-func TestFormatTrendingPost_DropsFooterTopicsKeepsLinks(t *testing.T) {
+// A longer list pushes past the label floor: the labels go but the hours
+// stay.
+func TestFormatTrendingPost_DropsFooterTopicsKeepsHours(t *testing.T) {
 	ranked := topicsWithLabels(
 		strings.Repeat("Alpha", 10),
 		strings.Repeat("Bravo", 10),
@@ -238,33 +218,27 @@ func TestFormatTrendingPost_DropsFooterTopicsKeepsLinks(t *testing.T) {
 	if got := utf8.RuneCountInString(text); got > maxGraphemes {
 		t.Fatalf("text is %d runes, want <= %d: %q", got, maxGraphemes, text)
 	}
-	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC · Sep 4") {
+	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC\n") {
 		t.Errorf("want the high line without its topic: %q", text)
 	}
-	if !strings.Contains(text, "Week low -8.0%, Sat 06:00 UTC · Sep 5") {
+	if !strings.HasSuffix(text, "Week low -8.0%, Sat 06:00 UTC") {
 		t.Errorf("want the low line without its topic: %q", text)
 	}
-	if got := footerOf(t, text); strings.ContainsAny(got, "ξψ…") {
+	if got := footerOf(t, text); strings.ContainsAny(got, "ξψ…") || strings.Contains(got, "Top topic") {
 		t.Errorf("footer should carry no label at this size, got %q", got)
 	}
 	if !strings.Contains(text, "@someverylonghandlename.bsky.social") {
 		t.Errorf("an exemplar was dropped before the footer topics: %q", text)
 	}
-	high, low := footerFacets(t, facets)
-	if got := text[high.ByteStart:high.ByteEnd]; got != "Sep 4" {
-		t.Errorf("high facet slices %q", got)
-	}
-	if got := text[low.ByteStart:low.ByteEnd]; got != "Sep 5" {
-		t.Errorf("low facet slices %q", got)
-	}
+	assertOnlyMentionFacets(t, text, facets)
 }
 
 // Once the labels are at their floor, the labels go, then the whole footer —
 // all before a topic is dropped.
 func TestFormatTrendingPost_DropsFooterBeforeTopics(t *testing.T) {
 	ranked := topicsWithLabels(
-		strings.Repeat("Alpha", 12),
-		strings.Repeat("Bravo", 12),
+		strings.Repeat("Alpha", 14),
+		strings.Repeat("Bravo", 14),
 	)
 	extremes := sampleExtremes()
 	extremes.High.Topic = strings.Repeat("h", 28)
@@ -333,20 +307,19 @@ func TestFormatTrendingPost_RuneCutWithExtremes(t *testing.T) {
 	}
 }
 
-// Timestamps in another zone are rendered and linked in UTC.
+// Timestamps in another zone are rendered in UTC.
 func TestFormatTrendingPost_ExtremesFooterUsesUTC(t *testing.T) {
 	zone := time.FixedZone("UTC+11", 11*3600)
 	extremes := sampleExtremes()
 	extremes.High.At = extremes.High.At.In(zone) // Sat 5 Sep 10:00 local
 	extremes.Low.At = extremes.Low.At.In(zone)
 
-	text, facets := FormatTrendingPost(twoTopics(), nil, 2, extremes)
+	text, _ := FormatTrendingPost(twoTopics(), nil, 2, extremes)
 
-	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC · Charlie Kirk shooting · Sep 4") {
+	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC · Top topic: Charlie Kirk shooting\n") {
 		t.Errorf("high line not rendered in UTC: %q", text)
 	}
-	high, _ := footerFacets(t, facets)
-	if high.Value != "https://en.wikipedia.org/wiki/Portal:Current_events/2026_September_4" {
-		t.Errorf("high link not resolved in UTC: %q", high.Value)
+	if !strings.HasSuffix(text, "Week low -8.0%, Sat 06:00 UTC") {
+		t.Errorf("low line not rendered in UTC: %q", text)
 	}
 }

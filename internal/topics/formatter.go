@@ -8,7 +8,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/christophergentle/hourstats-bsky/internal/formatter"
-	"github.com/christophergentle/hourstats-bsky/internal/wikipedia"
 )
 
 type FacetType int
@@ -45,7 +44,7 @@ const (
 
 // FormatTrendingPost renders the trending reply: the ranked topic list and,
 // when extremes is non-nil, a footer naming the week's highest and lowest
-// hour with a link to that day's Wikipedia current events page.
+// hour and each hour's top topic when one is known.
 //
 // Everything must fit inside maxGraphemes. The footer is the cheapest thing
 // to give up, so it shrinks and then disappears before any topic content is
@@ -118,34 +117,27 @@ func buildPost(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int,
 		return text, facets
 	}
 
-	// The footer is appended after the topic list, so the exemplar facets
-	// above keep their offsets and the footer's are taken from the running
-	// length rather than by searching for the phrase (a topic label could
-	// contain it).
+	// The footer is appended after the topic list and carries no facets, so
+	// the exemplar facets above keep their offsets.
 	text += "\n\n"
-	text, high := appendExtremeLine(text, "Week high", extremes.High, footerTopicCap)
+	text = appendExtremeLine(text, "Week high", extremes.High, footerTopicCap)
 	text += "\n"
-	text, low := appendExtremeLine(text, "Week low", extremes.Low, footerTopicCap)
-	return text, append(facets, high, low)
+	text = appendExtremeLine(text, "Week low", extremes.Low, footerTopicCap)
+	return text, facets
 }
 
-// appendExtremeLine writes one footer line and returns the link facet
-// covering its "Jan 2" date, which links to that day's Wikipedia page.
-func appendExtremeLine(text, prefix string, e SentimentExtreme, topicCap int) (string, Facet) {
+// appendExtremeLine writes one footer line: the prefix, the signed
+// percentage, the weekday and UTC time, and, when known, "Top topic:" with
+// the hour's rank-1 label. The calendar date is deliberately left out; the
+// weekday is enough inside a seven-day window and the extra date link made
+// the line untidy.
+func appendExtremeLine(text, prefix string, e SentimentExtreme, topicCap int) string {
 	at := e.At.UTC()
 	text += fmt.Sprintf("%s %s, %s UTC", prefix, formatter.SignedPercent(e.Value), at.Format("Mon 15:04"))
 	if topic := truncateLabel(e.Topic, topicCap); topic != "" {
-		text += " · " + topic
+		text += " · Top topic: " + topic
 	}
-	text += " · "
-	byteStart := len(text)
-	text += at.Format("Jan 2")
-	return text, Facet{
-		ByteStart: byteStart,
-		ByteEnd:   len(text),
-		Type:      FacetLink,
-		Value:     wikipedia.CurrentEventsDayURL(e.At),
-	}
+	return text
 }
 
 // truncateLabel collapses whitespace and shortens a label to maxRunes,
