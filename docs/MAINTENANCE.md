@@ -60,11 +60,26 @@ Legacy AWS: the original Lambda/DynamoDB deployment was managed with Terraform w
 | Local backups | `/data/backups/hourstats-prod-<ts>.db`, pruned after `BACKUP_RETAIN_DAYS` (7 in prod). Only the nine "essential" tables are copied; `post_buffer`, `topic_tokens`, `cursor` are regenerable. | Nothing routine. They share the volume, so they count toward the growth above. |
 | S3 backups | One object per day, no lifecycle. | Monthly: confirm yesterday's object exists; add or check the lifecycle rule. Twice a year: do the restore drill in `BACKUP_RECOVERY.md` against staging (`make sync-staging` is the fast path for a prod snapshot). |
 | Staging data | Staging has its own volume and profile; `make sync-staging` copies prod data into it. | Before testing a schema migration on staging, sync first so the migration runs against real data. |
+| Memory profiles | The memory guard writes `/data/memguard-<label>-<UTC timestamp>-<elapsed>s-{warn,trip}.pprof` and `.goroutines.txt` when a cycle's RSS crosses `MEMORY_GUARD_WARN_PCT` (55%) or `MEMORY_GUARD_TRIP_PCT` (70%) of the machine. Only the 10 newest files are kept — a trip outranks a warn written in the same second — so they cannot fill the volume. | Nothing routine. After a `memory_guard_warn` or `memory_guard_trip` event, see below. |
+
+### Reading a memory-guard profile
+
+The kernel OOM-killer takes the process between two samples and leaves nothing behind: three cycles have died that way with no `cycle_memory_peak` row to show for it. The guard writes the evidence *before* the ceiling, onto the persistent volume, so it survives the restart. A `memory_guard_warn` event means it wrote a set and the cycle carried on; `memory_guard_trip` means it cancelled the cycle first, which is why the hour is `low_confidence` and nothing was posted — or, if the trip landed after the summary went out, why that summary has no sparkline or trending reply under it. `cycle_memory_tick` rows (one per timeline checkpoint, 1 s to 900 s) show the approach even for a cycle that was killed anyway.
+
+```sh
+fly ssh console -a hourstats-prod -C "ls -la /data"          # find the newest memguard-* set
+fly ssh sftp get /data/memguard-run-20260909-155500-20260909T155845-45s-trip.pprof -a hourstats-prod
+fly ssh sftp get /data/memguard-run-20260909-155500-20260909T155845-45s-trip.goroutines.txt -a hourstats-prod
+make build-hourstats                                          # a binary matching the deployed one
+go tool pprof -top hourstats memguard-run-20260909-155500-20260909T155845-45s-trip.pprof
+```
+
+`-top` lists the allocation sites holding the live heap (`-inuse_space` is the default for a heap profile); `go tool pprof -http=: hourstats <file>` gives the flame graph. The guard collects before it writes (`runtime.GC()` on a warn, `debug.FreeOSMemory()` on a trip, since `pprof.WriteHeapProfile` does not collect on its own), so the profile is the live set at the crossing rather than a stale one from the last GC. The profile only covers the Go heap — the modernc.org/sqlite arena is anonymous mmap outside it, so a profile that accounts for far less than the RSS in the event details is itself the finding. The goroutine dump is plain text; read it directly for a stuck hydration worker or a leaked consumer.
 
 ## 5. Platform
 
 - **Apps**: `hourstats-prod` (running), `hourstats-staging` (kept stopped; start it only for a test, stop it after). Both `shared-cpu-1x`, 1 GB RAM, 512 MB swap, region `sjc`, `--ha=false` so there is exactly one machine and one volume each.
-- **Memory** is the resource that has caused outages: `GOMEMLIMIT=800MiB`, `GOGC=75`, and the analysis cycle and the daily/yearly jobs are serialised so two chart renders never overlap. `cycle_memory_peak` events in `/stats/events` record the RSS peak of every cycle; if peaks trend toward the limit, that is the signal to resize before it OOMs.
+- **Memory** is the resource that has caused outages: `GOMEMLIMIT=800MiB`, `GOGC=75`, and the analysis cycle and the daily/yearly jobs are serialised so two chart renders never overlap. `cycle_memory_peak` events in `/stats/events` record the RSS peak of every cycle, `cycle_memory_tick` the approach to it; if peaks trend toward the limit, that is the signal to resize before it OOMs. The memory guard (`MEMORY_GUARD_*`) is the backstop: `memory_guard_warn` leaves a heap profile on the volume, `memory_guard_trip` also cancels the cycle so the process survives.
 - **Schedule** is wall-clock aligned in UTC and survives deploys: cycle at :55 (prod) or :25 (staging), daily job at 00:00, yearly chart and monthly report at 01:00. A deploy during a cycle is safe; the shutdown sequence drains buffered posts and persists the cursor inside Fly's 15 s `kill_timeout`.
 - **Billing**: Fly invoices monthly; the Gemini project and the AWS account are the other two bills. None should exceed a few dollars a month; a jump usually means a runaway retry loop or a lifecycle rule missing on S3.
 
@@ -72,7 +87,7 @@ Legacy AWS: the original Lambda/DynamoDB deployment was managed with Terraform w
 
 **Weekly (five minutes)**
 - Look at the account: is there a summary every hour, a sparkline and trending reply under it, the daily quote under the pinned yearly chart?
-- `fly status -a hourstats-prod`, then `fly proxy 9111:9111 -a hourstats-prod` and `curl localhost:9111/stats/events?hours=168`. Zero `stall_detected`, `consumer_restart`, `cycle_overlap_skipped`, `hydration_timeout`, `gemini_budget_exhausted` is normal; a handful is fine; a daily pattern is not.
+- `fly status -a hourstats-prod`, then `fly proxy 9111:9111 -a hourstats-prod` and `curl localhost:9111/stats/events?hours=168`. Zero `stall_detected`, `consumer_restart`, `cycle_overlap_skipped`, `hydration_timeout`, `gemini_budget_exhausted`, `memory_guard_warn`, `memory_guard_trip` is normal; a handful is fine; a daily pattern is not. Any `memory_guard_*` event is worth opening the profile it left (section 4).
 
 **Monthly**
 - Gemini usage and bill; AWS bill and S3 object count; Fly invoice.

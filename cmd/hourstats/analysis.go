@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
@@ -158,14 +159,39 @@ func recordTopTopic(ctx context.Context, db topTopicStore, runID string, outcome
 // 30-minute analysis cycle
 // ---------------------------------------------------------------------------
 
-func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password string, dryRun bool, analysisMinutes int, collector *stats.Collector, topicAnalyzer *topics.Analyzer) {
+func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password string, dryRun bool, analysisMinutes int, collector *stats.Collector, topicAnalyzer *topics.Analyzer, guard *memGuard) {
 	cycleStart := time.Now()
 	runID := fmt.Sprintf("run-%s", time.Now().UTC().Format("20060102-150405"))
 	slog.Info("analysis cycle starting", "run_id", runID)
 
+	// cycleCtx cancels only this cycle's heavy work. The memory guard trips it
+	// when RSS approaches the machine ceiling, so the process survives what
+	// would otherwise be an OOM kill; the parent ctx still means shutdown, and
+	// the bookkeeping writes below stay on it.
+	cycleCtx, cancelCycle := context.WithCancel(ctx)
+	defer cancelCycle()
+	var guardTripped atomic.Bool
+
+	// logGuardAbort names the memory guard at each early return a cancelled
+	// cycleCtx can cause, so a trip is never mistaken for a shutdown.
+	logGuardAbort := func(stage string) {
+		if guardTripped.Load() {
+			slog.Error("analysis cycle aborted by memory guard", "run_id", runID, "stage", stage)
+		}
+	}
+
 	// Sample memory in-process: the stats snapshot ticker cannot fire while the
-	// cycle runs, so the peak is otherwise invisible.
-	stopMemSampler := startMemSampler(ctx, 500*time.Millisecond, runID)
+	// cycle runs, so the peak is otherwise invisible. The sampler runs on the
+	// parent ctx so it keeps recording while a tripped cycle unwinds.
+	stopMemSampler := startMemSamplerWithOptions(ctx, 500*time.Millisecond, runID, defaultMemSchedule, memSamplerOptions{
+		Guard: guard.forCycle(func(memSample) {
+			guardTripped.Store(true)
+			cancelCycle()
+		}),
+		OnCheckpoint: func(s memSample) {
+			_ = collector.LogEvent(context.WithoutCancel(ctx), "cycle_memory_tick", s.eventDetails())
+		},
+	})
 	defer func() {
 		peak := stopMemSampler()
 		// LogEvent already warns on failure. Detach from ctx so the write still
@@ -175,9 +201,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 	cutoff := time.Now().UTC().Add(-time.Duration(analysisMinutes) * time.Minute)
 
-	posts, err := db.GetPostsSince(ctx, cutoff)
+	posts, err := db.GetPostsSince(cycleCtx, cutoff)
 	if err != nil {
 		slog.Error("get posts failed", "error", err)
+		logGuardAbort("get_posts")
 		return
 	}
 	slog.Info("posts in window", "count", len(posts), "cutoff", cutoff.Format(time.RFC3339))
@@ -192,6 +219,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		slog.Error("bluesky auth failed", "error", err)
 		return
 	}
+	if guardTripped.Load() {
+		// A trip during authentication: stop before hydration allocates.
+		logGuardAbort("authenticate")
+		return
+	}
 
 	// RunAnalysisCycle reads topic_tokens (no dependency on hydration).
 	// Starting here overlaps Gemini latency with the hydration pipeline.
@@ -204,7 +236,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		slog.Info("topics: analysis goroutine started (parallel with hydration)")
 		go func() {
 			trendStart := time.Now()
-			snapshotTime, err := topicAnalyzer.RunAnalysisCycle(ctx)
+			snapshotTime, err := topicAnalyzer.RunAnalysisCycle(cycleCtx)
 			collector.RecordTrendingDuration(time.Since(trendStart).Milliseconds())
 			ch <- topicAnalysisOutcome{snapshotTime: snapshotTime, err: err}
 		}()
@@ -215,8 +247,9 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		fetcher = hydrator.NewBlueskyFetcher(bskyClient.APIClient())
 	}
 	h := hydrator.New(fetcher, db, hydrator.Config{})
-	result, err := h.Hydrate(ctx, posts)
-	if err != nil && ctx.Err() != nil {
+	result, err := h.Hydrate(cycleCtx, posts)
+	if err != nil && cycleCtx.Err() != nil {
+		logGuardAbort("hydration")
 		return
 	}
 	hydrationTimedOut := errors.Is(err, hydrator.ErrHydrationTimedOut)
@@ -327,6 +360,19 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		)
 	}
 
+	// A trip this late has already cost the cycle its posts, but the sentiment
+	// is computed and the parent ctx is live, so the hour is recorded rather
+	// than left as a hole — marked low_confidence, since the window may have
+	// been cut short.
+	if guardTripped.Load() {
+		lowConfidence = true
+		slog.Error("analysis cycle aborted by memory guard, recording sentiment as low confidence",
+			"run_id", runID,
+			"stage", "post_analysis",
+			"posts", len(posts),
+		)
+	}
+
 	collector.RecordAnalysis(len(posts), result.Hydrated, result.Errors, overallSentiment, lowConfidence)
 
 	sort.Slice(analyzed, func(i, j int) bool {
@@ -412,7 +458,16 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		}
 	}
 
-	if lowConfidence {
+	if guardTripped.Load() {
+		// Nothing is published and the topic goroutine is not waited for: it
+		// sees the cancelled cycleCtx and exits into its buffered channel,
+		// which is the whole point of stopping here.
+		slog.Error("memory guard tripped, skipping all posts for this cycle",
+			"run_id", runID,
+			"posts", len(posts),
+			"sentiment", overallSentiment,
+		)
+	} else if lowConfidence {
 		slog.Warn("skipping post due to low confidence",
 			"posts", len(posts),
 			"min_required", minPostsRequired,
@@ -476,6 +531,20 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			if err := db.UpdateRun(ctx, runState); err != nil {
 				slog.Warn("failed to persist run TopPostURI", "error", err, "run_id", runState.RunID)
 			}
+		}
+
+		// The posting block is minutes long and renders two charts, so a trip
+		// can land inside it. The summary is already out and cannot be
+		// unposted, but the sparkline and trending replies are exactly the
+		// allocations worth not making. The topic goroutine is abandoned, not
+		// waited for: its channel is buffered, so its send cannot block, and
+		// it sees the cancelled cycle context on its own.
+		if guardTripped.Load() {
+			slog.Error("memory guard tripped after the summary post, skipping sparkline and trending",
+				"run_id", runID,
+				"summary_uri", postedURI,
+			)
+			return
 		}
 
 		// Collect this cycle's topics before the sparkline so the trending

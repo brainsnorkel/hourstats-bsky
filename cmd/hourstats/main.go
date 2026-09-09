@@ -114,6 +114,28 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The OOM killer takes the process between two samples and leaves nothing
+	// behind. The guard writes a heap profile and a goroutine dump beside the
+	// database before that point, and cancels the cycle rather than let the
+	// kernel end the process. Its evidence lands on the persistent volume, so
+	// it survives the restart.
+	memoryGuard := newMemGuardFromEnv(dataDir)
+	if memoryGuard != nil {
+		// Detached from ctx so the row still lands during shutdown, but
+		// bounded: the write pool's busy timeout is 30s, and a guard event
+		// that parks for it delays the heap profile behind it.
+		logGuardEvent := func(eventType string, s memSample) {
+			eventCtx, cancelEvent := context.WithTimeout(context.WithoutCancel(ctx), memGuardEventBudget)
+			defer cancelEvent()
+			_ = collector.LogEvent(eventCtx, eventType, s.eventDetails())
+		}
+		memoryGuard.OnWarn = func(s memSample) { logGuardEvent("memory_guard_warn", s) }
+		memoryGuard.OnTrip = func(s memSample) { logGuardEvent("memory_guard_trip", s) }
+	}
+	// The daily job only warns: aborting a backup or an aggregation partway
+	// costs more than the peak it would save.
+	dailyMemoryGuard := memoryGuard.warnOnly()
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
@@ -245,7 +267,7 @@ func main() {
 
 		case <-analysisCh:
 			started := cycles.TryStart(func() {
-				runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes, collector, topicAnalyzer)
+				runAnalysisCycle(ctx, db, handle, password, dryRun, analysisMinutes, collector, topicAnalyzer, memoryGuard)
 			})
 			if !started {
 				slog.Error("analysis cycle still running at next tick, skipping this interval",
@@ -262,7 +284,12 @@ func main() {
 			started := startAfterCycle(ctx, jobs, cycles, "daily", jobCycleWait, func() {
 				// The sampler is stopped and its peak recorded even if a daily
 				// step panics.
-				stopDailyMemSampler := startMemSampler(ctx, 500*time.Millisecond, "daily")
+				stopDailyMemSampler := startMemSamplerWithOptions(ctx, 500*time.Millisecond, "daily", defaultMemSchedule, memSamplerOptions{
+					Guard: dailyMemoryGuard,
+					OnCheckpoint: func(s memSample) {
+						_ = collector.LogEvent(context.WithoutCancel(ctx), "cycle_memory_tick", s.eventDetails())
+					},
+				})
 				defer func() {
 					peak := stopDailyMemSampler()
 					// LogEvent already warns on failure. Detach from ctx so the

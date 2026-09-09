@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,68 @@ var memTimelineCheckpoints = []time.Duration{
 
 // memTimelineMax caps timeline entries so a long cycle cannot grow the slice.
 const memTimelineMax = 20
+
+// memStatsCheapWindow is how long a sampler prefers the cheap RSS read to a
+// full runtime.ReadMemStats. ReadMemStats stops the world, and the OOM under
+// investigation lands inside this window, so during it the full read is only
+// paid for on samples that are reported (a tick line, a checkpoint, a guard
+// crossing) while RSS — the number the kernel kills on — is read every time.
+const memStatsCheapWindow = 300 * time.Second
+
+// memCallbackDrain is how long stop() waits for in-flight guard and checkpoint
+// callbacks. A trip is usually followed by the cycle unwinding, and a heap
+// profile half-written is worth no more than none at all; a bounded wait keeps
+// shutdown inside Fly's 15s kill_timeout regardless.
+const memCallbackDrain = time.Second
+
+// goSafe runs fn on its own goroutine, tracked by wg. A panic in evidence
+// writing must not take the process down: the guard exists to keep it alive.
+func goSafe(wg *sync.WaitGroup, what string, fn func()) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("memory sampler callback panicked",
+					"callback", what,
+					"panic", fmt.Sprint(r),
+					"stack", string(debug.Stack()),
+				)
+			}
+		}()
+		fn()
+	}()
+}
+
+// waitCallbacks gives in-flight callbacks up to d to finish, then gives up
+// rather than hold the cycle open.
+func waitCallbacks(wg *sync.WaitGroup, d time.Duration, label string) {
+	drained := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(drained)
+	}()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-drained:
+	case <-timer.C:
+		slog.Warn("memory sampler callbacks still running, abandoning them", "label", label, "waited", d)
+	}
+}
+
+// memSamplerOptions carries the optional wiring of a sampler run. The zero
+// value is the plain sampler: no guard, no checkpoint sink, real RSS.
+type memSamplerOptions struct {
+	// Guard, when non-nil, is checked against RSS on every sample.
+	Guard *memGuard
+	// OnCheckpoint receives one sample per timeline checkpoint, so a cycle
+	// killed before it can report its peak still leaves a trace.
+	OnCheckpoint func(memSample)
+	// RSS overrides procmem.RSSBytes. Tests inject a sequence here; procfs
+	// does not exist on a macOS dev box, where RSS is always 0.
+	RSS func() int64
+}
 
 // memSchedule controls when the sampler emits a periodic tick line and when it
 // records a timeline entry. It is passed in rather than read from package state
@@ -102,7 +165,24 @@ func startMemSampler(ctx context.Context, interval time.Duration, label string) 
 // startMemSamplerWithSchedule is startMemSampler with an explicit tick and
 // checkpoint schedule, so tests can exercise the periodic path quickly.
 func startMemSamplerWithSchedule(ctx context.Context, interval time.Duration, label string, sched memSchedule) func() memPeak {
+	return startMemSamplerWithOptions(ctx, interval, label, sched, memSamplerOptions{})
+}
+
+// startMemSamplerWithOptions is startMemSamplerWithSchedule plus the memory
+// guard and the checkpoint sink.
+func startMemSamplerWithOptions(ctx context.Context, interval time.Duration, label string, sched memSchedule, opts memSamplerOptions) func() memPeak {
 	start := time.Now()
+	readRSS := opts.RSS
+	if readRSS == nil {
+		readRSS = procmem.RSSBytes
+	}
+	// Fire-once state for the guard. Only sample() touches it, and sample()
+	// never runs concurrently with itself: the stop closure takes its final
+	// sample after the sampler goroutine has returned.
+	var guardWarned, guardTripped bool
+	// Callbacks run off the sampling goroutine; stop() gives them a bounded
+	// chance to finish so a shutdown does not truncate a heap profile.
+	var callbacks sync.WaitGroup
 	peak := memPeak{
 		HeapReleasedMinBytes: math.MaxUint64,
 		Timeline:             make([]string, 0, memTimelineMax),
@@ -118,14 +198,49 @@ func startMemSamplerWithSchedule(ctx context.Context, interval time.Duration, la
 	}
 
 	sample := func(final bool) {
-		rss := procmem.RSSBytes()
-		var ms runtime.MemStats
-		runtime.ReadMemStats(&ms)
-		goroutines := runtime.NumGoroutine()
+		rss := readRSS()
 		elapsed := time.Since(start)
 
+		// The guard reads RSS only, so it is evaluated before anything that
+		// stops the world: the crossing must be seen on the tick it happens.
+		crossing := opts.Guard.crossed(rss, guardWarned, guardTripped)
+
+		// Peek at the schedule to decide whether this sample will be reported;
+		// an unreported sample inside the cheap window skips ReadMemStats.
+		tickDue, checkDue := func() (bool, bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			return elapsed >= nextTick,
+				nextCheck < len(sched.checkpoints) && elapsed >= sched.checkpoints[nextCheck]
+		}()
+		readStats := final || tickDue || checkDue || crossing != "" || elapsed >= memStatsCheapWindow
+
+		var ms runtime.MemStats
+		if readStats {
+			runtime.ReadMemStats(&ms)
+		}
+		goroutines := runtime.NumGoroutine()
+
+		if crossing != "" {
+			guardWarned = true
+			if crossing == memGuardTrip {
+				guardTripped = true
+			}
+			// On its own goroutine: writing a heap profile must not stall the
+			// sampling cadence at the moment the cadence matters most.
+			s := memSample{
+				Label:      label,
+				Elapsed:    elapsed,
+				RSSBytes:   rss,
+				HeapInuse:  ms.HeapInuse,
+				Goroutines: goroutines,
+			}
+			guard := opts.Guard
+			goSafe(&callbacks, "memory guard "+crossing, func() { guard.fire(crossing, s) })
+		}
+
 		// Decide under the lock, log outside it.
-		tick := func() bool {
+		tick, crossed := func() (bool, bool) {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -134,20 +249,24 @@ func startMemSamplerWithSchedule(ctx context.Context, interval time.Duration, la
 				peak.RSSPeakBytes = rss
 				peak.RSSPeakAt = elapsed
 			}
-			if ms.HeapInuse > peak.HeapInusePeakBytes {
-				peak.HeapInusePeakBytes = ms.HeapInuse
-			}
-			if ms.HeapSys > peak.HeapSysMaxBytes {
-				peak.HeapSysMaxBytes = ms.HeapSys
-			}
-			if ms.HeapReleased < peak.HeapReleasedMinBytes {
-				peak.HeapReleasedMinBytes = ms.HeapReleased
-			}
-			if ms.StackInuse > peak.StackInuseMaxBytes {
-				peak.StackInuseMaxBytes = ms.StackInuse
-			}
-			if ms.Sys > peak.SysMaxBytes {
-				peak.SysMaxBytes = ms.Sys
+			// ms is only populated on samples that read it; an unread ms is
+			// all zeroes, which would drag HeapReleasedMinBytes to 0.
+			if readStats {
+				if ms.HeapInuse > peak.HeapInusePeakBytes {
+					peak.HeapInusePeakBytes = ms.HeapInuse
+				}
+				if ms.HeapSys > peak.HeapSysMaxBytes {
+					peak.HeapSysMaxBytes = ms.HeapSys
+				}
+				if ms.HeapReleased < peak.HeapReleasedMinBytes {
+					peak.HeapReleasedMinBytes = ms.HeapReleased
+				}
+				if ms.StackInuse > peak.StackInuseMaxBytes {
+					peak.StackInuseMaxBytes = ms.StackInuse
+				}
+				if ms.Sys > peak.SysMaxBytes {
+					peak.SysMaxBytes = ms.Sys
+				}
 			}
 			if goroutines > peak.GoroutinesPeak {
 				peak.GoroutinesPeak = goroutines
@@ -172,10 +291,10 @@ func startMemSamplerWithSchedule(ctx context.Context, interval time.Duration, la
 			}
 
 			if final || elapsed < nextTick {
-				return false
+				return false, crossed
 			}
 			nextTick = advanceTick(nextTick, elapsed, sched)
-			return true
+			return true, crossed
 		}()
 
 		// The stop closure is the only other place memory is reported, and it
@@ -190,6 +309,20 @@ func startMemSamplerWithSchedule(ctx context.Context, interval time.Duration, la
 				"heap_sys_mb", bytesToMB(ms.HeapSys),
 				"goroutines", goroutines,
 			)
+		}
+
+		// Logs are lost with the machine; the checkpoint rows are not. Written
+		// off the sampling goroutine for the same reason the guard is.
+		if crossed && opts.OnCheckpoint != nil {
+			s := memSample{
+				Label:      label,
+				Elapsed:    elapsed,
+				RSSBytes:   rss,
+				HeapInuse:  ms.HeapInuse,
+				Goroutines: goroutines,
+			}
+			onCheckpoint := opts.OnCheckpoint
+			goSafe(&callbacks, "cycle_memory_tick", func() { onCheckpoint(s) })
 		}
 	}
 
@@ -218,6 +351,7 @@ func startMemSamplerWithSchedule(ctx context.Context, interval time.Duration, la
 			cancelSampler()
 			<-done
 			sample(true)
+			waitCallbacks(&callbacks, memCallbackDrain, label)
 
 			mu.Lock()
 			result = peak
