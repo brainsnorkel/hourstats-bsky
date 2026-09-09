@@ -1,22 +1,37 @@
 package formatter
 
-// Sentiment thresholds calibrated to per-cycle net sentiment from prod
-// sentiment_history, hourly-cycle era (Mar–Sep 2026, 4,446 cycles).
-// Boundaries sit on distribution percentiles so tier names stay honest:
+// Sentiment thresholds: the September 2026 percentile boundaries of per-cycle
+// net sentiment from prod sentiment_history (hourly-cycle era, Mar–Sep 2026,
+// 4,446 cycles), shifted up by the stock→emoji-aware realignment of
+// 2026-09-11 and rounded to the nearest 0.25.
+//
+// The percentiles the unshifted boundaries came from:
 //
 //	Tier 1 < 0 (never observed), Tier 2 0–p5, Tier 3 p5–p22,
 //	Tier 4 p22–p78, Tier 5 p78–p95, Tier 6 p95–p99.5, Tier 7 top 0.5%.
 //
-// See docs/SENTIMENT_CALIBRATION_REVIEW_2026-09.md for the analysis and
+// The shift S is the mean of emoji-aware minus stock over the paired cycles,
+// 1.77 points at the time of the switch; the value actually applied to the
+// history is recorded in key_value under sentiment_realign_shift.
+//
+// See docs/SENTIMENT_REALIGNMENT_PLAN.md for the switch,
+// docs/SENTIMENT_CALIBRATION_REVIEW_2026-09.md for the percentile analysis and
 // docs/SENTIMENT_CALIBRATION_ANALYSIS.md for the original Jan 2026 design.
+// RealignShift is the stock→emoji-aware shift the thresholds below were
+// derived from: the mean of (emoji-aware minus stock VADER) over the paired
+// cycles as measured on 2026-09-10. cmd/realign recomputes S from the live
+// database and compares it against this value before it rewrites history, so
+// the thresholds and the stored series can never drift apart silently.
+const RealignShift = 1.77
+
 const (
 	ThresholdExtremeNegative = 0.0   // Below: Extreme Negative (Tier 1)
-	ThresholdUnusuallyLow    = 8.5   // Below: Unusually Low (Tier 2)
-	ThresholdBelowAverage    = 9.75  // Below: Below Average (Tier 3)
-	ThresholdTypical         = 11.5  // Below: Typical (Tier 4)
-	ThresholdAboveAverage    = 12.75 // Below: Above Average (Tier 5)
-	ThresholdUnusuallyHigh   = 15.0  // Below: Unusually High (Tier 6)
-	// >= 15.0: Extreme Positive (Tier 7)
+	ThresholdUnusuallyLow    = 10.25 // Below: Unusually Low (Tier 2)
+	ThresholdBelowAverage    = 11.5  // Below: Below Average (Tier 3)
+	ThresholdTypical         = 13.25 // Below: Typical (Tier 4)
+	ThresholdAboveAverage    = 14.5  // Below: Above Average (Tier 5)
+	ThresholdUnusuallyHigh   = 16.75 // Below: Unusually High (Tier 6)
+	// >= 16.75: Extreme Positive (Tier 7)
 )
 
 // Tier word ranges (start index, end index) - indices are inclusive
@@ -33,15 +48,17 @@ var tierRanges = map[int][2]int{
 // Tier sentiment boundaries (min, max) for interpolation within tier.
 // The open-ended tiers (1, 2, 7) clamp to the range actually observed so
 // that every word in the tier is reachable: the lowest full-size hourly
-// cycle so far is 3.68% (2026-04-07), and 20% is above any hourly-era value.
+// cycle so far is 5.45% realigned (3.68% as scored at the time, 2026-04-07),
+// and 21.75% is above any hourly-era value. Tier 1's clamp is unshifted:
+// no negative cycle exists on the realigned series either.
 var tierBounds = map[int][2]float64{
-	1: {-10.0, 0.0},  // Extreme Negative: clamp at -10 for interpolation
-	2: {3.5, 8.5},    // Unusually Low: clamp at 3.5 for interpolation
-	3: {8.5, 9.75},   // Below Average
-	4: {9.75, 11.5},  // Typical
-	5: {11.5, 12.75}, // Above Average
-	6: {12.75, 15.0}, // Unusually High
-	7: {15.0, 20.0},  // Extreme Positive: clamp at 20 for interpolation
+	1: {-10.0, 0.0},   // Extreme Negative: clamp at -10 for interpolation
+	2: {5.25, 10.25},  // Unusually Low: clamp at 5.25 for interpolation
+	3: {10.25, 11.5},  // Below Average
+	4: {11.5, 13.25},  // Typical
+	5: {13.25, 14.5},  // Above Average
+	6: {14.5, 16.75},  // Unusually High
+	7: {16.75, 21.75}, // Extreme Positive: clamp at 21.75 for interpolation
 }
 
 // getMoodWord100 maps sentiment percentage to one of 100 descriptive words
@@ -116,7 +133,7 @@ func determineTier(sentiment float64) int {
 }
 
 // calibratedWords contains 100 words calibrated to actual Bluesky sentiment range.
-// Words are posted as a hashtag: "Bluesky is #___ +10.6% sentiment".
+// Words are posted as a hashtag: "Bluesky is #___ +12.4% sentiment".
 // Within every tier the words are ordered by rising sentiment: the most
 // intense negative word sits at the bottom of the negative tiers and the
 // most intense positive word at the top of the positive tiers, so the words
@@ -131,9 +148,9 @@ var calibratedWords = []string{
 	"grim",      // 3
 	"miserable", // 4
 
-	// Tier 2: Unusually Low (0% to < 8.5%) - 15 words
+	// Tier 2: Unusually Low (0% to < 10.25%) - 15 words
 	// Vibe: Distinctly downbeat. About 1 hour in 20; the top of the tier
-	// (~8%) is only mildly below normal, so the mildest words sit there.
+	// (~10%) is only mildly below normal, so the mildest words sit there.
 	"despondent",  // 5
 	"glum",        // 6
 	"sullen",      // 7
@@ -150,7 +167,7 @@ var calibratedWords = []string{
 	"weary",       // 18
 	"subdued",     // 19
 
-	// Tier 3: Below Average (8.5% to < 9.75%) - 15 words
+	// Tier 3: Below Average (10.25% to < 11.5%) - 15 words
 	// Vibe: Lacking energy, muted, slightly downbeat. The "meh" zone.
 	"flat",       // 20
 	"downbeat",   // 21
@@ -168,7 +185,7 @@ var calibratedWords = []string{
 	"quiet",      // 33
 	"reflective", // 34
 
-	// Tier 4: Typical (9.75% to < 11.5%) - 30 words
+	// Tier 4: Typical (11.5% to < 13.25%) - 30 words
 	// Vibe: The everyday hum of the network. Normal baseline mood.
 	// Sub-group: Calm & Centered
 	"calm",     // 35
@@ -205,7 +222,7 @@ var calibratedWords = []string{
 	"balanced",  // 63
 	"settled",   // 64
 
-	// Tier 5: Above Average (11.5% to < 12.75%) - 15 words
+	// Tier 5: Above Average (13.25% to < 14.5%) - 15 words
 	// Vibe: Genuinely positive and constructive. A good hour online.
 	"happy",      // 65
 	"cheerful",   // 66
@@ -223,7 +240,7 @@ var calibratedWords = []string{
 	"supportive", // 78
 	"bright",     // 79
 
-	// Tier 6: Unusually High (12.75% to < 15%) - 15 words
+	// Tier 6: Unusually High (14.5% to < 16.75%) - 15 words
 	// Vibe: High-energy positivity, creativity, and excitement.
 	"excited",      // 80
 	"vibrant",      // 81
@@ -241,7 +258,7 @@ var calibratedWords = []string{
 	"buoyant",      // 93
 	"buzzing",      // 94
 
-	// Tier 7: Extreme Positive (>= 15%) - 5 words
+	// Tier 7: Extreme Positive (>= 16.75%) - 5 words
 	// Vibe: Peak collective experience. Holidays, milestones, and the
 	// best hour or two of an exceptional day.
 	"celebratory", // 95

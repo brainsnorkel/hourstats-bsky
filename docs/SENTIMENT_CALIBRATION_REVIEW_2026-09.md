@@ -155,3 +155,33 @@ since the cadence change (Tier 1) or that need a holiday-scale hour
   17%, only the first two Tier 7 words will appear; that is acceptable.
 - No negative cycle has been observed since 2025-12-22 (30-min era). Tier 1
   stays as a safety net.
+
+## Addendum, 2026-09-10: the scorer changed under these thresholds
+
+The percentile boundaries above were fitted to the stock-VADER series. On
+2026-09-11 the headline scorer becomes the emoji-aware analyzer
+(`analyzer.NewEmojiAware`), which reads about **+1.77 points** higher on the
+same window, so every threshold and interpolation clamp in
+`internal/formatter/sentiment_100_words.go` moved up by that shift rounded to
+the nearest 0.25 (Unusually Low 8.5 → 10.25, Below Average 9.75 → 11.5,
+Typical 11.5 → 13.25, Above Average 12.75 → 14.5, Unusually High 15.0 → 16.75,
+tier 2 clamp 3.5 → 5.25, tier 7 clamp 20.0 → 21.75).
+
+The tier shares in section 4 are unchanged by construction: the distribution
+and the boundaries moved together. To reproduce them from an export of the
+pre-switch (stock) series, replay it shifted:
+
+```bash
+HS_HOURLY_CSV=$PWD/analysis/hourly_sentiment_2026.csv HS_SHIFT=1.77 \
+  go test ./internal/formatter -run TestMoodWordDistribution -v
+```
+
+`analysis/` is not tracked in git: the CSV is a local export from the prod
+essential-tables backup named at the top of this document
+(`sqlite3 <backup>.db -header -csv "SELECT timestamp, net_sentiment_percent FROM sentiment_history ORDER BY timestamp"`).
+The test skips when `HS_HOURLY_CSV` is unset, so a fresh checkout is unaffected.
+
+The stored history was moved onto the new scale by `cmd/realign`; the shift it
+actually applied is in `key_value` under `sentiment_realign_shift`. Every value
+quoted in this document is on the old (stock) scale unless stated otherwise.
+See [SENTIMENT_REALIGNMENT_PLAN.md](SENTIMENT_REALIGNMENT_PLAN.md).

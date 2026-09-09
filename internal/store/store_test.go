@@ -3,6 +3,8 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1345,5 +1347,118 @@ func TestNew_EnvConfigurable(t *testing.T) {
 	}
 	if val != "ok" {
 		t.Errorf("value = %q, want %q", val, "ok")
+	}
+}
+
+// TestBackup_SkipsAbsentTablesAndCarriesPrealign covers the realignment
+// window: the two prealign snapshots are essential while they exist (they are
+// the only source a cmd/realign -revert can restore from) but are absent
+// before an apply and after a revert, so the backup must skip them silently
+// and copy them when they are there.
+func TestBackup_SkipsAbsentTablesAndCarriesPrealign(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Neither snapshot table exists on a normal database.
+	absentPath, err := s.Backup(ctx, tmpDir, "absent", 7)
+	if err != nil {
+		t.Fatalf("Backup with absent snapshot tables: %v", err)
+	}
+	for _, table := range []string{"sentiment_history_prealign", "daily_sentiment_prealign"} {
+		if backupHasTable(t, absentPath, table) {
+			t.Errorf("%s was invented in the backup", table)
+		}
+	}
+	if !backupHasTable(t, absentPath, "sentiment_history") {
+		t.Error("sentiment_history missing from the backup")
+	}
+
+	// Once cmd/realign has taken its snapshot, the backup must carry it.
+	if _, err := s.writeDB.ExecContext(ctx,
+		`CREATE TABLE sentiment_history_prealign (run_id TEXT, timestamp TEXT, net_sentiment_percent REAL)`); err != nil {
+		t.Fatalf("create snapshot table: %v", err)
+	}
+	if _, err := s.writeDB.ExecContext(ctx,
+		`INSERT INTO sentiment_history_prealign VALUES ('run-1', '2026-09-10T00:00:00Z', 9.5)`); err != nil {
+		t.Fatalf("seed snapshot table: %v", err)
+	}
+
+	presentPath, err := s.Backup(ctx, tmpDir, "present", 7)
+	if err != nil {
+		t.Fatalf("Backup with snapshot table: %v", err)
+	}
+	backupDB, err := sql.Open("sqlite", "file:"+presentPath+"?_pragma=query_only(ON)")
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer backupDB.Close()
+	var net float64
+	if err := backupDB.QueryRow(`SELECT net_sentiment_percent FROM sentiment_history_prealign`).Scan(&net); err != nil {
+		t.Fatalf("read snapshot row from backup: %v", err)
+	}
+	if net != 9.5 {
+		t.Errorf("snapshot row = %v, want 9.5", net)
+	}
+}
+
+func backupHasTable(t *testing.T, path, table string) bool {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=query_only(ON)")
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&n); err != nil {
+		t.Fatalf("look up %s: %v", table, err)
+	}
+	return n > 0
+}
+
+func TestWriteTx_CommitsAndRollsBack(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.WriteTx(ctx, func(tx TxExecer) error {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO key_value (key, value, updated_at) VALUES ('wtx', 'kept', '2026-09-10T00:00:00Z')`)
+		return err
+	}); err != nil {
+		t.Fatalf("WriteTx commit: %v", err)
+	}
+	if v, err := s.GetKeyValue(ctx, "wtx"); err != nil || v != "kept" {
+		t.Fatalf("after commit: %q, %v; want \"kept\"", v, err)
+	}
+
+	boom := errors.New("boom")
+	err := s.WriteTx(ctx, func(tx TxExecer) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE key_value SET value = 'lost' WHERE key = 'wtx'`); err != nil {
+			return err
+		}
+		var seen string
+		if err := tx.QueryRowContext(ctx, `SELECT value FROM key_value WHERE key = 'wtx'`).Scan(&seen); err != nil {
+			return err
+		}
+		if seen != "lost" {
+			t.Errorf("inside the transaction: %q, want \"lost\"", seen)
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("WriteTx error = %v, want %v", err, boom)
+	}
+	if v, err := s.GetKeyValue(ctx, "wtx"); err != nil || v != "kept" {
+		t.Errorf("after rollback: %q, %v; want \"kept\"", v, err)
+	}
+
+	// The pooled write connection is usable again after the rollback.
+	if err := s.SetKeyValue(ctx, "wtx", "after"); err != nil {
+		t.Errorf("write after rollback: %v", err)
 	}
 }

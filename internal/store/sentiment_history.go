@@ -13,8 +13,8 @@ func (s *Store) StoreSentimentDataPoint(ctx context.Context, dp SentimentDataPoi
 	ttl := time.Now().UTC().Add(8 * 24 * time.Hour).Unix() // 8 days TTL
 
 	_, err := s.writeDB.ExecContext(ctx,
-		`INSERT INTO sentiment_history (run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, root_sentiment_pct, reply_sentiment_pct, top_topic, net_sentiment_pct_emoji, created_at, ttl)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO sentiment_history (run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, root_sentiment_pct, reply_sentiment_pct, top_topic, net_sentiment_pct_emoji, net_sentiment_pct_stock, created_at, ttl)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(run_id, timestamp) DO UPDATE SET
 			average_compound_score=excluded.average_compound_score,
 			net_sentiment_percent=excluded.net_sentiment_percent,
@@ -24,13 +24,14 @@ func (s *Store) StoreSentimentDataPoint(ctx context.Context, dp SentimentDataPoi
 			root_sentiment_pct=excluded.root_sentiment_pct,
 			reply_sentiment_pct=excluded.reply_sentiment_pct,
 			top_topic=CASE WHEN excluded.top_topic = '' THEN sentiment_history.top_topic ELSE excluded.top_topic END,
-			net_sentiment_pct_emoji=excluded.net_sentiment_pct_emoji`,
+			net_sentiment_pct_emoji=excluded.net_sentiment_pct_emoji,
+			net_sentiment_pct_stock=excluded.net_sentiment_pct_stock`,
 		// top_topic: SetSentimentTopTopic is the only production writer; the
 		// CASE keeps a re-store of the same point from erasing its label.
 		dp.RunID, timeToStr(dp.Timestamp), dp.AverageCompoundScore,
 		dp.NetSentimentPercent, dp.SentimentCategory, dp.TotalPosts,
 		dp.TotalFirehosePosts, dp.RootSentimentPct, dp.ReplySentimentPct,
-		dp.TopTopic, dp.NetSentimentPctEmoji, now, ttl,
+		dp.TopTopic, dp.NetSentimentPctEmoji, dp.NetSentimentPctStock, now, ttl,
 	)
 	if err != nil {
 		return fmt.Errorf("store sentiment: %w", err)
@@ -61,7 +62,7 @@ func (s *Store) GetSentimentHistory(ctx context.Context, duration time.Duration)
 	since := time.Now().UTC().Add(-duration)
 
 	rows, err := s.readDB.QueryContext(ctx,
-		`SELECT run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, root_sentiment_pct, reply_sentiment_pct, COALESCE(top_topic, ''), net_sentiment_pct_emoji, created_at, ttl
+		`SELECT run_id, timestamp, average_compound_score, net_sentiment_percent, sentiment_category, total_posts, total_firehose_posts, root_sentiment_pct, reply_sentiment_pct, COALESCE(top_topic, ''), net_sentiment_pct_emoji, net_sentiment_pct_stock, created_at, ttl
 		 FROM sentiment_history
 		 WHERE timestamp >= ?
 		 ORDER BY timestamp ASC`,
@@ -76,16 +77,20 @@ func (s *Store) GetSentimentHistory(ctx context.Context, duration time.Duration)
 	for rows.Next() {
 		var dp SentimentDataPoint
 		var tsStr, createdStr string
-		var emojiPct sql.NullFloat64
+		var emojiPct, stockPct sql.NullFloat64
 		if err := rows.Scan(&dp.RunID, &tsStr, &dp.AverageCompoundScore,
 			&dp.NetSentimentPercent, &dp.SentimentCategory, &dp.TotalPosts,
 			&dp.TotalFirehosePosts, &dp.RootSentimentPct, &dp.ReplySentimentPct,
-			&dp.TopTopic, &emojiPct, &createdStr, &dp.TTL); err != nil {
+			&dp.TopTopic, &emojiPct, &stockPct, &createdStr, &dp.TTL); err != nil {
 			return nil, fmt.Errorf("scan sentiment: %w", err)
 		}
 		if emojiPct.Valid {
 			v := emojiPct.Float64
 			dp.NetSentimentPctEmoji = &v
+		}
+		if stockPct.Valid {
+			v := stockPct.Float64
+			dp.NetSentimentPctStock = &v
 		}
 		dp.Timestamp = strToTime(tsStr)
 		dp.CreatedAt = strToTime(createdStr)

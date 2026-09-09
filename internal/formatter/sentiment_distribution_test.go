@@ -17,6 +17,13 @@ import (
 //	HS_HOURLY_CSV=$PWD/analysis/hourly_sentiment_2026.csv HS_SINCE=2026-03-01 \
 //	  go test ./internal/formatter -run TestMoodWordDistribution -v
 //
+// HS_SHIFT adds a constant to every net value read from the CSV, so an export
+// of the pre-2026-09-11 (stock-scored) series can be replayed on the realigned
+// scale the thresholds are now calibrated for:
+//
+//	HS_HOURLY_CSV=... HS_SHIFT=1.77 \
+//	  go test ./internal/formatter -run TestMoodWordDistribution -v
+//
 // It fails if the vocabulary collapses the way the Jan 2026 tiers did on
 // hourly data (one word carrying 8.5% of posts, 23 words never used).
 func TestMoodWordDistribution(t *testing.T) {
@@ -37,6 +44,14 @@ func TestMoodWordDistribution(t *testing.T) {
 		t.Fatalf("%s: no data rows", path)
 	}
 	since := os.Getenv("HS_SINCE")
+	var shift float64
+	if raw := os.Getenv("HS_SHIFT"); raw != "" {
+		var err error
+		shift, err = strconv.ParseFloat(raw, 64)
+		if err != nil {
+			t.Fatalf("HS_SHIFT=%q: %v", raw, err)
+		}
+	}
 
 	wordCounts := map[string]int{}
 	tierCounts := map[int]int{}
@@ -52,6 +67,7 @@ func TestMoodWordDistribution(t *testing.T) {
 		if err != nil {
 			t.Fatalf("row %q: %v", r, err)
 		}
+		v += shift
 		wordCounts[getMoodWord100(v)]++
 		tierCounts[determineTier(v)]++
 		total++
@@ -60,7 +76,7 @@ func TestMoodWordDistribution(t *testing.T) {
 		t.Fatal("no rows matched")
 	}
 
-	t.Logf("cycles=%d", total)
+	t.Logf("cycles=%d shift=%+.2f", total, shift)
 	for tier := 1; tier <= 7; tier++ {
 		t.Logf("tier %d: %5d %5.1f%%", tier, tierCounts[tier], 100*float64(tierCounts[tier])/float64(total))
 	}

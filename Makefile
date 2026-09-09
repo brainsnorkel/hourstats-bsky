@@ -1,7 +1,7 @@
 # HourStats Makefile
 
 .PHONY: build test test-unit clean deps fmt lint graph-lab graph-lab-sparkline graph-lab-yearly help \
-	build-hourstats build-stats deploy-prod deploy-staging deploy-all \
+	build-hourstats build-stats build-realign deploy-prod deploy-staging deploy-all \
 	fly-status fly-logs-prod fly-logs-staging sync-staging
 
 # Default build target — the Fly.io binary
@@ -12,6 +12,10 @@ build-hourstats:
 
 build-stats:
 	go build -o bin/hourstats-stats ./cmd/hourstats-stats
+
+# One-off sentiment realignment admin tool; shipped in the image as /usr/local/bin/realign
+build-realign:
+	CGO_ENABLED=0 go build -o bin/realign ./cmd/realign
 
 # Run tests
 test-unit:
@@ -81,6 +85,7 @@ help:
 	@echo "  build              - Build the Fly.io binary (alias for build-hourstats)"
 	@echo "  build-hourstats    - Build Fly.io binary (cmd/hourstats)"
 	@echo "  build-stats        - Build stats CLI tool (cmd/hourstats-stats)"
+	@echo "  build-realign      - Build the sentiment realignment tool (cmd/realign)"
 	@echo "  test               - Run all tests"
 	@echo "  test-unit          - Run unit tests"
 	@echo "  clean              - Clean build artifacts"

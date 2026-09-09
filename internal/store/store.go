@@ -75,11 +75,18 @@ type SentimentDataPoint struct {
 	// TopTopic is the rank-1 trending topic label for the cycle, set once
 	// topic analysis completes. Empty when trending is disabled or failed.
 	TopTopic string
-	// NetSentimentPctEmoji is the same window scored by the emoji-aware
-	// shadow analyzer (analyzer.NewEmojiAware). Nil for rows written before
-	// the column existed and for cycles where the shadow scorer failed. It is
-	// stored for recalibration only and is never posted.
+	// NetSentimentPctEmoji is the window scored by the emoji-aware analyzer
+	// (analyzer.NewEmojiAware). Since 2026-09-11 that scorer produces the
+	// headline, so this equals NetSentimentPercent on new rows; it is kept
+	// for continuity with the shadow-era series. Nil for rows written before
+	// the column existed and for cycles where that scorer failed.
 	NetSentimentPctEmoji *float64
+	// NetSentimentPctStock is the same window scored by stock VADER
+	// (analyzer.New), the scorer that produced the headline before
+	// 2026-09-11. Nil for every row written before the switch — cmd/realign
+	// uses exactly that to identify the rows it has to realign — and for
+	// cycles where the stock pass failed.
+	NetSentimentPctStock *float64
 	CreatedAt            time.Time
 	TTL                  int64
 }
@@ -448,6 +455,57 @@ func (s *Store) DB() *sql.DB {
 	return s.readDB
 }
 
+// TxExecer is the query surface WriteTx hands to its callback: the subset of
+// *sql.Conn (and *sql.Tx) that statement execution needs.
+type TxExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// WriteTx runs fn inside a single BEGIN IMMEDIATE transaction on the write
+// pool, committing when it returns nil and rolling back otherwise. It exists
+// for one-off admin commands (cmd/realign) that need multi-statement atomicity
+// over tables this package has no typed writer for; production code should use
+// the typed methods instead.
+//
+// The transaction is driven with explicit statements on a pinned *sql.Conn
+// rather than database/sql's BeginTx, because BeginTx issues a deferred BEGIN:
+// the write lock would then be taken on the first write statement, after the
+// read snapshot is already open, and SQLite fails that upgrade immediately with
+// SQLITE_BUSY_SNAPSHOT instead of waiting out busy_timeout. BEGIN IMMEDIATE
+// takes the write lock up front, where the 30s busy timeout applies.
+//
+// The write pool has one connection, so fn must do all of its work through the
+// TxExecer it is given: any other Store method called from inside fn would wait
+// for that connection and deadlock.
+func (s *Store) WriteTx(ctx context.Context, fn func(TxExecer) error) error {
+	conn, err := s.writeDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire write conn: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin immediate: %w", err)
+	}
+	if err := fn(conn); err != nil {
+		// Detach from ctx: a cancelled context must still release the write
+		// lock rather than leave the transaction open on the pooled conn.
+		if _, rbErr := conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK"); rbErr != nil {
+			return fmt.Errorf("%w (rollback: %v)", err, rbErr)
+		}
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		if _, rbErr := conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK"); rbErr != nil {
+			return fmt.Errorf("commit write tx: %w (rollback: %v)", err, rbErr)
+		}
+		return fmt.Errorf("commit write tx: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) migrate() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS post_buffer (
@@ -512,6 +570,11 @@ func (s *Store) migrate() error {
 		// and cycles where the shadow scorer failed, must read back as NULL
 		// rather than as a real 0% reading.
 		`ALTER TABLE sentiment_history ADD COLUMN net_sentiment_pct_emoji REAL`,
+		// The stock VADER score of the same window, kept beside the headline
+		// since the emoji-aware scorer took the headline over (2026-09-11).
+		// NULL identifies a row written before that switch, which is what
+		// cmd/realign uses to find the rows it still has to shift.
+		`ALTER TABLE sentiment_history ADD COLUMN net_sentiment_pct_stock REAL`,
 
 		`CREATE TABLE IF NOT EXISTS daily_sentiment (
 			date TEXT PRIMARY KEY,

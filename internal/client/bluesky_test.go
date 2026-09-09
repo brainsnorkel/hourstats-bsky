@@ -605,13 +605,16 @@ func TestPostTrendingSummaryDropsQuoteControlNoteOnOverflow(t *testing.T) {
 	defer srv.Close()
 
 	// Handles sized so the summary fits without the note and overflows with it.
+	// The net percent picks the mood word, whose length is part of that fit:
+	// 12.77% is the 2026-09-11 realignment of the 11.0% this used to pass, and
+	// still yields "sincere".
 	longHandle := strings.Repeat("a", 63) + ".bsky.social"
 	posts := []Post{
 		{URI: "at://did:plc:aaa/app.bsky.feed.post/111", CID: "c1", Author: "1" + longHandle, QuoteControlled: true},
 		{URI: "at://did:plc:bbb/app.bsky.feed.post/222", CID: "c2", Author: "2" + longHandle},
 		{URI: "at://did:plc:ccc/app.bsky.feed.post/333", CID: "c3", Author: "3" + longHandle},
 	}
-	if _, _, err := newTestClient(srv.URL).PostTrendingSummary(posts, "positive", 30, 1000, 11.0); err != nil {
+	if _, _, err := newTestClient(srv.URL).PostTrendingSummary(posts, "positive", 30, 1000, 12.77); err != nil {
 		t.Fatalf("PostTrendingSummary() error = %v", err)
 	}
 

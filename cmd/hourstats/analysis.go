@@ -60,7 +60,7 @@ func sharedHydrationFetcher() (hydrator.PostFetcher, string) {
 	return hydrationFetcher, hydrationHost
 }
 
-// sharedAnalyzer returns the process-wide VADER analyzer.
+// sharedAnalyzer returns the process-wide stock VADER analyzer.
 //
 // analyzer.New() parses the full govader lexicon and emoji dictionary on every
 // call, which was pure per-cycle overhead. The analyzer is read-only after
@@ -68,6 +68,10 @@ func sharedHydrationFetcher() (hydrator.PostFetcher, string) {
 // NewSentimentIntensityAnalyzer, and PolarityScores only reads them — so one
 // instance can serve every cycle. Analysis cycles are sequential, so concurrent
 // use is not required today; sync.Once keeps initialisation safe regardless.
+//
+// Since 2026-09-11 this is the second scorer: its net percent is recorded in
+// sentiment_history.net_sentiment_pct_stock so the pre-switch series stays
+// comparable, and nothing posted to Bluesky reads it.
 func sharedAnalyzer() *analyzer.SentimentAnalyzer {
 	sentimentAnalyzerOnce.Do(func() {
 		sentimentAnalyzer = analyzer.New()
@@ -75,17 +79,88 @@ func sharedAnalyzer() *analyzer.SentimentAnalyzer {
 	return sentimentAnalyzer
 }
 
-// sharedEmojiAnalyzer returns the process-wide emoji-aware VADER analyzer.
+// sharedEmojiAnalyzer returns the process-wide emoji-aware VADER analyzer,
+// which produces the headline sentiment for every cycle.
 //
 // It is built and reused on the same terms as sharedAnalyzer: construction
-// parses the full lexicon, and the instance is read-only afterwards. This
-// analyzer only ever produces the shadow score stored on the sentiment row;
-// nothing posted to Bluesky reads it.
+// parses the full lexicon, and the instance is read-only afterwards.
 func sharedEmojiAnalyzer() *analyzer.SentimentAnalyzer {
 	emojiAnalyzerOnce.Do(func() {
 		emojiAnalyzer = analyzer.NewEmojiAware()
 	})
 	return emojiAnalyzer
+}
+
+// scorerV2Key marks the first UTC day whose cycles were scored by the
+// emoji-aware headline scorer. Reports and any later recalibration use it to
+// tell the two scales apart; cmd/realign moved everything before it.
+const scorerV2Key = "sentiment_scorer_v2_since"
+
+// recordScorerV2Cutover stores the cutover date on the first start of a build
+// whose headline comes from the emoji-aware analyzer — which is every build
+// since 2026-09-11, so this only has to be idempotent, not conditional.
+func recordScorerV2Cutover(ctx context.Context, db *store.Store, now time.Time) {
+	if v, _ := db.GetKeyValue(ctx, scorerV2Key); v != "" {
+		return
+	}
+	since := utcDate(now).Format(dateFormat)
+	if err := db.SetKeyValue(ctx, scorerV2Key, since); err != nil {
+		slog.Warn("record sentiment scorer cutover failed", "error", err)
+		return
+	}
+	slog.Info("sentiment scorer cutover recorded", "key", scorerV2Key, "since", since)
+}
+
+// windowScores is one analysis window scored by both scorers: the headline
+// figures from the emoji-aware analyzer, and stock VADER's net percent beside
+// them for continuity with the pre-2026-09-11 series.
+type windowScores struct {
+	// Analyzed is the headline scoring, one entry per input post.
+	Analyzed []analyzer.AnalyzedPost
+	Category string
+	NetPct   float64
+	RootPct  float64
+	ReplyPct float64
+	// StockNetPct is stock VADER's net percent for the same window, nil when
+	// that pass failed.
+	StockNetPct *float64
+}
+
+// scoreWindow scores posts with both analyzers. An error from the headline
+// scorer is fatal to the cycle; a failure of the stock pass only costs the
+// second column, so it is logged and StockNetPct is left nil.
+func scoreWindow(posts []analyzer.Post, runID string) (windowScores, error) {
+	analyzed, err := sharedEmojiAnalyzer().AnalyzePosts(posts)
+	if err != nil {
+		return windowScores{}, err
+	}
+	category, netPct := calculateOverallSentiment(analyzed)
+	rootPct, replyPct := calculateSplitSentiment(analyzed)
+	scores := windowScores{
+		Analyzed: analyzed,
+		Category: category,
+		NetPct:   netPct,
+		RootPct:  rootPct,
+		ReplyPct: replyPct,
+	}
+
+	stockStart := time.Now()
+	stockAnalyzed, stockErr := sharedAnalyzer().AnalyzePosts(posts)
+	stockMS := time.Since(stockStart).Milliseconds()
+	if stockErr != nil {
+		slog.Warn("stock sentiment analysis failed", "error", stockErr, "run_id", runID)
+		return scores, nil
+	}
+	_, stockPct := calculateOverallSentiment(stockAnalyzed)
+	scores.StockNetPct = &stockPct
+	slog.Info("sentiment scorers",
+		"run_id", runID,
+		"net_pct", netPct,
+		"net_pct_stock", stockPct,
+		"delta", fmt.Sprintf("%.2f", netPct-stockPct),
+		"stock_ms", stockMS,
+	)
+	return scores, nil
 }
 
 // topicAnalysisOutcome carries the result of the parallel topic analysis
@@ -329,36 +404,17 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		}
 	}
 
-	analyzerPosts := toAnalyzerPosts(posts)
-	analyzed, err := sharedAnalyzer().AnalyzePosts(analyzerPosts)
+	// The headline — category, net percent and the root/reply split — comes
+	// from the emoji-aware scorer; stock VADER scores the same window and its
+	// net percent is kept beside it on the sentiment row.
+	scores, err := scoreWindow(toAnalyzerPosts(posts), runID)
 	if err != nil {
 		slog.Error("sentiment analysis failed", "error", err)
 		return
 	}
-
-	overallSentiment, netSentimentPct := calculateOverallSentiment(analyzed)
-	rootSentimentPct, replySentimentPct := calculateSplitSentiment(analyzed)
-
-	// Shadow scoring: the same window, scored again with the emoji-aware
-	// analyzer. Stored on the sentiment row for later recalibration and
-	// never used for the headline, the run state or anything posted.
-	var netSentimentPctEmoji *float64
-	emojiStart := time.Now()
-	emojiAnalyzed, emojiErr := sharedEmojiAnalyzer().AnalyzePosts(analyzerPosts)
-	emojiMS := time.Since(emojiStart).Milliseconds()
-	if emojiErr != nil {
-		slog.Warn("emoji-aware sentiment analysis failed", "error", emojiErr, "run_id", runID)
-	} else {
-		_, emojiPct := calculateOverallSentiment(emojiAnalyzed)
-		netSentimentPctEmoji = &emojiPct
-		slog.Info("sentiment scorers",
-			"run_id", runID,
-			"net_pct", netSentimentPct,
-			"net_pct_emoji", emojiPct,
-			"delta", fmt.Sprintf("%.2f", emojiPct-netSentimentPct),
-			"emoji_ms", emojiMS,
-		)
-	}
+	analyzed := scores.Analyzed
+	overallSentiment, netSentimentPct := scores.Category, scores.NetPct
+	rootSentimentPct, replySentimentPct := scores.RootPct, scores.ReplyPct
 
 	// A trip this late has already cost the cycle its posts, but the sentiment
 	// is computed and the parent ctx is live, so the hour is recorded rather
@@ -438,7 +494,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		TotalFirehosePosts:   firehoseSnapshot,
 		RootSentimentPct:     rootSentimentPct,
 		ReplySentimentPct:    replySentimentPct,
-		NetSentimentPctEmoji: netSentimentPctEmoji,
+		// The emoji column now mirrors the headline; it is still written so
+		// the shadow-era series continues without a gap.
+		NetSentimentPctEmoji: &netSentimentPct,
+		NetSentimentPctStock: scores.StockNetPct,
 		CreatedAt:            time.Now().UTC(),
 		TTL:                  time.Now().Add(30 * 24 * time.Hour).Unix(),
 	}

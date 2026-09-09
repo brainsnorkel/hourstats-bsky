@@ -39,6 +39,11 @@ var essentialTables = []string{
 	"topic_daily",
 	"daily_top_post",
 	"language_daily",
+	// Present only between cmd/realign -apply and -revert; they hold the
+	// pre-realignment values, so a backup taken in that window has to carry
+	// them or the revert source is lost. Skipped when absent.
+	"sentiment_history_prealign",
+	"daily_sentiment_prealign",
 }
 
 func (s *Store) Backup(ctx context.Context, dataDir, profile string, retainDays int) (string, error) {
@@ -169,6 +174,19 @@ func (s *Store) backupEssentialTables(ctx context.Context, destPath string) erro
 	}
 
 	for _, table := range essentialTables {
+		// Some essential tables only exist for part of the database's life
+		// (the realignment snapshots), so a missing one is skipped rather
+		// than failing the whole backup.
+		var present int
+		if err := destDB.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM src.sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&present); err != nil {
+			return fmt.Errorf("look up table %s: %w", table, err)
+		}
+		if present == 0 {
+			slog.Debug("backup: table absent from source, skipped", "table", table)
+			continue
+		}
+
 		createSQL := `CREATE TABLE IF NOT EXISTS main.` + table + ` AS SELECT * FROM src.` + table + ` WHERE 0`
 		if _, err := destDB.ExecContext(ctx, createSQL); err != nil {
 			return fmt.Errorf("create table %s: %w", table, err)

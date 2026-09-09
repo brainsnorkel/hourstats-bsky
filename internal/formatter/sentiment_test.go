@@ -12,19 +12,19 @@ func TestDetermineTier(t *testing.T) {
 	}{
 		{name: "extreme negative", sentiment: -5.0, expected: 1},
 		{name: "threshold extreme negative", sentiment: 0.0, expected: 2}, // 0.0 is the start of Tier 2
-		{name: "unusually low", sentiment: 5.0, expected: 2},
-		{name: "unusually low top", sentiment: 8.49, expected: 2},
-		{name: "below average start", sentiment: 8.5, expected: 3},
-		{name: "below average", sentiment: 9.0, expected: 3},
-		{name: "typical low", sentiment: 9.75, expected: 4},
-		{name: "typical median hour", sentiment: 10.6, expected: 4},
-		{name: "typical top", sentiment: 11.49, expected: 4},
-		{name: "above average start", sentiment: 11.5, expected: 5},
-		{name: "above average", sentiment: 12.0, expected: 5},
-		{name: "unusually high start", sentiment: 12.75, expected: 6},
-		{name: "unusually high", sentiment: 14.0, expected: 6},
-		{name: "extreme positive start", sentiment: 15.0, expected: 7},
-		{name: "extreme positive", sentiment: 20.0, expected: 7},
+		{name: "unusually low", sentiment: 6.75, expected: 2},
+		{name: "unusually low top", sentiment: 10.24, expected: 2},
+		{name: "below average start", sentiment: 10.25, expected: 3},
+		{name: "below average", sentiment: 10.75, expected: 3},
+		{name: "typical low", sentiment: 11.5, expected: 4},
+		{name: "typical median hour", sentiment: 12.35, expected: 4},
+		{name: "typical top", sentiment: 13.24, expected: 4},
+		{name: "above average start", sentiment: 13.25, expected: 5},
+		{name: "above average", sentiment: 13.75, expected: 5},
+		{name: "unusually high start", sentiment: 14.5, expected: 6},
+		{name: "unusually high", sentiment: 15.75, expected: 6},
+		{name: "extreme positive start", sentiment: 16.75, expected: 7},
+		{name: "extreme positive", sentiment: 21.75, expected: 7},
 	}
 
 	for _, tt := range tests {
@@ -48,25 +48,25 @@ func TestGetMoodWord100_TierBoundaries(t *testing.T) {
 		// Tier 1: Extreme Negative (< 0%) - words 0-4
 		{name: "tier 1 clamp", sentiment: -10.0, expectedTier: 1, expectedWord: "hostile"},
 		{name: "tier 1 top", sentiment: -0.01, expectedTier: 1, expectedWord: "miserable"},
-		// Tier 2: Unusually Low (0% to < 8.5%) - words 5-19
+		// Tier 2: Unusually Low (0% to < 10.25%) - words 5-19
 		{name: "tier 2 start", sentiment: 0.0, expectedTier: 2, expectedWord: "despondent"},
-		{name: "tier 2 clamp", sentiment: 3.5, expectedTier: 2, expectedWord: "despondent"},
-		{name: "tier 2 lowest full-size cycle", sentiment: 3.68, expectedTier: 2, expectedWord: "despondent"},
-		{name: "tier 2 top", sentiment: 8.49, expectedTier: 2, expectedWord: "subdued"},
-		// Tier 3: Below Average (8.5% to < 9.75%) - words 20-34
-		{name: "tier 3 start", sentiment: 8.5, expectedTier: 3, expectedWord: "flat"},
-		{name: "tier 3 top", sentiment: 9.74, expectedTier: 3, expectedWord: "reflective"},
-		// Tier 4: Typical (9.75% to < 11.5%) - words 35-64
-		{name: "tier 4 start", sentiment: 9.75, expectedTier: 4, expectedWord: "calm"},
-		{name: "tier 4 top", sentiment: 11.49, expectedTier: 4, expectedWord: "settled"},
-		// Tier 5: Above Average (11.5% to < 12.75%) - words 65-79
-		{name: "tier 5 start", sentiment: 11.5, expectedTier: 5, expectedWord: "happy"},
-		{name: "tier 5 top", sentiment: 12.74, expectedTier: 5, expectedWord: "bright"},
-		// Tier 6: Unusually High (12.75% to < 15%) - words 80-94
-		{name: "tier 6 start", sentiment: 12.75, expectedTier: 6, expectedWord: "excited"},
-		{name: "tier 6 top", sentiment: 14.99, expectedTier: 6, expectedWord: "buzzing"},
-		// Tier 7: Extreme Positive (>= 15%) - words 95-99
-		{name: "tier 7 start", sentiment: 15.0, expectedTier: 7, expectedWord: "celebratory"},
+		{name: "tier 2 clamp", sentiment: 5.25, expectedTier: 2, expectedWord: "despondent"},
+		{name: "tier 2 lowest full-size cycle", sentiment: 5.45, expectedTier: 2, expectedWord: "despondent"},
+		{name: "tier 2 top", sentiment: 10.24, expectedTier: 2, expectedWord: "subdued"},
+		// Tier 3: Below Average (10.25% to < 11.5%) - words 20-34
+		{name: "tier 3 start", sentiment: 10.25, expectedTier: 3, expectedWord: "flat"},
+		{name: "tier 3 top", sentiment: 11.49, expectedTier: 3, expectedWord: "reflective"},
+		// Tier 4: Typical (11.5% to < 13.25%) - words 35-64
+		{name: "tier 4 start", sentiment: 11.5, expectedTier: 4, expectedWord: "calm"},
+		{name: "tier 4 top", sentiment: 13.24, expectedTier: 4, expectedWord: "settled"},
+		// Tier 5: Above Average (13.25% to < 14.5%) - words 65-79
+		{name: "tier 5 start", sentiment: 13.25, expectedTier: 5, expectedWord: "happy"},
+		{name: "tier 5 top", sentiment: 14.49, expectedTier: 5, expectedWord: "bright"},
+		// Tier 6: Unusually High (14.5% to < 16.75%) - words 80-94
+		{name: "tier 6 start", sentiment: 14.5, expectedTier: 6, expectedWord: "excited"},
+		{name: "tier 6 top", sentiment: 16.74, expectedTier: 6, expectedWord: "buzzing"},
+		// Tier 7: Extreme Positive (>= 16.75%) - words 95-99
+		{name: "tier 7 start", sentiment: 16.75, expectedTier: 7, expectedWord: "celebratory"},
 		{name: "tier 7 clamp", sentiment: 30.0, expectedTier: 7, expectedWord: "euphoric"},
 	}
 
@@ -101,16 +101,16 @@ func TestGetMoodWord100_WordsWithinTier(t *testing.T) {
 		expectedTier int
 	}{
 		{-5.0, 1},
-		{3.0, 2},
-		{7.5, 2},
-		{9.0, 3},
-		{10.0, 4},
-		{11.0, 4},
-		{12.0, 5},
-		{13.5, 6},
-		{14.5, 6},
-		{16.0, 7},
-		{25.0, 7},
+		{4.75, 2},
+		{9.25, 2},
+		{10.75, 3},
+		{11.75, 4},
+		{12.75, 4},
+		{13.75, 5},
+		{15.25, 6},
+		{16.25, 6},
+		{17.75, 7},
+		{26.75, 7},
 	}
 
 	for _, tt := range tests {
@@ -156,26 +156,30 @@ func TestGetMoodWord100_Monotonic(t *testing.T) {
 
 func TestGetMoodWord100_HistoricalValues(t *testing.T) {
 	// Real per-cycle values from prod sentiment_history (hourly era) plus
-	// the 2025 holiday extremes from daily_sentiment. Tier expectations
-	// follow docs/SENTIMENT_CALIBRATION_REVIEW_2026-09.md.
+	// the 2025 holiday extremes from daily_sentiment, each shifted by the
+	// S = 1.77 realignment of 2026-09-11 so they are on the same scale as
+	// the realigned history. Tier expectations follow
+	// docs/SENTIMENT_CALIBRATION_REVIEW_2026-09.md.
 	tests := []struct {
 		name         string
 		sentiment    float64
 		expectedTier int
 	}{
-		{name: "hourly-era median cycle", sentiment: 10.60, expectedTier: 4},
-		{name: "hourly-era p5", sentiment: 8.48, expectedTier: 2},
-		{name: "hourly-era p25", sentiment: 9.85, expectedTier: 4},
-		{name: "hourly-era p75", sentiment: 11.35, expectedTier: 4},
-		{name: "hourly-era p95", sentiment: 12.67, expectedTier: 5},
-		{name: "hourly-era p99", sentiment: 14.48, expectedTier: 6},
-		{name: "highest hourly cycle 2026-06-06", sentiment: 16.58, expectedTier: 7},
-		{name: "March 2026 monthly mean", sentiment: 9.40, expectedTier: 3},
-		{name: "lowest cycle 2026-02-28 (30-min era)", sentiment: 2.86, expectedTier: 2},
-		{name: "lowest full-size hourly cycle 2026-04-07", sentiment: 3.68, expectedTier: 2},
-		{name: "Christmas 2025 daily avg", sentiment: 19.77, expectedTier: 7},
-		{name: "New Year 2026 30-min peak", sentiment: 26.64, expectedTier: 7},
-		{name: "only negative cycle 2025-12-22", sentiment: -4.53, expectedTier: 1},
+		{name: "hourly-era median cycle", sentiment: 12.37, expectedTier: 4},
+		// p5 lands exactly on the tier 2/3 boundary once the thresholds are
+		// rounded to 0.25 (8.48 + 1.77 = 10.25), so it reads as tier 3.
+		{name: "hourly-era p5", sentiment: 10.25, expectedTier: 3},
+		{name: "hourly-era p25", sentiment: 11.62, expectedTier: 4},
+		{name: "hourly-era p75", sentiment: 13.12, expectedTier: 4},
+		{name: "hourly-era p95", sentiment: 14.44, expectedTier: 5},
+		{name: "hourly-era p99", sentiment: 16.25, expectedTier: 6},
+		{name: "highest hourly cycle 2026-06-06", sentiment: 18.35, expectedTier: 7},
+		{name: "March 2026 monthly mean", sentiment: 11.17, expectedTier: 3},
+		{name: "lowest cycle 2026-02-28 (30-min era)", sentiment: 4.63, expectedTier: 2},
+		{name: "lowest full-size hourly cycle 2026-04-07", sentiment: 5.45, expectedTier: 2},
+		{name: "Christmas 2025 daily avg", sentiment: 21.54, expectedTier: 7},
+		{name: "New Year 2026 30-min peak", sentiment: 28.41, expectedTier: 7},
+		{name: "only negative cycle 2025-12-22", sentiment: -2.76, expectedTier: 1},
 	}
 
 	for _, tt := range tests {
@@ -246,5 +250,13 @@ func TestTierBoundsMatchThresholds(t *testing.T) {
 	}
 	if tierBounds[1][1] != ThresholdExtremeNegative || tierBounds[2][1] != ThresholdUnusuallyLow || tierBounds[7][0] != ThresholdUnusuallyHigh {
 		t.Errorf("open-ended tier bounds do not meet their thresholds: %v %v %v", tierBounds[1], tierBounds[2], tierBounds[7])
+	}
+	// The open-ended clamps moved with the 2026-09-11 realignment; pin them
+	// so a future threshold edit cannot leave them behind.
+	if tierBounds[2][0] != 5.25 {
+		t.Errorf("tier 2 lower clamp = %v, expected 5.25", tierBounds[2][0])
+	}
+	if tierBounds[7][1] != 21.75 {
+		t.Errorf("tier 7 upper clamp = %v, expected 21.75", tierBounds[7][1])
 	}
 }

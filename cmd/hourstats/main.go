@@ -77,6 +77,7 @@ func main() {
 	// last, and the signal branch is main's only return path.
 	slog.Info("database opened", "path", dbPath)
 	recordFirehoseCountCutover(context.Background(), db, time.Now())
+	recordScorerV2Cutover(context.Background(), db, time.Now())
 
 	if err := db.RunStartupMaintenance(context.Background()); err != nil {
 		slog.Warn("startup maintenance failed", "error", err)

@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
+	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
 func TestAwaitTopicOutcome(t *testing.T) {
@@ -98,5 +102,81 @@ func TestRecordTopTopic(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestScoreWindowHeadlineIsEmojiAware pins the 2026-09-11 switch: the headline
+// figures come from the emoji-aware analyzer and stock VADER only fills the
+// second column.
+func TestScoreWindowHeadlineIsEmojiAware(t *testing.T) {
+	posts := []analyzer.Post{
+		{URI: "at://a/1", Text: "this set is 🔥🔥", Author: "a"},
+		{URI: "at://a/2", Text: "absolutely gutted 😭", Author: "b", IsReply: true},
+		{URI: "at://a/3", Text: "a plain sentence with no emoji at all", Author: "c"},
+	}
+
+	scores, err := scoreWindow(posts, "run-test")
+	if err != nil {
+		t.Fatalf("scoreWindow: %v", err)
+	}
+	if len(scores.Analyzed) != len(posts) {
+		t.Fatalf("analyzed %d posts, want %d", len(scores.Analyzed), len(posts))
+	}
+
+	emojiAnalyzed, err := analyzer.NewEmojiAware().AnalyzePosts(posts)
+	if err != nil {
+		t.Fatalf("emoji-aware analyze: %v", err)
+	}
+	wantCategory, wantNet := calculateOverallSentiment(emojiAnalyzed)
+	wantRoot, wantReply := calculateSplitSentiment(emojiAnalyzed)
+	if scores.Category != wantCategory || scores.NetPct != wantNet {
+		t.Errorf("headline = (%q, %v), want the emoji-aware (%q, %v)",
+			scores.Category, scores.NetPct, wantCategory, wantNet)
+	}
+	if scores.RootPct != wantRoot || scores.ReplyPct != wantReply {
+		t.Errorf("split = (%v, %v), want the emoji-aware (%v, %v)",
+			scores.RootPct, scores.ReplyPct, wantRoot, wantReply)
+	}
+
+	stockAnalyzed, err := analyzer.New().AnalyzePosts(posts)
+	if err != nil {
+		t.Fatalf("stock analyze: %v", err)
+	}
+	_, wantStock := calculateOverallSentiment(stockAnalyzed)
+	if scores.StockNetPct == nil {
+		t.Fatal("StockNetPct = nil, want the stock VADER net percent")
+	}
+	if *scores.StockNetPct != wantStock {
+		t.Errorf("StockNetPct = %v, want %v", *scores.StockNetPct, wantStock)
+	}
+	// 🔥 scores -1.4 under stock VADER's Unicode-name lookup and +2.5 under
+	// the curated table, so the two scorers must not agree on this window.
+	if *scores.StockNetPct == scores.NetPct {
+		t.Errorf("headline and stock net both %v; the headline is not emoji-aware", scores.NetPct)
+	}
+}
+
+func TestRecordScorerV2Cutover(t *testing.T) {
+	db, err := store.New(filepath.Join(t.TempDir(), "cutover.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	first := time.Date(2026, 9, 11, 0, 30, 0, 0, time.UTC)
+	recordScorerV2Cutover(ctx, db, first)
+	got, err := db.GetKeyValue(ctx, scorerV2Key)
+	if err != nil {
+		t.Fatalf("read %s: %v", scorerV2Key, err)
+	}
+	if got != "2026-09-11" {
+		t.Errorf("%s = %q, want the UTC date of the first start", scorerV2Key, got)
+	}
+
+	// A later restart must not move the cutover.
+	recordScorerV2Cutover(ctx, db, first.AddDate(0, 0, 5))
+	if got, _ := db.GetKeyValue(ctx, scorerV2Key); got != "2026-09-11" {
+		t.Errorf("%s = %q after a restart, want it unchanged", scorerV2Key, got)
 	}
 }

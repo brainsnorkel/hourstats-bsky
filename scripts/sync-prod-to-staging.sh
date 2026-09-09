@@ -97,7 +97,7 @@ echo "  2. Stop the staging machine (if running)"
 echo "  3. Destroy the staging volume and create a new one from the snapshot"
 echo "  4. Deploy staging (creates machine + mounts volume)"
 echo "  5. Rename hourstats-prod.db → hourstats-staging.db"
-echo "  6. Clean prod-specific KV entries using cleanup-kv"
+echo "  6. Clean prod-specific KV entries with sqlite3"
 echo ""
 echo -e "${YELLOW}Staging will have a copy of prod data but post to @hourstats-staging.bsky.social${NC}"
 echo ""
@@ -242,9 +242,10 @@ ok "Database renamed"
 # ─── Step 6: Restart and clean prod KV entries ──────────────────────
 #
 # Restart the bot so it opens the renamed DB with prod data, then
-# use cleanup-kv to remove prod-specific KV entries. cleanup-kv
-# uses the same Go SQLite driver as the bot (WAL + busy_timeout),
-# so it safely coexists with the running bot — no need to kill it.
+# delete the prod-specific KV entries: they point at prod threads and
+# would make staging reply into them. sqlite3 ships in the image and
+# honours WAL + busy_timeout, so it coexists with the running bot —
+# no need to kill it. (This replaces the removed cleanup-kv binary.)
 
 echo ""
 info "Restarting staging with prod data..."
@@ -254,9 +255,15 @@ fly machine start "$STAGING_MACHINE" -a "$STAGING_APP" 2>/dev/null
 sleep 10
 ok "Staging restarted"
 
+PROD_KV_KEYS="'yearly_post_uri', 'yearly_post_cid', 'daily_quote_last_date', 'daily_quote_post_uri', 'trending_post_last_time', 'schedule_trending_post_hours'"
+KV_CLEANUP_SQL="PRAGMA busy_timeout=30000; DELETE FROM key_value WHERE key IN ($PROD_KV_KEYS); SELECT 'remaining prod keys: ' || COUNT(*) FROM key_value WHERE key IN ($PROD_KV_KEYS);"
+
 info "Cleaning prod-specific KV entries..."
-fly ssh console -a "$STAGING_APP" -C "cleanup-kv --db /data/hourstats-staging.db" \
-    || fail "KV cleanup failed — run 'cleanup-kv --db /data/hourstats-staging.db' manually via SSH"
+if ! fly ssh console -a "$STAGING_APP" -C "sqlite3 /data/hourstats-staging.db \"$KV_CLEANUP_SQL\""; then
+    echo "  Run this by hand and re-check:"
+    echo "    fly ssh console -a $STAGING_APP -C 'sqlite3 /data/hourstats-staging.db \"<the DELETE above>\"'"
+    fail "KV cleanup failed"
+fi
 ok "Prod KV entries cleaned"
 
 info "Verifying startup..."

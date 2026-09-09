@@ -16,7 +16,7 @@ flowchart TB
   subgraph percycle["Per-cycle results"]
     direction TB
     runs["<b>runs</b><br/>one row per cycle, top_posts JSON<br/>written by analysis cycle<br/>never purged"]
-    sentiment_history["<b>sentiment_history</b><br/>net %, root/reply split, top_topic,<br/>emoji shadow score<br/>written by analysis cycle · never purged"]
+    sentiment_history["<b>sentiment_history</b><br/>net %, root/reply split, top_topic,<br/>net_sentiment_pct_emoji (= headline) ·<br/>net_sentiment_pct_stock (stock VADER)<br/>written by analysis cycle · never purged"]
     language_counts["<b>language_counts</b><br/>firehose counts by language per cycle<br/>written by analysis cycle · purged at 8 days"]
     topic_snapshots["<b>topic_snapshots</b><br/>ranked topics per cycle<br/>written by topics analyzer · purged at 48 h"]
     topic_identity["<b>topic_identity</b><br/>stable topic ids, Jaccard 0.3<br/>written by topics analyzer · purged at 7 days"]

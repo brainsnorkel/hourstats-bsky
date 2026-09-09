@@ -44,15 +44,14 @@ func New() *SentimentAnalyzer {
 // skin-tone modifiers are stripped from the text first, then each known emoji
 // scores its curated valence instead of the sentiment of its Unicode name.
 //
-// This is a shadow scorer. Every analysis cycle scores its window twice — once
-// with New() for the headline and once here — and only the second mean is
-// stored (sentiment_history.net_sentiment_pct_emoji) so the two series can be
-// compared over time. Nothing posted to Bluesky uses it.
-//
-// Promoting this to the headline scorer is not a one-line swap: it shifts the
-// distribution of net sentiment, so the word bands in
-// internal/formatter/sentiment_100_words.go have to be recalibrated against
-// the new series first. See docs/SENTIMENT_CALIBRATION_REVIEW_2026-09.md.
+// Since 2026-09-11 this is the headline scorer. Every analysis cycle still
+// scores its window twice — here for the headline and with New() for
+// sentiment_history.net_sentiment_pct_stock — so the two series stay
+// comparable across the switch. The switch shifted the distribution of net
+// sentiment up by 1.77 points, so the word bands in
+// internal/formatter/sentiment_100_words.go moved with it; see
+// docs/SENTIMENT_REALIGNMENT_PLAN.md and
+// docs/SENTIMENT_CALIBRATION_REVIEW_2026-09.md.
 func NewEmojiAware() *SentimentAnalyzer {
 	sa := govader.NewSentimentIntensityAnalyzer()
 	applyEmojiOverrides(sa)
