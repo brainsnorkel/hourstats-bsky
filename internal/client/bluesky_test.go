@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/bluesky-social/indigo/api/atproto"
-	indigoclient "github.com/bluesky-social/indigo/atproto/client"
+	indigoclient "github.com/bluesky-social/indigo/atproto/atclient"
 )
 
 func TestTruncateText(t *testing.T) {

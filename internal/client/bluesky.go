@@ -13,7 +13,7 @@ import (
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
-	"github.com/bluesky-social/indigo/atproto/client"
+	client "github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/lex/util"
 	"github.com/christophergentle/hourstats-bsky/internal/formatter"
 )

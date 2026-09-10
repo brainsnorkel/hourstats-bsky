@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/api/bsky"
-	"github.com/bluesky-social/indigo/atproto/client"
+	client "github.com/bluesky-social/indigo/atproto/atclient"
 )
 
 // apiErr builds the error shape indigo returns for a non-2xx XRPC response.
