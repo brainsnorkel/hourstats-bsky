@@ -73,7 +73,7 @@ S3 backup taken by the daily job before the switch is the last resort.
 ## 4. Sequencing on prod
 
 1. Deploy the code in the 00:05 to 00:50 UTC window on the chosen night, after the daily job has written the previous day's `daily_sentiment` row. The 00:55 cycle is the first on the new headline and gets recorded in `sentiment_scorer_v2_since`.
-2. Run `cmd/realign -dry-run` over `fly ssh`, read the output (it names the computed S, the expected S, the post-switch row count and the compound-score check), then `-apply`. Runtime is seconds; the write transaction blocks the write flusher for well under its 30 s busy timeout.
+2. Wait for the 00:55 cycle to finish (its row carries the stock column, which `-apply` requires as proof the new build is running). Then over `fly ssh console -a hourstats-prod`: `realign -db /data/hourstats-prod.db -dry-run`, read the output (computed S, expected S, post-switch row count, compound-score check), then `realign -db /data/hourstats-prod.db -apply`. Always pass `-db` explicitly and leave `-backup-dir` at its default so the backup lands on the volume. Runtime is seconds; the transaction begins `IMMEDIATE`, so it waits on the write flusher rather than failing on lock upgrade. Rollback at any later point is `realign -db /data/hourstats-prod.db -revert`.
 3. The rest of that day's cycles and the next daily aggregation are consistent with the realigned history without further action, because the daily job reads `sentiment_history` after the fact.
 
 ## 5. Verification
