@@ -65,7 +65,7 @@ func footerOf(t *testing.T, text string) string {
 		t.Fatalf("no blank line separating a footer in %q", text)
 	}
 	footer := text[i+2:]
-	if !strings.HasPrefix(footer, "Week high") {
+	if !strings.HasPrefix(footer, footerHeader+"\n") {
 		t.Fatalf("last block is not the extremes footer: %q", footer)
 	}
 	return footer
@@ -92,8 +92,9 @@ func TestFormatTrendingPost_ExtremesFooter(t *testing.T) {
 	want := "Trending topic samples:\n\n" +
 		"1. Politics @alice.bsky.social\n" +
 		"2. Weather\n\n" +
-		"Week high +29.0%, Fri 23:00 UTC · Top topic: Charlie Kirk shooting\n" +
-		"Week low -8.0%, Sat 06:00 UTC"
+		"7day high & low UTC\n" +
+		"+29.0% Fri 23:00: Charlie Kirk shooting\n" +
+		"-8.0% Sat 06:00"
 	if text != want {
 		t.Errorf("text =\n%q\nwant\n%q", text, want)
 	}
@@ -119,10 +120,10 @@ func TestFormatTrendingPost_ExtremesFooterMultibyteOffsets(t *testing.T) {
 
 	text, facets := FormatTrendingPost(ranked, nil, 2, extremes)
 
-	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC · Top topic: Café façade ünïcode\n") {
+	if !strings.Contains(text, "+29.0% Fri 23:00: Café façade ünïcode\n") {
 		t.Errorf("unexpected high line in %q", text)
 	}
-	if !strings.HasSuffix(text, "Week low -8.0%, Sat 06:00 UTC · Top topic: ααα βββ γγγ") {
+	if !strings.HasSuffix(text, "-8.0% Sat 06:00: ααα βββ γγγ") {
 		t.Errorf("unexpected low line in %q", text)
 	}
 	if len(facets) != 1 {
@@ -138,14 +139,14 @@ func TestFormatTrendingPost_ExtremesFooterOmitsMissingTopic(t *testing.T) {
 	extremes.High.Topic = "   " // whitespace only counts as missing
 
 	text, _ := FormatTrendingPost(twoTopics(), nil, 2, extremes)
-	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC\n") {
+	if !strings.Contains(text, "\n+29.0% Fri 23:00\n") {
 		t.Errorf("missing topic should drop the segment: %q", text)
 	}
-	if !strings.HasSuffix(text, "Week low -8.0%, Sat 06:00 UTC") {
+	if !strings.HasSuffix(text, "\n-8.0% Sat 06:00") {
 		t.Errorf("unexpected low line in %q", text)
 	}
-	if strings.Contains(text, "Top topic") {
-		t.Errorf("no topic is known, so no 'Top topic:' prefix should appear: %q", text)
+	if strings.Contains(footerOf(t, text), ":") && strings.Count(footerOf(t, text), ":") > 2 {
+		t.Errorf("no topic is known, so no label separator should appear: %q", text)
 	}
 }
 
@@ -168,8 +169,8 @@ func TestFormatTrendingPost_NilExtremesUnchanged(t *testing.T) {
 // A long topic list shrinks the footer's labels before anything else gives.
 func TestFormatTrendingPost_ShrinksFooterTopics(t *testing.T) {
 	ranked := topicsWithLabels(
-		strings.Repeat("Alpha", 5),
-		strings.Repeat("Bravo", 6),
+		strings.Repeat("Alpha", 8),
+		strings.Repeat("Bravo", 9),
 	)
 	extremes := sampleExtremes()
 	extremes.High.Topic = strings.Repeat("h", 28)
@@ -180,15 +181,15 @@ func TestFormatTrendingPost_ShrinksFooterTopics(t *testing.T) {
 	if got := utf8.RuneCountInString(text); got > maxGraphemes {
 		t.Fatalf("text is %d runes, want <= %d: %q", got, maxGraphemes, text)
 	}
-	if !strings.Contains(text, "Week high") || !strings.Contains(text, "Week low") {
+	if !strings.Contains(text, footerHeader) {
 		t.Fatalf("footer was dropped, want it shrunk: %q", text)
 	}
 	// This body overflows at 28 runes and fits at the next step down, so both
 	// labels must sit at exactly footerTopicMaxRunes-footerTopicStep. Pinning
 	// the cut here means a change to the step size fails loudly.
 	for _, want := range []string{
-		"· Top topic: " + strings.Repeat("h", 23) + "…\n",
-		"· Top topic: " + strings.Repeat("l", 23) + "…",
+		": " + strings.Repeat("h", 23) + "…\n",
+		": " + strings.Repeat("l", 23) + "…",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("want a label cut to 24 runes (%q) in: %q", want, text)
@@ -205,8 +206,8 @@ func TestFormatTrendingPost_ShrinksFooterTopics(t *testing.T) {
 // stay.
 func TestFormatTrendingPost_DropsFooterTopicsKeepsHours(t *testing.T) {
 	ranked := topicsWithLabels(
-		strings.Repeat("Alpha", 10),
-		strings.Repeat("Bravo", 10),
+		strings.Repeat("Alpha", 12),
+		strings.Repeat("Bravo", 12),
 	)
 	extremes := sampleExtremes()
 	// Greek letters so nothing in the footer's own wording can match them.
@@ -218,13 +219,13 @@ func TestFormatTrendingPost_DropsFooterTopicsKeepsHours(t *testing.T) {
 	if got := utf8.RuneCountInString(text); got > maxGraphemes {
 		t.Fatalf("text is %d runes, want <= %d: %q", got, maxGraphemes, text)
 	}
-	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC\n") {
+	if !strings.Contains(text, "\n+29.0% Fri 23:00\n") {
 		t.Errorf("want the high line without its topic: %q", text)
 	}
-	if !strings.HasSuffix(text, "Week low -8.0%, Sat 06:00 UTC") {
+	if !strings.HasSuffix(text, "\n-8.0% Sat 06:00") {
 		t.Errorf("want the low line without its topic: %q", text)
 	}
-	if got := footerOf(t, text); strings.ContainsAny(got, "ξψ…") || strings.Contains(got, "Top topic") {
+	if got := footerOf(t, text); strings.ContainsAny(got, "ξψ…") || strings.Count(got, ":") > 2 {
 		t.Errorf("footer should carry no label at this size, got %q", got)
 	}
 	if !strings.Contains(text, "@someverylonghandlename.bsky.social") {
@@ -237,8 +238,8 @@ func TestFormatTrendingPost_DropsFooterTopicsKeepsHours(t *testing.T) {
 // all before a topic is dropped.
 func TestFormatTrendingPost_DropsFooterBeforeTopics(t *testing.T) {
 	ranked := topicsWithLabels(
-		strings.Repeat("Alpha", 14),
-		strings.Repeat("Bravo", 14),
+		strings.Repeat("Alpha", 15),
+		strings.Repeat("Bravo", 15),
 	)
 	extremes := sampleExtremes()
 	extremes.High.Topic = strings.Repeat("h", 28)
@@ -249,7 +250,7 @@ func TestFormatTrendingPost_DropsFooterBeforeTopics(t *testing.T) {
 	if got := utf8.RuneCountInString(text); got > maxGraphemes {
 		t.Fatalf("text is %d runes, want <= %d: %q", got, maxGraphemes, text)
 	}
-	if strings.Contains(text, "Week high") || strings.Contains(text, "Week low") {
+	if strings.Contains(text, footerHeader) {
 		t.Errorf("footer should be gone at this size: %q", text)
 	}
 	if !strings.Contains(text, "@someverylonghandlename.bsky.social") {
@@ -297,7 +298,7 @@ func TestFormatTrendingPost_RuneCutWithExtremes(t *testing.T) {
 	if got := utf8.RuneCountInString(text); got != maxGraphemes {
 		t.Errorf("text is %d runes, want exactly %d", got, maxGraphemes)
 	}
-	if strings.Contains(text, "Week high") || strings.Contains(text, "Week low") {
+	if strings.Contains(text, footerHeader) {
 		t.Errorf("footer should be gone before the rune cut: %q", text)
 	}
 	for _, f := range facets {
@@ -316,10 +317,10 @@ func TestFormatTrendingPost_ExtremesFooterUsesUTC(t *testing.T) {
 
 	text, _ := FormatTrendingPost(twoTopics(), nil, 2, extremes)
 
-	if !strings.Contains(text, "Week high +29.0%, Fri 23:00 UTC · Top topic: Charlie Kirk shooting\n") {
+	if !strings.Contains(text, "\n+29.0% Fri 23:00: Charlie Kirk shooting\n") {
 		t.Errorf("high line not rendered in UTC: %q", text)
 	}
-	if !strings.HasSuffix(text, "Week low -8.0%, Sat 06:00 UTC") {
+	if !strings.HasSuffix(text, "\n-8.0% Sat 06:00") {
 		t.Errorf("low line not rendered in UTC: %q", text)
 	}
 }

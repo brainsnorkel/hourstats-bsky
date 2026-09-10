@@ -118,24 +118,28 @@ func buildPost(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int,
 	}
 
 	// The footer is appended after the topic list and carries no facets, so
-	// the exemplar facets above keep their offsets.
-	text += "\n\n"
-	text = appendExtremeLine(text, "Week high", extremes.High, footerTopicCap)
+	// the exemplar facets above keep their offsets. One header line names the
+	// window and the timezone so the two value lines can stay short, which
+	// leaves room for the topic labels.
+	text += "\n\n" + footerHeader + "\n"
+	text = appendExtremeLine(text, extremes.High, footerTopicCap)
 	text += "\n"
-	text = appendExtremeLine(text, "Week low", extremes.Low, footerTopicCap)
+	text = appendExtremeLine(text, extremes.Low, footerTopicCap)
 	return text, facets
 }
 
-// appendExtremeLine writes one footer line: the prefix, the signed
-// percentage, the weekday and UTC time, and, when known, "Top topic:" with
-// the hour's rank-1 label. The calendar date is deliberately left out; the
-// weekday is enough inside a seven-day window and the extra date link made
-// the line untidy.
-func appendExtremeLine(text, prefix string, e SentimentExtreme, topicCap int) string {
+// footerHeader introduces the two extreme lines; high comes first.
+const footerHeader = "7day high & low UTC"
+
+// appendExtremeLine writes one footer line: the signed percentage, the
+// weekday and time, and, when known, a colon and the hour's rank-1 label.
+// The calendar date is deliberately left out; the weekday is enough inside a
+// seven-day window.
+func appendExtremeLine(text string, e SentimentExtreme, topicCap int) string {
 	at := e.At.UTC()
-	text += fmt.Sprintf("%s %s, %s UTC", prefix, formatter.SignedPercent(e.Value), at.Format("Mon 15:04"))
+	text += fmt.Sprintf("%s %s", formatter.SignedPercent(e.Value), at.Format("Mon 15:04"))
 	if topic := truncateLabel(e.Topic, topicCap); topic != "" {
-		text += " · Top topic: " + topic
+		text += ": " + topic
 	}
 	return text
 }
