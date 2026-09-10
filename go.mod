@@ -15,7 +15,7 @@ require (
 	github.com/jonreiter/govader v0.0.0-20250429093935-f6505c8d03cc
 	golang.org/x/image v0.46.0
 	golang.org/x/time v0.16.0
-	modernc.org/sqlite v1.44.3
+	modernc.org/sqlite v1.58.0
 )
 
 require (
@@ -66,7 +66,7 @@ require (
 	gonum.org/v1/gonum v0.8.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
-	modernc.org/libc v1.67.6 // indirect
+	modernc.org/libc v1.75.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )
