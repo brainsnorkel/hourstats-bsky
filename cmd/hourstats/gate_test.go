@@ -125,7 +125,10 @@ func TestGateTopPostsQuoteControlBelowRankOneIgnored(t *testing.T) {
 	}
 }
 
-func TestGateTopPostsUnavailableRetriesThenFallsBack(t *testing.T) {
+// The gate fails closed: an unreachable gate costs the hour its top posts
+// entirely, so nothing unchecked is named, linked, embedded, or written to the
+// run row for the daily and weekly reports to inherit.
+func TestGateTopPostsUnavailableRetriesThenDropsEveryPost(t *testing.T) {
 	candidates := gateCandidates(topPostCandidates)
 	gate := &fakeGate{err: errors.New("appview down")}
 
@@ -136,11 +139,11 @@ func TestGateTopPostsUnavailableRetriesThenFallsBack(t *testing.T) {
 	if got := gate.calls.Load(); got != 2 {
 		t.Errorf("gate calls = %d, want 2 (one retry)", got)
 	}
-	if len(top) != topPostCount {
-		t.Fatalf("kept %d posts, want the original %d", len(top), topPostCount)
+	if len(top) != 0 {
+		t.Fatalf("kept %d posts, want none when the gate could not be reached", len(top))
 	}
-	if !quoteControlled {
-		t.Error("quoteControlled = false, want true so no embed goes out with an unchecked post")
+	if quoteControlled {
+		t.Error("quoteControlled = true, want false: there is no rank-1 post left to embed")
 	}
 }
 

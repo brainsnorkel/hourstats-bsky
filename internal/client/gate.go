@@ -68,6 +68,9 @@ type visibilityLookup interface {
 type FeatureGate struct {
 	client     *BlueskyClient
 	visibility visibilityLookup
+	// resolveTimeout is the ceiling on one Check's author lookups. It is a
+	// field rather than the bare constant so a test can shorten it.
+	resolveTimeout time.Duration
 }
 
 // NewFeatureGate binds the gate to this authenticated client and a shared
@@ -75,7 +78,7 @@ type FeatureGate struct {
 // skipped: a gate that cannot read declarations would silently stop honouring
 // them.
 func (c *BlueskyClient) NewFeatureGate(v *VisibilityResolver) *FeatureGate {
-	g := &FeatureGate{client: c}
+	g := &FeatureGate{client: c, resolveTimeout: visibilityResolveTimeout}
 	if v != nil {
 		g.visibility = v
 	} else {
@@ -88,6 +91,9 @@ func (c *BlueskyClient) NewFeatureGate(v *VisibilityResolver) *FeatureGate {
 // out. Each one is an identity resolution plus a getRecord against a PDS we do
 // not control.
 const visibilityConcurrency = 4
+
+// visibilityResolveTimeout bounds one Check's whole fan-out of author lookups.
+const visibilityResolveTimeout = 20 * time.Second
 
 // Check evaluates up to maxGetPostsURIs posts and returns one Verdict per
 // requested URI.
@@ -146,7 +152,7 @@ func (g *FeatureGate) Check(ctx context.Context, surface string, uris []string) 
 		switch {
 		case blockedEitherWay(pv):
 			v.OK, v.Quotable, v.Reason = false, false, ReasonBlocked
-		case g.client.hasAdultContentLabel(pv.Labels):
+		case g.adultLabelled(pv):
 			v.OK, v.Quotable, v.Reason = false, false, ReasonAdultLabel
 		case labelled:
 			v.OK, v.Quotable, v.Reason = false, false, labelReason(sysLabel)
@@ -186,15 +192,55 @@ func (g *FeatureGate) Check(ctx context.Context, surface string, uris []string) 
 
 	for _, uri := range uris {
 		v := verdicts[uri]
+		if !v.OK && sensitiveReason(v.Reason) {
+			// These reasons describe the author, not the post. Pairing one
+			// with the URI in a routine Info line records the very
+			// association the gate exists to keep off our surfaces.
+			slog.Info("feature_gate", "surface", surface, "ok", v.OK, "quotable", v.Quotable, "reason", v.Reason)
+			slog.Debug("feature_gate", "surface", surface, "uri", uri, "ok", v.OK, "quotable", v.Quotable, "reason", v.Reason)
+			continue
+		}
 		slog.Info("feature_gate", "surface", surface, "uri", uri, "ok", v.OK, "quotable", v.Quotable, "reason", v.Reason)
 	}
 	return verdicts, nil
+}
+
+// sensitiveReason reports whether a rejection reason is one whose subject is
+// the author: a moderation or adult label, or their content visibility
+// declaration. Those must not be logged next to the post URI at Info.
+func sensitiveReason(reason string) bool {
+	if reason == ReasonAdultLabel || reason == ReasonHiddenFromRecommendations {
+		return true
+	}
+	return strings.HasPrefix(reason, "label:")
+}
+
+// adultLabelled reports whether an adult-content label sits on the post or on
+// its author. A label on the account applies to everything it posts, so
+// checking only the post view would feature exactly the content the label is
+// there to keep out of recommendations.
+func (g *FeatureGate) adultLabelled(pv *bsky.FeedDefs_PostView) bool {
+	if g.client.hasAdultContentLabel(pv.Labels) {
+		return true
+	}
+	return pv.Author != nil && g.client.hasAdultContentLabel(pv.Author.Labels)
 }
 
 // resolveVisibility looks each distinct author up once, concurrently. An
 // Unknown is retried once inline, since the resolver caches only definitive
 // answers and a single failed PDS read is often transient.
 func (g *FeatureGate) resolveVisibility(ctx context.Context, dids map[string]bool) map[string]Visibility {
+	// Each lookup is an identity resolution plus a getRecord against a PDS we
+	// do not control, retried once, and they queue behind a semaphore of 4.
+	// Without a ceiling a batch of slow PDSes could hold the whole analysis
+	// cycle. An expired context yields Unknown, which already fails closed.
+	timeout := g.resolveTimeout
+	if timeout <= 0 {
+		timeout = visibilityResolveTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	var (
 		mu   sync.Mutex
 		seen = make(map[string]Visibility, len(dids))

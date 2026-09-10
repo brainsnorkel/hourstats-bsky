@@ -37,7 +37,12 @@ type ExemplarHydrator struct {
 	validator ExemplarValidator
 	// gate rejects candidates whose author must not be featured. It runs
 	// before validation, so a gated-out user's text never reaches Gemini.
-	gate ExemplarGate
+	//
+	// gateMu guards it: SetGate is called at the start of every cycle, while a
+	// topic goroutine orphaned by the previous cycle (a memory-guard trip, or
+	// the bounded wait expiring) may still be reading the old one.
+	gateMu sync.Mutex
+	gate   ExemplarGate
 	// onDropped is called when every validated candidate for a topic was
 	// rejected and the topic is published without an exemplar, so the rate
 	// of that trade-off is measurable rather than inferred from logs.
@@ -60,7 +65,17 @@ func (h *ExemplarHydrator) SetValidator(v ExemplarValidator) {
 
 // SetGate registers the feature gate every exemplar candidate must pass.
 func (h *ExemplarHydrator) SetGate(g ExemplarGate) {
+	h.gateMu.Lock()
+	defer h.gateMu.Unlock()
 	h.gate = g
+}
+
+// gateSnapshot returns the gate installed when this cycle started, so a
+// concurrent SetGate cannot swap it out mid-hydration.
+func (h *ExemplarHydrator) gateSnapshot() ExemplarGate {
+	h.gateMu.Lock()
+	defer h.gateMu.Unlock()
+	return h.gate
 }
 
 type exemplarResult struct {
@@ -225,8 +240,8 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 
 	// The gate runs before validation, so the text of a post that must not be
 	// featured is never sent to Gemini.
-	if h.gate != nil && len(picks) > 0 {
-		if !h.gatePicks(ctx, result, picks) {
+	if gate := h.gateSnapshot(); gate != nil && len(picks) > 0 {
+		if !h.gatePicks(ctx, gate, result, picks) {
 			h.dropAllExemplars(result, picks)
 		}
 	}
@@ -259,7 +274,7 @@ const gateBatchSize = 25
 // It reports false when the gate could not judge a batch even after a retry;
 // the caller then drops every exemplar for the cycle, because a candidate we
 // could not check must not be featured — nor have its text sent to Gemini.
-func (h *ExemplarHydrator) gatePicks(ctx context.Context, result []IdentifiedTopic, picks map[int][]rankedExemplar) bool {
+func (h *ExemplarHydrator) gatePicks(ctx context.Context, gate ExemplarGate, result []IdentifiedTopic, picks map[int][]rankedExemplar) bool {
 	indices := make([]int, 0, len(picks))
 	for i := range picks {
 		indices = append(indices, i)
@@ -287,10 +302,10 @@ func (h *ExemplarHydrator) gatePicks(ctx context.Context, result []IdentifiedTop
 		end := min(start+gateBatchSize, len(uris))
 		batch := uris[start:end]
 
-		verdicts, err := h.gate.Check(ctx, "exemplar", batch)
+		verdicts, err := gate.Check(ctx, "exemplar", batch)
 		if err != nil {
 			slog.Warn("exemplar: feature gate check failed, retrying", "error", err, "candidates", len(batch))
-			verdicts, err = h.gate.Check(ctx, "exemplar", batch)
+			verdicts, err = gate.Check(ctx, "exemplar", batch)
 		}
 		if err != nil {
 			slog.Warn("exemplar: feature gate check failed again", "error", err, "candidates", len(batch))
@@ -311,7 +326,11 @@ func (h *ExemplarHydrator) gatePicks(ctx context.Context, result []IdentifiedTop
 				continue
 			}
 			rejected++
-			slog.Info("exemplar: gate rejected candidate", "topic", result[i].Cluster.Label, "handle", c.Handle)
+			// The handle is deliberately absent: an Info line naming an
+			// account the gate just refused to feature republishes exactly
+			// the association it refused.
+			slog.Info("exemplar: gate rejected candidate", "topic", result[i].Cluster.Label)
+			slog.Debug("exemplar: gate rejected candidate", "topic", result[i].Cluster.Label, "handle", c.Handle, "uri", c.URI)
 		}
 		if len(kept) == 0 {
 			delete(picks, i)
@@ -340,12 +359,19 @@ func (h *ExemplarHydrator) gatePicks(ctx context.Context, result []IdentifiedTop
 // dropAllExemplars clears every exemplar for the cycle, which is what an
 // unusable gate costs: the topics are still published, without links.
 func (h *ExemplarHydrator) dropAllExemplars(result []IdentifiedTopic, picks map[int][]rankedExemplar) {
-	for i := range picks {
+	dropped := 0
+	for i, topK := range picks {
 		result[i].ExemplarURI = ""
 		result[i].ExemplarHandle = ""
 		delete(picks, i)
+		dropped++
+		// Same metric as a topic whose candidates were all rejected: the
+		// gate-unavailable case is otherwise invisible to it.
+		if h.onDropped != nil {
+			h.onDropped(result[i].Cluster.Label, len(topK))
+		}
 	}
-	slog.Warn("exemplar gate unavailable, publishing without exemplar links")
+	slog.Warn("exemplar gate unavailable, publishing without exemplar links", "topics_without_exemplar", dropped)
 }
 
 // validatePicks asks the validator about every candidate in a single call and

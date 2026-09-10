@@ -207,38 +207,6 @@ func TestCreateUserHandleFacets(t *testing.T) {
 		}
 	})
 
-	t.Run("NoLink posts are named but not linked", func(t *testing.T) {
-		text := "Bluesky is #ok\n\n1. @alice.bsky.social +\n2. @bob.bsky.social -"
-		posts := []Post{
-			{URI: "at://did:plc:aaa/app.bsky.feed.post/111", Author: "alice.bsky.social", NoLink: true},
-			{URI: "at://did:plc:bbb/app.bsky.feed.post/222", Author: "bob.bsky.social", NoLink: true},
-		}
-		facets := createUserHandleFacets(text, posts)
-		if len(facets) != 1 {
-			t.Fatalf("got %d facets, want 1 (hashtag only, both handles unlinked)", len(facets))
-		}
-		if facets[0].Features[0].RichtextFacet_Tag == nil {
-			t.Error("the surviving facet should be the mood hashtag")
-		}
-	})
-
-	t.Run("NoLink does not shift a later duplicate handle", func(t *testing.T) {
-		text := "1. @alice.bsky.social +\n2. @alice.bsky.social -"
-		posts := []Post{
-			{URI: "at://did:plc:aaa/app.bsky.feed.post/111", Author: "alice.bsky.social", NoLink: true},
-			{URI: "at://did:plc:aaa/app.bsky.feed.post/222", Author: "alice.bsky.social"},
-		}
-		facets := createUserHandleFacets(text, posts)
-		if len(facets) != 1 {
-			t.Fatalf("got %d facets, want 1", len(facets))
-		}
-		// The second occurrence, not the first: searchFrom still advanced past
-		// the handle the gate suppressed.
-		if want := int64(strings.LastIndex(text, "@alice.bsky.social")); facets[0].Index.ByteStart != want {
-			t.Errorf("ByteStart = %d, want %d (the second occurrence)", facets[0].Index.ByteStart, want)
-		}
-	})
-
 	t.Run("duplicate handles get correct positions", func(t *testing.T) {
 		text := "1. @alice.bsky.social +\n2. @alice.bsky.social -"
 		posts := []Post{

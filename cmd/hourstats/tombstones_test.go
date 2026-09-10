@@ -32,6 +32,29 @@ func TestTombstonesAddAndHas(t *testing.T) {
 	}
 }
 
+// TestTombstonesHasIgnoresExpiredEntry covers the quiet-period case: add()
+// only sweeps when it is called, so an entry can sit in the map long past its
+// TTL. has() must not report it, or a legitimate re-create of the same rkey
+// would be dropped forever.
+func TestTombstonesHasIgnoresExpiredEntry(t *testing.T) {
+	const uri = "at://did:plc:a/app.bsky.feed.post/1"
+	tombs := newTombstones()
+
+	tombs.add(uri, time.Now().UTC().Add(-tombstoneTTL-time.Minute))
+	if tombs.has(uri) {
+		t.Error("has() = true for an entry older than the TTL, want false")
+	}
+	if got := tombs.len(); got != 1 {
+		t.Errorf("len() = %d, want 1: has() reports, it does not sweep", got)
+	}
+
+	// A fresh entry for the same URI is remembered again.
+	tombs.add(uri, time.Now().UTC())
+	if !tombs.has(uri) {
+		t.Error("has() = false for a fresh entry, want true")
+	}
+}
+
 func TestTombstonesPrune(t *testing.T) {
 	tombs := newTombstones()
 	start := time.Now().UTC()

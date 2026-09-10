@@ -52,10 +52,11 @@ func checkFeatureGate(ctx context.Context, gate featureGate, surface string, uri
 // feature gate clears, in rank order. It reports whether the published rank-1
 // post may be quote-embedded, and whether the gate answered at all.
 //
-// When the gate is unavailable the original top posts are returned with ok
-// false: the caller still publishes the hour's summary, but without the embed
-// and without the handle links, so nothing amplifies an account the gate could
-// not check.
+// When the gate is unavailable no post is returned and ok is false: the
+// caller still publishes the hour's aggregate summary, but with no top posts
+// in it at all, so nothing amplifies an account the gate could not check —
+// and the run row records no top post either, so the daily and weekly
+// reports cannot inherit one.
 func gateTopPosts(ctx context.Context, gate featureGate, candidates []analyzer.AnalyzedPost) (top []analyzer.AnalyzedPost, quoteControlled, ok bool) {
 	if len(candidates) == 0 {
 		return nil, false, true
@@ -68,13 +69,17 @@ func gateTopPosts(ctx context.Context, gate featureGate, candidates []analyzer.A
 
 	verdicts, err := checkFeatureGate(ctx, gate, "hourly", uris)
 	if err != nil {
-		return candidates[:min(topPostCount, len(candidates))], true, false
+		return nil, false, false
 	}
 
 	for _, ap := range candidates {
 		v := verdicts[ap.URI]
 		if !v.OK {
-			slog.Info("top post not featured", "uri", ap.URI, "author", ap.Author, "reason", v.Reason)
+			// The reason alone is what an operator needs; naming the post or
+			// its author in a routine Info line republishes exactly the
+			// association the gate just refused to publish.
+			slog.Info("top post not featured", "reason", v.Reason)
+			slog.Debug("top post not featured", "uri", ap.URI, "author", ap.Author, "reason", v.Reason)
 			continue
 		}
 		if len(top) == 0 {

@@ -344,6 +344,17 @@ func (c *Consumer) Run(ctx context.Context) error {
 				"to", c.ActiveEndpoint(),
 				"drops_in_window", rotateAfterDrops,
 			)
+			if c.cfg.Protocol == ProtocolV2 {
+				// Two v2 instances are not guaranteed to share a seq space, so
+				// a floor learned from the old endpoint can sit above
+				// everything the new one emits — every frame would fail the
+				// dedup and ingest would stall with no error anywhere. Take
+				// the new endpoint's live tip instead.
+				c.seq.Store(0)
+				c.cursor.Store(0)
+				slog.Warn("jetstream cursor reset for the endpoint rotation, starting from live tip",
+					"endpoint", c.ActiveEndpoint())
+			}
 		}
 
 		wait := jitterBackoff(backoff)

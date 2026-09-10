@@ -86,11 +86,20 @@ func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) (Flus
 	}
 	defer stmt.Close()
 
+	// The per-URI deletes run once per WriteDelete in the batch, and a
+	// firehose batch routinely carries hundreds, so they are prepared once
+	// for the transaction like the insert above.
+	dels, err := prepareDeleteStmts(ctx, tx)
+	if err != nil {
+		return res, err
+	}
+	defer dels.close()
+
 	now := nowUTC()
 	for _, w := range writes {
 		switch w.Op {
 		case WriteDelete:
-			n, err := deletePostByURI(ctx, tx, w.Post.URI)
+			n, err := deletePostByURI(ctx, dels, w.Post.URI)
 			if err != nil {
 				return res, err
 			}
@@ -121,28 +130,61 @@ func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) (Flus
 	return res, nil
 }
 
+// deleteStmts holds the three per-URI DELETEs a WriteDelete runs, prepared
+// once for the enclosing transaction and reused for every delete in the batch.
+type deleteStmts struct {
+	post     *sql.Stmt
+	tokens   *sql.Stmt
+	postings *sql.Stmt
+}
+
+func prepareDeleteStmts(ctx context.Context, tx *sql.Tx) (*deleteStmts, error) {
+	d := &deleteStmts{}
+	var err error
+	if d.post, err = tx.PrepareContext(ctx, `DELETE FROM post_buffer WHERE uri = ?`); err != nil {
+		return nil, fmt.Errorf("prepare post delete stmt: %w", err)
+	}
+	if d.tokens, err = tx.PrepareContext(ctx, `DELETE FROM topic_tokens WHERE post_uri = ?`); err != nil {
+		d.close()
+		return nil, fmt.Errorf("prepare topic_tokens delete stmt: %w", err)
+	}
+	if d.postings, err = tx.PrepareContext(ctx, `DELETE FROM token_postings WHERE post_uri = ?`); err != nil {
+		d.close()
+		return nil, fmt.Errorf("prepare token_postings delete stmt: %w", err)
+	}
+	return d, nil
+}
+
+func (d *deleteStmts) close() {
+	for _, s := range []*sql.Stmt{d.post, d.tokens, d.postings} {
+		if s != nil {
+			s.Close()
+		}
+	}
+}
+
 // deletePostByURI removes one post and its topic tokens, returning the number
 // of post_buffer rows removed (0 when the post was never buffered).
-func deletePostByURI(ctx context.Context, tx *sql.Tx, uri string) (int64, error) {
+//
+// The token deletes run even when post_buffer removed nothing: topic_tokens is
+// keyed by post_uri and kept for 26h against post_buffer's 2h, so a post
+// deleted after the retention purge has no buffer row left but can still have
+// tokens feeding trending. token_postings is dropped and recreated empty at
+// startup, so both deletes are primary-key lookups that cost nothing when they
+// match nothing.
+func deletePostByURI(ctx context.Context, d *deleteStmts, uri string) (int64, error) {
 	if uri == "" {
 		return 0, nil
 	}
-	// Nearly every delete on the firehose is for a post that was never
-	// buffered (non-English, or older than the retention window), so the
-	// primary-key delete on post_buffer runs first and the token tables are
-	// only touched when it removed a row.
-	result, err := tx.ExecContext(ctx, `DELETE FROM post_buffer WHERE uri = ?`, uri)
+	result, err := d.post.ExecContext(ctx, uri)
 	if err != nil {
 		return 0, fmt.Errorf("delete post %s: %w", uri, err)
 	}
 	n, _ := result.RowsAffected()
-	if n == 0 {
-		return 0, nil
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM topic_tokens WHERE post_uri = ?`, uri); err != nil {
+	if _, err := d.tokens.ExecContext(ctx, uri); err != nil {
 		return 0, fmt.Errorf("delete topic_tokens for %s: %w", uri, err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM token_postings WHERE post_uri = ?`, uri); err != nil {
+	if _, err := d.postings.ExecContext(ctx, uri); err != nil {
 		return 0, fmt.Errorf("delete token_postings for %s: %w", uri, err)
 	}
 	return n, nil
@@ -152,6 +194,11 @@ func deletePostByURI(ctx context.Context, tx *sql.Tx, uri string) (int64, error)
 // tokens, returning the number of post_buffer rows removed. The token deletes
 // run first: they resolve the author's URIs through post_buffer, which the
 // last statement then empties.
+//
+// That resolution is also the limit of what an author purge can reach:
+// topic_tokens has no author column, so tokens of posts that have already aged
+// out of post_buffer (2h) but are still inside the token retention window
+// (26h) are not removed here. They expire on their own schedule.
 func purgeAuthorPosts(ctx context.Context, tx *sql.Tx, authorDID string) (int64, error) {
 	if authorDID == "" {
 		return 0, nil

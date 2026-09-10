@@ -329,6 +329,47 @@ func TestFlushPostBatch_DeleteRemovesTokens(t *testing.T) {
 	}
 }
 
+// TestFlushPostBatch_DeleteRemovesTokensAfterBufferPurge is the outlived-tokens
+// case: topic_tokens is kept for 26h and post_buffer for 2h, so a delete that
+// arrives after the retention purge finds no buffer row. Its tokens must still
+// go, or a deleted post keeps feeding trending for another day.
+func TestFlushPostBatch_DeleteRemovesTokensAfterBufferPurge(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	uriA := "at://did:plc:a/app.bsky.feed.post/1"
+	if err := s.FlushWriteBatch(ctx, []PendingWrite{
+		insertWrite(uriA, "did:plc:a", `["alpha"]`, now),
+	}); err != nil {
+		t.Fatalf("FlushWriteBatch: %v", err)
+	}
+	if _, err := s.writeDB.ExecContext(ctx,
+		`INSERT INTO token_postings (token, post_uri, created_at) VALUES (?, ?, ?)`,
+		"alpha", uriA, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("seed token_postings: %v", err)
+	}
+
+	// Stand in for the 2h retention purge: only the buffer row goes.
+	if _, err := s.writeDB.ExecContext(ctx, `DELETE FROM post_buffer WHERE uri = ?`, uriA); err != nil {
+		t.Fatalf("simulate retention purge: %v", err)
+	}
+
+	res, err := s.FlushPostBatch(ctx, []PendingWrite{{Op: WriteDelete, Post: Post{URI: uriA}}})
+	if err != nil {
+		t.Fatalf("FlushPostBatch(delete): %v", err)
+	}
+	if res.Deleted != 0 {
+		t.Errorf("Deleted = %d, want 0: the buffer row had already aged out", res.Deleted)
+	}
+	if n := countRows(t, s, `SELECT COUNT(*) FROM topic_tokens WHERE post_uri = ?`, uriA); n != 0 {
+		t.Errorf("topic_tokens for deleted post = %d, want 0", n)
+	}
+	if n := countRows(t, s, `SELECT COUNT(*) FROM token_postings WHERE post_uri = ?`, uriA); n != 0 {
+		t.Errorf("token_postings for deleted post = %d, want 0", n)
+	}
+}
+
 func TestFlushPostBatch_PurgeAuthor(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

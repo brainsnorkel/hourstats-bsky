@@ -34,10 +34,6 @@ type Post struct {
 	// post renders as app.bsky.embed.record#viewDetached — "Removed by
 	// author" — so the summary must drop the embed instead.
 	QuoteControlled bool
-	// NoLink suppresses this post's @handle link facet. It is set when the
-	// feature gate could not be consulted: the summary still names the handle,
-	// but nothing in it drives traffic to an account we could not check.
-	NoLink bool
 }
 
 // APIBatchStats contains statistics about the raw API response before filtering
@@ -505,13 +501,6 @@ func createUserHandleFacets(text string, posts []Post) []*bsky.RichtextFacet {
 		startIndex := searchFrom + idx
 		endIndex := startIndex + len(handle)
 		searchFrom = endIndex
-
-		// A post the feature gate could not clear is named but not linked.
-		// searchFrom has already advanced past it, so a later duplicate of the
-		// same handle still lands on its own occurrence.
-		if post.NoLink {
-			continue
-		}
 
 		// Convert AT Protocol URI to web URL for clickable links
 		webURL := convertATURItoWebURL(post.URI)

@@ -463,6 +463,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	// and weekly reports read their top post out of `runs`, so a post that
 	// cannot be featured must not be recorded as this cycle's.
 	topPosts, quoteControlled, gateOK := gateTopPosts(cycleCtx, newFeatureGate(bskyClient), candidates)
+	if !gateOK {
+		// topPosts is empty, so the run row below records no top post either
+		// and the daily and weekly reports cannot inherit an ungated one.
+		slog.Warn("feature gate unavailable, posting summary without top posts", "run_id", runID)
+	}
 
 	topStorePosts := make([]store.Post, len(topPosts))
 	for i, ap := range topPosts {
@@ -585,15 +590,13 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	} else {
 		// The listed posts have already cleared the feature gate. What is left
 		// to decide is the embed: a quote-controlled #1 would render as
-		// "Removed by author", and a gate we could not reach means nothing in
-		// this post should amplify anyone — no embed, no links.
-		if !gateOK {
-			slog.Warn("feature gate unavailable, posting without embed or links", "run_id", runID)
-		} else if quoteControlled {
+		// "Removed by author". An unreachable gate has already emptied
+		// topPosts, so the summary goes out as aggregate lines alone.
+		if quoteControlled {
 			slog.Info("top post cannot be quoted (quote control), posting without embed", "uri", topPosts[0].URI)
 		}
 
-		postedURI, postedCID := postSummary(ctx, bskyClient, topPosts, overallSentiment, netSentimentPct, analysisMinutes, len(posts), quoteControlled, !gateOK)
+		postedURI, postedCID := postSummary(ctx, bskyClient, topPosts, overallSentiment, netSentimentPct, analysisMinutes, len(posts), quoteControlled)
 		if postedURI != "" {
 			runState.TopPostURI = postedURI
 			runState.TopPostCID = postedCID

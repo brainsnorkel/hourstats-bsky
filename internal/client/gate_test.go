@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeVisibility answers Lookup from a scripted queue per DID, so the retry on
@@ -102,6 +103,13 @@ func TestFeatureGateReasons(t *testing.T) {
 		{
 			name:       "adult label on the post",
 			post:       `{"uri":"URI","cid":"c1","indexedAt":"2026-01-01T00:00:00Z","author":{"did":"did:plc:aaa","handle":"a.bsky.social"},"labels":[{"src":"did:plc:mod","uri":"URI","val":"porn","cts":"2026-01-01T00:00:00Z"}]}`,
+			wantReason: ReasonAdultLabel,
+		},
+		{
+			// A label on the account applies to everything it posts, so the
+			// author's labels must be checked too, not just the post view's.
+			name:       "adult label on the author",
+			post:       `{"uri":"URI","cid":"c1","indexedAt":"2026-01-01T00:00:00Z","author":{"did":"did:plc:aaa","handle":"a.bsky.social","labels":[{"src":"did:plc:mod","uri":"did:plc:aaa","val":"porn","cts":"2026-01-01T00:00:00Z"}]}}`,
 			wantReason: ReasonAdultLabel,
 		},
 		{
@@ -295,5 +303,58 @@ func TestFeatureGateUnauthenticatedClient(t *testing.T) {
 	gate := (&BlueskyClient{handle: "hourstats.bsky.social"}).NewFeatureGate(nil)
 	if _, err := gate.Check(context.Background(), "hourly", []string{"at://did:plc:aaa/app.bsky.feed.post/1"}); err == nil {
 		t.Fatal("expected an error when the client is not authenticated, got nil")
+	}
+}
+
+// blockingVisibility never answers: it returns only when the caller's context
+// is done. It stands in for a PDS that accepts the connection and stalls.
+type blockingVisibility struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingVisibility) Lookup(ctx context.Context, _ string) Visibility {
+	b.once.Do(func() { close(b.started) })
+	<-ctx.Done()
+	return VisibilityUnknown
+}
+
+// TestFeatureGateBoundsVisibilityLookups is the stall case: without a ceiling
+// on the fan-out, a PDS that accepts the connection and never replies would
+// hold the whole analysis cycle. The expired context yields Unknown, which
+// already fails closed.
+func TestFeatureGateBoundsVisibilityLookups(t *testing.T) {
+	const uri = "at://did:plc:aaa/app.bsky.feed.post/1"
+	body := fmt.Sprintf(`{"posts":[{"uri":%q,"cid":"c1","indexedAt":"2026-01-01T00:00:00Z",
+		"author":{"did":"did:plc:aaa","handle":"a.bsky.social"}}]}`, uri)
+
+	vis := &blockingVisibility{started: make(chan struct{})}
+	gate := newTestGate(getPostsServer(t, body).URL, vis)
+	gate.resolveTimeout = 50 * time.Millisecond
+
+	start := time.Now()
+	got, err := gate.Check(context.Background(), "hourly", []string{uri})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Check() took %v, want it bounded by the resolve timeout", elapsed)
+	}
+	select {
+	case <-vis.started:
+	default:
+		t.Fatal("the visibility lookup was never attempted")
+	}
+	if v := got[uri]; v.OK || v.Reason != ReasonVisibilityUnknown {
+		t.Errorf("Check() = %+v, want OK=false Reason=%q", v, ReasonVisibilityUnknown)
+	}
+}
+
+// TestFeatureGateDefaultResolveTimeout keeps the production ceiling wired up:
+// a gate built the normal way must not fall back to an unbounded fan-out.
+func TestFeatureGateDefaultResolveTimeout(t *testing.T) {
+	g := newTestClient("http://127.0.0.1:1").NewFeatureGate(nil)
+	if g.resolveTimeout != visibilityResolveTimeout {
+		t.Errorf("resolveTimeout = %v, want %v", g.resolveTimeout, visibilityResolveTimeout)
 	}
 }

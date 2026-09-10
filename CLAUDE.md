@@ -73,6 +73,7 @@ fly ssh console -a hourstats-prod -C "realign -dry-run"   # One-off sentiment re
 | `JETSTREAM_MAX_CURSOR_AGE_MINUTES` | `360` | Persisted cursors older than this are discarded at startup and the consumer starts from the live tail, avoiding a wire-speed backlog replay. Negative disables the age check |
 | `JETSTREAM_LEGACY` | `false` | Speak the legacy Jetstream v1 `/subscribe` protocol (uncompressed text frames, `time_us` cursor in the `cursor` table, `wantedCollections`) instead of v2. v2 never touches the v1 cursor row, so switching back resumes where v1 left off |
 | `JETSTREAM_COMPRESS` | `true` | Dictionary zstd framing on v2. The dictionary comes from `network.bsky.jetstream.getZstdDictionary` (10s timeout) before the first dial and again when the server refuses the pinned ID; a failed fetch connects uncompressed and retries on the next reconnect. No effect on v1 |
+| `FIREHOSE_DELETES_ENABLED` | `true` | Apply post delete commits and account deactivations from the firehose to post_buffer (see Firehose transport). `false` restores the pre-2026-09-11 behaviour where deleted posts stayed until hydration or the 2h purge |
 | `JETSTREAM_EXTRA_COLLECTIONS` | (empty) | Comma list of NSIDs (e.g. `app.bsky.feed.like,app.bsky.feed.repost`) added to the v2 `collections` params for measurement only (hs-wsp.7). A matching frame is counted in the consumer's `EventsByCollection` and `BytesReceived` and dropped after a `"collection":"<nsid>"` byte scan, before the language pre-filter. Volume is logged once a minute as `jetstream extra collection volume` |
 
 ## Architecture
@@ -132,7 +133,9 @@ hourly cycle gates 10 ranked candidates and lists the first 3 that pass, before
 the run row is written, so `daily_top_post` and the weekly report inherit the
 decision; exemplars are gated before their text is sent to Gemini. Unlike the
 old quote-control check, the gate fails closed: after one retry, an unreachable
-gate costs the hourly summary its embed and all its handle links, drops every
+gate costs the hourly summary its top posts entirely — it is posted with no top
+posts at all, just the aggregate sentiment lines, and the run row records none
+either so the daily and weekly reports cannot inherit one — drops every
 exemplar for the cycle, and skips the daily and weekly replies (their guard keys
 are still set).
 

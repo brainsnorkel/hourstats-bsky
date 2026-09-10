@@ -3,6 +3,7 @@ package topics
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -114,9 +115,15 @@ func TestHydrateExemplars_GateErrorTwiceDropsEveryExemplar(t *testing.T) {
 	g := &mockGate{err: errors.New("appview down")}
 	v := &mockValidator{}
 
+	var droppedTopic string
+	droppedCalls := 0
 	hydrator := NewExemplarHydrator(s)
 	hydrator.SetGate(g)
 	hydrator.SetValidator(v)
+	hydrator.SetDroppedHandler(func(topic string, _ int) {
+		droppedTopic = topic
+		droppedCalls++
+	})
 
 	topics := []IdentifiedTopic{topicOf("Jordan Binnington",
 		[]string{"jordan_binnington", "canada", "hockey"})}
@@ -134,5 +141,65 @@ func TestHydrateExemplars_GateErrorTwiceDropsEveryExemplar(t *testing.T) {
 	}
 	if v.calls.Load() != 0 {
 		t.Error("validation ran on candidates the gate could not judge")
+	}
+	// The gate-unavailable case costs the same exemplar as an all-rejected
+	// one, so it must reach the same metric.
+	if droppedCalls != 1 || droppedTopic != "Jordan Binnington" {
+		t.Errorf("dropped handler fired %d time(s) for %q, want once for the topic label",
+			droppedCalls, droppedTopic)
+	}
+}
+
+// blockingGate holds the caller inside Check until it is released, which is
+// the window an orphaned topic goroutine sits in while the next cycle calls
+// SetGate.
+type blockingGate struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingGate) Check(_ context.Context, _ string, uris []string) (map[string]bool, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	out := make(map[string]bool, len(uris))
+	for _, uri := range uris {
+		out[uri] = true
+	}
+	return out, nil
+}
+
+// TestHydrateExemplars_SetGateDuringHydration is the data race: a cycle whose
+// topic goroutine outlived it is still reading h.gate when the next cycle
+// installs its own. Run under -race.
+func TestHydrateExemplars_SetGateDuringHydration(t *testing.T) {
+	s := &mockCandidateStore{
+		candidatesFn: func([]string) []store.ExemplarCandidate { return validationCandidates() },
+	}
+	g := &blockingGate{entered: make(chan struct{}), release: make(chan struct{})}
+
+	hydrator := NewExemplarHydrator(s)
+	hydrator.SetGate(g)
+
+	topics := []IdentifiedTopic{topicOf("Jordan Binnington",
+		[]string{"jordan_binnington", "canada", "hockey"})}
+
+	done := make(chan []IdentifiedTopic, 1)
+	go func() {
+		result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- result
+	}()
+
+	<-g.entered
+	// The next cycle installs its own gate while this one is still in flight.
+	hydrator.SetGate(&mockGate{})
+	close(g.release)
+
+	result := <-done
+	if result[0].ExemplarHandle == "" {
+		t.Error("exemplar handle is empty, want the gate this cycle started with to have decided")
 	}
 }

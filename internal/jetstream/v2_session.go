@@ -17,6 +17,20 @@ import (
 // of the collections it is only counting.
 const extraCollectionLogInterval = time.Minute
 
+// maxConsecutiveSeqDrops is how many frames in a row the seq dedup may reject
+// before the floor itself is treated as wrong. A reconnect overlap is a
+// handful of frames; thousands in a row means the floor came from a different
+// v2 instance's seq space and nothing will ever clear it.
+const maxConsecutiveSeqDrops = 10000
+
+// The decompression buffer is reused for the life of the connection, so a
+// single outsized frame would otherwise pin its capacity until the socket
+// drops. Past maxRetainedDecBuf it is replaced by a fresh small one.
+const (
+	maxRetainedDecBuf = 1 << 20
+	initialDecBuf     = 64 << 10
+)
+
 // resumeFromStoredCursorV2 loads the persisted (seq, time) pair. The age gate
 // reads the witnessed time saved alongside the seq, because a seq carries no
 // clock of its own.
@@ -192,6 +206,8 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 
 	// One reusable decompression buffer for the life of the connection.
 	var decBuf []byte
+	// seqDrops counts frames the dedup floor rejected back to back.
+	var seqDrops int
 
 	for {
 		if ctx.Err() != nil {
@@ -221,6 +237,11 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 			}
 			decBuf = out
 			message = out
+			if cap(decBuf) > maxRetainedDecBuf {
+				// message still references the big buffer for this iteration;
+				// dropping our own reference lets it be collected after it.
+				decBuf = make([]byte, 0, initialDecBuf)
+			}
 		case msgType != websocket.TextMessage:
 			continue // stray binary on an uncompressed connection
 		}
@@ -268,8 +289,18 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 		// The server replays inclusively from the requested seq, so the
 		// reconnect overlap arrives again; drop anything already delivered.
 		if event.Seq <= c.seq.Load() {
-			continue
+			seqDrops++
+			if seqDrops < maxConsecutiveSeqDrops {
+				continue
+			}
+			// The floor cannot be reached from this stream. Take this frame
+			// as the new tip rather than dropping the rest of the session.
+			slog.Error("jetstream seq floor rejected every recent frame, resetting to the live tip",
+				"dropped", seqDrops, "floor", c.seq.Load(), "seq", event.Seq)
+			c.seq.Store(0)
+			c.cursor.Store(0)
 		}
+		seqDrops = 0
 		c.seq.Store(event.Seq)
 		c.cursor.Store(event.TimeUS)
 		c.dispatch(event)

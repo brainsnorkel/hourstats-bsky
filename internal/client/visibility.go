@@ -96,7 +96,8 @@ func NewVisibilityResolver(dir identity.Directory, httpClient *http.Client, ttl 
 func (r *VisibilityResolver) Lookup(ctx context.Context, did string) Visibility {
 	parsed, err := syntax.ParseDID(did)
 	if err != nil {
-		slog.Warn("visibility lookup", "did", did, "result", VisibilityUnknown.String(), "source", "none", "cache_hit", false, "error", err)
+		slog.Debug("visibility lookup", "did", did, "result", VisibilityUnknown.String(), "source", "none", "cache_hit", false, "error", err)
+		slog.Warn("visibility lookup failed", "source", "none", "error", err)
 		return VisibilityUnknown
 	}
 	key := parsed.String()
@@ -108,9 +109,13 @@ func (r *VisibilityResolver) Lookup(ctx context.Context, did string) Visibility 
 
 	v, err := r.fetch(ctx, parsed)
 	if err != nil {
-		slog.Info("visibility lookup", "did", key, "result", v.String(), "source", "pds", "cache_hit", false, "error", err)
+		slog.Debug("visibility lookup", "did", key, "result", v.String(), "source", "pds", "cache_hit", false, "error", err)
+		// The transport or PDS failure is what an operator needs; which
+		// account was being checked is not, and a failure line naming a DID
+		// is a record of who we looked up.
+		slog.Warn("visibility lookup failed", "source", "pds", "error", err)
 	} else {
-		slog.Info("visibility lookup", "did", key, "result", v.String(), "source", "pds", "cache_hit", false)
+		slog.Debug("visibility lookup", "did", key, "result", v.String(), "source", "pds", "cache_hit", false)
 	}
 
 	if v != VisibilityUnknown {

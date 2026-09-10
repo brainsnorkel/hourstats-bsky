@@ -114,6 +114,11 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 	if envBool("JETSTREAM_LEGACY", false) {
 		protocol = jetstream.ProtocolV1
 	}
+	// The delete and account-purge handlers are the one part of the firehose
+	// path that removes rows, so they get their own rollback lever: with this
+	// false and JETSTREAM_LEGACY true the consumer behaves exactly as it did
+	// before the branch.
+	deletesEnabled := envBool("FIREHOSE_DELETES_ENABLED", true)
 	extraCollections := envList("JETSTREAM_EXTRA_COLLECTIONS")
 
 	cfg := jetstream.ConsumerConfig{
@@ -186,49 +191,6 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 				)
 			}
 		},
-		// A delete removes the post from the buffer before it can be scored,
-		// and tombstones it so a replayed create does not put it back.
-		OnDelete: func(evt *jetstream.Event) {
-			uri := evt.PostURI()
-			tombs.add(uri, time.Now())
-			pw := store.PendingWrite{Op: store.WriteDelete, Post: store.Post{URI: uri}}
-			if !sendPost(ctx, writeCh, pw, writeSendTimeout) {
-				collector.IncrementDroppedPosts(1)
-				if n := drops.record(time.Now()); n > 0 {
-					slog.Warn("write buffer full, dropping posts",
-						"dropped_since_last_warning", n,
-						"buffer_len", len(writeCh),
-						"uri", uri,
-					)
-				}
-				return
-			}
-			collector.IncrementPostDeletes()
-		},
-		// A deactivated, deleted, suspended or taken-down account's posts must
-		// not be scored or quoted, so the whole author is purged from the
-		// buffer.
-		OnAccountInactive: func(evt *jetstream.Event) {
-			pw := store.PendingWrite{Op: store.WritePurgeAuthor, Post: store.Post{AuthorDID: evt.DID}}
-			if !sendPost(ctx, writeCh, pw, writeSendTimeout) {
-				collector.IncrementDroppedPosts(1)
-				if n := drops.record(time.Now()); n > 0 {
-					slog.Warn("write buffer full, dropping posts",
-						"dropped_since_last_warning", n,
-						"buffer_len", len(writeCh),
-					)
-				}
-				return
-			}
-			collector.IncrementAccountPurges()
-			status := ""
-			if evt.Account != nil {
-				status = evt.Account.Status
-			}
-			// Account events are continuous network-wide, so this is Debug;
-			// the count is on the stats snapshot as account_purges.
-			slog.Debug("account inactive, purging posts", "status", status, "did", evt.DID)
-		},
 		// v1 resumes from a time_us cursor in the cursor table; v2 from a seq
 		// in key_value. The consumer only calls the pair its protocol selects,
 		// so a fallback to v1 finds its own row exactly as it left it.
@@ -248,12 +210,63 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		MaxCursorAge: time.Duration(envInt("JETSTREAM_MAX_CURSOR_AGE_MINUTES", 360)) * time.Minute,
 	}
 
+	// Left nil when disabled: the consumer still receives the frames but
+	// dispatch drops them, so no delete or purge ever reaches post_buffer.
+	if deletesEnabled {
+		// A delete removes the post from the buffer before it can be scored,
+		// and tombstones it so a replayed create does not put it back.
+		cfg.OnDelete = func(evt *jetstream.Event) {
+			uri := evt.PostURI()
+			tombs.add(uri, time.Now())
+			pw := store.PendingWrite{Op: store.WriteDelete, Post: store.Post{URI: uri}}
+			if !sendPost(ctx, writeCh, pw, writeSendTimeout) {
+				collector.IncrementDroppedPosts(1)
+				if n := drops.record(time.Now()); n > 0 {
+					slog.Warn("write buffer full, dropping posts",
+						"dropped_since_last_warning", n,
+						"buffer_len", len(writeCh),
+						"uri", uri,
+					)
+				}
+				return
+			}
+			collector.IncrementPostDeletes()
+		}
+		// A deactivated, deleted, suspended or taken-down account's posts must
+		// not be scored or quoted, so the whole author is purged from the
+		// buffer.
+		cfg.OnAccountInactive = func(evt *jetstream.Event) {
+			pw := store.PendingWrite{Op: store.WritePurgeAuthor, Post: store.Post{AuthorDID: evt.DID}}
+			if !sendPost(ctx, writeCh, pw, writeSendTimeout) {
+				collector.IncrementDroppedPosts(1)
+				if n := drops.record(time.Now()); n > 0 {
+					slog.Warn("write buffer full, dropping posts",
+						"dropped_since_last_warning", n,
+						"buffer_len", len(writeCh),
+					)
+				}
+				return
+			}
+			collector.IncrementAccountPurges()
+			status := ""
+			if evt.Account != nil {
+				status = evt.Account.Status
+			}
+			// Account events are continuous network-wide, so this is Debug;
+			// the count is on the stats snapshot as account_purges.
+			slog.Debug("account inactive, purging posts", "status", status, "did", evt.DID)
+		}
+	} else {
+		slog.Warn("firehose deletes disabled, deleted posts stay in the buffer until hydration or the 2h purge")
+	}
+
 	endpoints := jetstream.AllEndpointsV2
 	if protocol == jetstream.ProtocolV1 {
 		endpoints = jetstream.AllEndpoints
 	}
 	slog.Info("starting jetstream consumer",
 		"protocol", protocol,
+		"firehose_deletes", deletesEnabled,
 		"compressed", protocol == jetstream.ProtocolV2 && !cfg.DisableCompression,
 		"endpoints", endpoints,
 		"extra_collections", extraCollections,

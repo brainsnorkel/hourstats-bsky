@@ -47,10 +47,10 @@ type summaryPoster interface {
 
 // postSummary publishes the cycle summary. quoteControlled marks the #1 post
 // as one whose author disabled quoting, which suppresses the quote embed and
-// annotates its line instead of rendering as "Removed by author". noLink drops
-// every @handle link facet, which is what an unreachable feature gate costs:
-// the summary still names its top posts, but links none of them.
-func postSummary(ctx context.Context, bskyClient summaryPoster, topPosts []analyzer.AnalyzedPost, overallSentiment string, netPct float64, analysisMinutes, totalPosts int, quoteControlled, noLink bool) (string, string) {
+// annotates its line instead of rendering as "Removed by author". An empty
+// topPosts publishes the aggregate sentiment lines alone, which is what an
+// unreachable feature gate costs.
+func postSummary(ctx context.Context, bskyClient summaryPoster, topPosts []analyzer.AnalyzedPost, overallSentiment string, netPct float64, analysisMinutes, totalPosts int, quoteControlled bool) (string, string) {
 	// PostTrendingSummary takes no context and builds its own
 	// context.Background(), so a ctx already cancelled by SIGTERM would still
 	// publish while the surrounding DB writes fail with "context canceled" —
@@ -66,7 +66,6 @@ func postSummary(ctx context.Context, bskyClient summaryPoster, topPosts []analy
 			URI: ap.URI, CID: ap.CID, Text: ap.Text, Author: ap.Author,
 			Likes: ap.Likes, Reposts: ap.Reposts, Replies: ap.Replies,
 			CreatedAt: ap.CreatedAt, Sentiment: ap.Sentiment, EngagementScore: ap.EngagementScore,
-			NoLink: noLink,
 		}
 	}
 	if quoteControlled && len(clientPosts) > 0 {

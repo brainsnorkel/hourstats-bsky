@@ -52,11 +52,18 @@ func (t *tombstones) add(uri string, now time.Time) {
 }
 
 // has reports whether uri was deleted recently enough to still be remembered.
+// The TTL is checked here rather than left to the sweep: add() only prunes
+// once a minute and only when it is called, so a quiet period leaves entries
+// well past their TTL in the map, where they would keep suppressing legitimate
+// re-creates of the same rkey.
 func (t *tombstones) has(uri string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	_, ok := t.m[uri]
-	return ok
+	at, ok := t.m[uri]
+	if !ok {
+		return false
+	}
+	return time.Since(at) <= tombstoneTTL
 }
 
 // prune drops entries older than maxAge and returns how many were removed.

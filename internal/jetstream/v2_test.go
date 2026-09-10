@@ -623,3 +623,146 @@ func TestConsumerV2_UnknownDictionaryRefetches(t *testing.T) {
 func wsEndpoint(base string) string {
 	return "ws" + strings.TrimPrefix(base, "http") + "/xrpc/" + subscribeNSID
 }
+
+// v2CreateFrameSeq builds a create frame with a given seq and rkey, so a test
+// can drive the read loop's dedup floor.
+func v2CreateFrameSeq(seq int64, rkey string) string {
+	return fmt.Sprintf(`{"$type":"message","payload":{"$type":"network.bsky.jetstream.subscribeEvents#commit",`+
+		`"seq":%d,"did":"did:plc:aaa","time":"%s","rev":"3lrev1","operation":"create",`+
+		`"collection":"app.bsky.feed.post","rkey":"%s","cid":"bafycreate",`+
+		`"record":{"$type":"app.bsky.feed.post","text":"hello world","createdAt":"2026-09-11T12:00:00Z","langs":["en"]}}}`,
+		seq, v2CreateTime, rkey)
+}
+
+// TestConsumerV2_EndpointRotationResetsSeqFloor is the silent-stall case: two
+// v2 instances need not share a seq space, so a floor carried across a
+// rotation can sit above everything the new endpoint emits. The first endpoint
+// only drops the connection; after the rotation the second serves seq 5 while
+// the persisted floor is 100, and its events must still be delivered.
+func TestConsumerV2_EndpointRotationResetsSeqFloor(t *testing.T) {
+	upgrader := websocket.Upgrader{Subprotocols: []string{subscribeSubprotocol}}
+
+	// The unstable endpoint: upgrade, then hang up at once.
+	badMux := http.NewServeMux()
+	badMux.HandleFunc("/xrpc/"+subscribeNSID, func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn.Close()
+	})
+	bad := httptest.NewServer(badMux)
+	defer bad.Close()
+
+	var (
+		mu         sync.Mutex
+		goodCursor []string
+	)
+	goodMux := http.NewServeMux()
+	goodMux.HandleFunc("/xrpc/"+subscribeNSID, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		goodCursor = append(goodCursor, r.URL.Query().Get("cursor"))
+		mu.Unlock()
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Seq 5, far below the floor of 100 the consumer resumed with.
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(v2CreateFrameSeq(5, "3low"))); err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	good := httptest.NewServer(goodMux)
+	defer good.Close()
+
+	done := make(chan struct{})
+	var once sync.Once
+	consumer := NewConsumer(ConsumerConfig{
+		Endpoints:          []string{wsEndpoint(bad.URL), wsEndpoint(good.URL)},
+		DisableCompression: true,
+		LoadCursorV2: func(context.Context) (int64, int64, error) {
+			return 100, time.Now().UnixMicro(), nil
+		},
+		OnPost: func(*Event, *PostRecord) { once.Do(func() { close(done) }) },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("timed out waiting for a post from the rotated endpoint: the seq floor was not reset")
+	}
+	cancel()
+
+	if got := consumer.endpointRotations.Load(); got == 0 {
+		t.Fatal("endpoint rotations = 0, want at least 1")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(goodCursor) == 0 {
+		t.Fatal("the rotated endpoint was never dialled")
+	}
+	if goodCursor[0] != "" {
+		t.Errorf("first dial cursor on the rotated endpoint = %q, want none (live tip)", goodCursor[0])
+	}
+}
+
+// TestConsumerV2_SeqFloorGuardResetsAfterRun covers the in-session guard: a
+// floor nothing in the stream can clear must not silently swallow the whole
+// connection.
+func TestConsumerV2_SeqFloorGuardResetsAfterRun(t *testing.T) {
+	upgrader := websocket.Upgrader{Subprotocols: []string{subscribeSubprotocol}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/xrpc/"+subscribeNSID, func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		frame := []byte(v2CreateFrameSeq(5, "3low"))
+		for i := 0; i < maxConsecutiveSeqDrops; i++ {
+			if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
+				return
+			}
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	done := make(chan struct{})
+	var once sync.Once
+	consumer := NewConsumer(ConsumerConfig{
+		Endpoint:           wsEndpoint(srv.URL),
+		DisableCompression: true,
+		LoadCursorV2: func(context.Context) (int64, int64, error) {
+			return 100, time.Now().UnixMicro(), nil
+		},
+		OnPost: func(*Event, *PostRecord) { once.Do(func() { close(done) }) },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out: the dedup floor dropped every frame with no reset")
+	}
+	cancel()
+}
