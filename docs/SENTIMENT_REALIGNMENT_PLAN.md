@@ -85,6 +85,17 @@ S3 backup taken by the daily job before the switch is the last resort.
 - The next weekly report's "vs prior week" delta is within the usual ±0.5 range, not shifted by S.
 - The yearly chart posted at 01:00 the next morning is continuous.
 
+## 5a. Staging rehearsal, 2026-09-10 00:25 to 00:40 UTC
+
+Staging was rebuilt from a prod volume snapshot (`make sync-staging`) and ran the branch build. Its 00:25 cycle wrote the first row with a stock column (headline 10.66, stock 9.11). Then, with per-table `sha3sum` hashes of `sentiment_history`, `daily_sentiment` and `key_value` taken as the baseline:
+
+- `-dry-run`: S = +1.77 over 68 pairs, difference from the compiled thresholds 0.00, 5,629 history rows and 359 daily rows in scope, no compound-score anomalies.
+- `-apply`: mean net 10.55 → 12.32. Checked against the snapshots: 0 stock-column mismatches, 0 shadow rows differing from their emoji value, 0 non-shadow rows off by anything but 1.77, 0 root/reply mismatches, 0 daily mismatches across all six columns; the post-switch row untouched; five markers written.
+- A synthetic daily row was inserted after apply. `-revert` took its own backup, restored 5,629 history rows and 359 daily rows, shifted the synthetic row back by −1.77, and removed the markers and both snapshot tables. After deleting the synthetic row, all three table hashes were **identical to the baseline**.
+- `-apply` was run again and staging was left on the new scale as a soak until the prod run.
+
+One defect found and fixed: a `-backup-dir` whose parent did not exist was created rather than refused, which would have put the pre-write copy on the container's ephemeral filesystem. The tool now refuses.
+
 ## 6. Effort
 
 Code switch and threshold move about half a day; backfill command with dry run and revert about half a day; execution and verification about an hour in the deploy window.
