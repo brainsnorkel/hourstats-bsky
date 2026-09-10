@@ -866,3 +866,67 @@ func TestTakeSnapshotIncludesDeleteCounters(t *testing.T) {
 			second.PostDeletes, second.AccountPurges, second.TombstoneHits)
 	}
 }
+
+// The wire-protocol counters have no stats_snapshots columns, so what matters
+// is that the collector delta-tracks them against the live consumer report the
+// same way it does the endpoint counters.
+func TestTakeSnapshot_WireProtocolDeltas(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+
+	provider := &mockConsumerProvider{
+		report: jetstream.StatsReport{
+			Protocol:           jetstream.ProtocolV2,
+			Compressed:         true,
+			BytesReceived:      1000,
+			BytesDecompressed:  4000,
+			EventsByCollection: map[string]int64{"app.bsky.feed.like": 500},
+		},
+	}
+	c.SetConsumer(provider)
+
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("first TakeSnapshot(): %v", err)
+	}
+	if c.lastSeen.bytesReceived != 1000 || c.lastSeen.bytesDecompressed != 4000 {
+		t.Errorf("lastSeen bytes = %d/%d, want 1000/4000",
+			c.lastSeen.bytesReceived, c.lastSeen.bytesDecompressed)
+	}
+	if got := c.lastSeen.byCollection["app.bsky.feed.like"]; got != 500 {
+		t.Errorf("lastSeen byCollection = %d, want 500", got)
+	}
+
+	provider.report.BytesReceived = 1750
+	provider.report.BytesDecompressed = 7000
+	provider.report.EventsByCollection = map[string]int64{"app.bsky.feed.like": 900}
+
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("second TakeSnapshot(): %v", err)
+	}
+	if c.lastSeen.bytesReceived != 1750 || c.lastSeen.bytesDecompressed != 7000 {
+		t.Errorf("lastSeen bytes = %d/%d, want 1750/7000",
+			c.lastSeen.bytesReceived, c.lastSeen.bytesDecompressed)
+	}
+	if got := c.lastSeen.byCollection["app.bsky.feed.like"]; got != 900 {
+		t.Errorf("lastSeen byCollection = %d, want 900", got)
+	}
+}
+
+func TestCollectionDeltas(t *testing.T) {
+	if got := collectionDeltas(nil, nil); got != nil {
+		t.Errorf("collectionDeltas(nil, nil) = %v, want nil", got)
+	}
+
+	got := collectionDeltas(
+		map[string]int64{"a": 30, "b": 5, "c": 7},
+		map[string]int64{"a": 10, "b": 9},
+	)
+	// "a" advanced, "b" went backwards (a recreated consumer restarting at
+	// zero), "c" is new.
+	want := map[string]int64{"a": 20, "b": 5, "c": 7}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("collectionDeltas()[%q] = %d, want %d", k, got[k], v)
+		}
+	}
+}

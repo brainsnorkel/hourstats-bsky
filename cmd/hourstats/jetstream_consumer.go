@@ -105,11 +105,21 @@ func sendPost(ctx context.Context, writeCh chan<- store.PendingWrite, pw store.P
 func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, collector *stats.Collector, writeCh chan<- store.PendingWrite, handle *consumerHandle) {
 	drops := &dropLimiter{window: dropWarnWindow}
 
-	// A reconnect rewinds the cursor, so a create can be replayed after its
-	// delete has already been applied. The tombstone set drops those creates.
+	// A reconnect replays from before the last event seen — v1 rewinds the
+	// cursor, v2 resumes inclusively — so a create can arrive again after its
+	// delete has been applied. The tombstone set drops those creates.
 	tombs := newTombstones()
 
+	protocol := jetstream.ProtocolV2
+	if envBool("JETSTREAM_LEGACY", false) {
+		protocol = jetstream.ProtocolV1
+	}
+	extraCollections := envList("JETSTREAM_EXTRA_COLLECTIONS")
+
 	cfg := jetstream.ConsumerConfig{
+		Protocol:           protocol,
+		DisableCompression: !envBool("JETSTREAM_COMPRESS", true),
+		ExtraCollections:   extraCollections,
 		// Posts the bytes-level pre-filter drops never reach OnPost, so they
 		// are counted here; without this the firehose total is only English
 		// plus untagged posts.
@@ -219,15 +229,35 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 			// the count is on the stats snapshot as account_purges.
 			slog.Debug("account inactive, purging posts", "status", status, "did", evt.DID)
 		},
+		// v1 resumes from a time_us cursor in the cursor table; v2 from a seq
+		// in key_value. The consumer only calls the pair its protocol selects,
+		// so a fallback to v1 finds its own row exactly as it left it.
 		SaveCursor: func(saveCtx context.Context, cursor int64) error {
 			return db.SaveCursor(saveCtx, cursor)
 		},
 		LoadCursor: func(loadCtx context.Context) (int64, error) {
 			return db.GetCursor(loadCtx)
 		},
+		SaveCursorV2: func(saveCtx context.Context, seq, timeUS int64) error {
+			return db.SaveV2Cursor(saveCtx, seq, timeUS)
+		},
+		LoadCursorV2: func(loadCtx context.Context) (int64, int64, error) {
+			return db.GetV2Cursor(loadCtx)
+		},
 		CursorRewind: time.Duration(envInt("JETSTREAM_CURSOR_REWIND_SECONDS", 5)) * time.Second,
 		MaxCursorAge: time.Duration(envInt("JETSTREAM_MAX_CURSOR_AGE_MINUTES", 360)) * time.Minute,
 	}
+
+	endpoints := jetstream.AllEndpointsV2
+	if protocol == jetstream.ProtocolV1 {
+		endpoints = jetstream.AllEndpoints
+	}
+	slog.Info("starting jetstream consumer",
+		"protocol", protocol,
+		"compressed", protocol == jetstream.ProtocolV2 && !cfg.DisableCompression,
+		"endpoints", endpoints,
+		"extra_collections", extraCollections,
+	)
 
 	for {
 		consumer := jetstream.NewConsumer(cfg)

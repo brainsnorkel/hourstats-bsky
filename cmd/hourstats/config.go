@@ -22,6 +22,22 @@ func envBool(key string, fallback bool) bool {
 	return strings.EqualFold(v, "true") || v == "1"
 }
 
+// envList reads a comma-separated list, trimming whitespace and dropping
+// empty entries. An unset or all-empty value returns nil.
+func envList(key string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func envInt(key string, fallback int) int {
 	v := os.Getenv(key)
 	if v == "" {

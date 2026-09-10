@@ -171,6 +171,7 @@ func TestReadLoopDispatchesCreateDeleteAndAccount(t *testing.T) {
 	var once sync.Once
 
 	consumer := NewConsumer(ConsumerConfig{
+		Protocol: ProtocolV1,
 		Endpoint: "ws" + strings.TrimPrefix(srv.URL, "http"),
 		OnPost: func(evt *Event, rec *PostRecord) {
 			mu.Lock()

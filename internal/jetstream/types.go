@@ -2,14 +2,20 @@ package jetstream
 
 import "encoding/json"
 
-// Event is the top-level Jetstream WebSocket message.
-// Jetstream events have 3 kinds: "commit", "identity", "account".
+// Event is one Jetstream event, normalised across both wire protocols so the
+// consumer's dispatch and the caller's handlers are protocol-agnostic.
+// Jetstream events have 4 kinds: "commit", "identity", "account", "sync".
 type Event struct {
 	DID     string        `json:"did"`
 	TimeUS  int64         `json:"time_us"`
 	Kind    string        `json:"kind"`
 	Commit  *Commit       `json:"commit,omitempty"`
 	Account *AccountEvent `json:"account,omitempty"`
+
+	// Seq is the v2 monotonic per-event sequence number, which is also the
+	// v2 stream cursor. It is 0 on v1, whose frames carry no seq and whose
+	// cursor is TimeUS.
+	Seq int64 `json:"-"`
 }
 
 // AccountEvent is the payload of a "kind":"account" event: the PDS reporting

@@ -13,6 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jonreiter/govader v0.0.0-20250429093935-f6505c8d03cc
+	github.com/klauspost/compress v1.18.6
 	golang.org/x/image v0.46.0
 	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.58.0

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/klauspost/compress/zstd"
 )
 
 const (
@@ -74,8 +75,20 @@ type CursorSaver func(ctx context.Context, cursor int64) error
 // CursorLoader retrieves the last saved cursor value (0 = no cursor).
 type CursorLoader func(ctx context.Context) (int64, error)
 
+// CursorSaverV2 persists the latest v2 cursor: the seq to resume from and the
+// event time it was witnessed at, which is what the startup age check reads.
+type CursorSaverV2 func(ctx context.Context, seq, timeUS int64) error
+
+// CursorLoaderV2 retrieves the last saved v2 cursor (0, 0 = no cursor).
+type CursorLoaderV2 func(ctx context.Context) (seq, timeUS int64, err error)
+
 // ConsumerConfig holds configuration for the Jetstream consumer.
 type ConsumerConfig struct {
+	// Protocol selects the wire protocol: ProtocolV2 (the default) or
+	// ProtocolV1. It also selects the default endpoint list and which pair of
+	// cursor callbacks is used.
+	Protocol string
+
 	Endpoint       string   // Single endpoint (backwards compat; ignored if Endpoints is set)
 	Endpoints      []string // Ordered list of endpoints to rotate through on failure
 	Collections    []string
@@ -83,6 +96,22 @@ type ConsumerConfig struct {
 	OnPost         PostHandler
 	SaveCursor     CursorSaver
 	LoadCursor     CursorLoader
+
+	// SaveCursorV2/LoadCursorV2 persist the v2 seq cursor. They replace
+	// SaveCursor/LoadCursor when Protocol is ProtocolV2, so the two protocols
+	// never share a stored row: the values are not interchangeable.
+	SaveCursorV2 CursorSaverV2
+	LoadCursorV2 CursorLoaderV2
+
+	// DisableCompression turns off dictionary zstd framing on v2. Compression
+	// is on by default; a failed dictionary fetch also falls back to plain
+	// text frames. It has no effect on v1, which is always uncompressed.
+	DisableCompression bool
+
+	// ExtraCollections are measured, not consumed: the v2 subscription asks
+	// for them so their volume can be counted, but a frame belonging to one is
+	// counted and dropped before any parsing beyond a byte scan for its NSID.
+	ExtraCollections []string
 
 	// OnDelete is called for each post delete commit, so the caller can drop
 	// the post before it is scored. The event carries no record.
@@ -109,10 +138,16 @@ type ConsumerConfig struct {
 }
 
 func (c *ConsumerConfig) setDefaults() {
+	if c.Protocol != ProtocolV1 {
+		c.Protocol = ProtocolV2
+	}
 	if len(c.Endpoints) == 0 {
-		if c.Endpoint != "" {
+		switch {
+		case c.Endpoint != "":
 			c.Endpoints = []string{c.Endpoint}
-		} else {
+		case c.Protocol == ProtocolV2:
+			c.Endpoints = AllEndpointsV2
+		default:
 			c.Endpoints = AllEndpoints
 		}
 	}
@@ -141,6 +176,26 @@ type Consumer struct {
 	conn   *websocket.Conn
 	stats  Stats
 
+	// seq is the v2 cursor: the highest seq delivered, used both as the
+	// resume point and as the dedup floor for the inclusive replay. 0 on v1.
+	seq atomic.Int64
+
+	// Dictionary zstd state (v2 only), owned by the Run goroutine; compressed
+	// mirrors "decoder != nil" for GetStatsReport. dictRejected latches when
+	// the server keeps refusing the dictionary, degrading this run to an
+	// uncompressed tail rather than looping on a 400.
+	dictID       uint32
+	decoder      *zstd.Decoder
+	dictRejected bool
+	compressed   atomic.Bool
+
+	// Measurement mode: per-collection counters for cfg.ExtraCollections.
+	// needles are the precomputed `"collection":"<nsid>"` byte patterns.
+	extraMu     sync.Mutex
+	extraCounts map[string]int64
+	extraBytes  map[string]int64
+	needles     [][]byte
+
 	// Endpoint rotation state.
 	endpointIdx       int          // index into cfg.Endpoints
 	endpointRotations atomic.Int64 // count of endpoint rotations
@@ -158,6 +213,12 @@ type Stats struct {
 	EarlyRejectedNonEnglish atomic.Int64
 	PostsDeleted            atomic.Int64
 	AccountsInactive        atomic.Int64
+
+	// BytesReceived counts bytes as they arrive on the wire (compressed, on a
+	// dictionary zstd connection); BytesDecompressed counts the JSON the
+	// decoder produced. On an uncompressed connection the two are equal.
+	BytesReceived     atomic.Int64
+	BytesDecompressed atomic.Int64
 }
 
 // StatsReport is an exported snapshot of consumer statistics.
@@ -173,12 +234,30 @@ type StatsReport struct {
 	EarlyRejectedNonEnglish int64
 	PostsDeleted            int64
 	AccountsInactive        int64
+
+	Protocol          string
+	Compressed        bool
+	BytesReceived     int64
+	BytesDecompressed int64
+
+	// EventsByCollection counts frames for each of ConsumerConfig's
+	// ExtraCollections. It is nil when measurement mode is off.
+	EventsByCollection map[string]int64
 }
 
 // NewConsumer creates a new Jetstream consumer.
 func NewConsumer(cfg ConsumerConfig) *Consumer {
 	cfg.setDefaults()
-	return &Consumer{cfg: cfg}
+	c := &Consumer{cfg: cfg}
+	if len(cfg.ExtraCollections) > 0 {
+		c.extraCounts = make(map[string]int64, len(cfg.ExtraCollections))
+		c.extraBytes = make(map[string]int64, len(cfg.ExtraCollections))
+		c.needles = make([][]byte, len(cfg.ExtraCollections))
+		for i, nsid := range cfg.ExtraCollections {
+			c.needles[i] = []byte(`"collection":"` + nsid + `"`)
+		}
+	}
+	return c
 }
 
 // ActiveEndpoint returns the currently active endpoint URL.
@@ -190,26 +269,15 @@ func (c *Consumer) ActiveEndpoint() string {
 // It automatically reconnects with exponential backoff on failures and
 // rotates to alternative endpoints when repeated drops are detected.
 func (c *Consumer) Run(ctx context.Context) error {
-	cursor, err := c.loadInitialCursor(ctx)
-	if err != nil {
-		slog.Warn("failed to load cursor, starting from live tail", "error", err)
-	}
-	start, age, discarded := resolveStartCursor(cursor, c.cfg.MaxCursorAge, time.Now())
-	switch {
-	case discarded:
-		slog.Warn("persisted cursor too old, starting from live tail",
-			"cursor", cursor,
-			"cursor_age", age.Round(time.Second),
-			"max_cursor_age", c.cfg.MaxCursorAge,
-		)
-	case start > 0:
-		c.cursor.Store(start)
-		slog.Info("resuming from cursor", "cursor", start, "cursor_age", age.Round(time.Second))
-	}
+	c.resumeFromStoredCursor(ctx)
+	defer c.closeDecoder()
 
 	cursorCtx, cursorCancel := context.WithCancel(ctx)
 	defer cursorCancel()
 	go c.cursorPersistLoop(cursorCtx)
+	if len(c.cfg.ExtraCollections) > 0 {
+		go c.extraCollectionLogLoop(cursorCtx)
+	}
 
 	// conn.ReadMessage does not observe ctx, so cancellation would otherwise
 	// stall for up to readTimeout. Closing the connection unblocks it at once.
@@ -233,6 +301,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 			c.persistCursorNow(context.Background())
 			return ctx.Err()
 		}
+
+		// A v2 pre-upgrade refusal names a condition the next dial must not
+		// repeat: an unusable cursor is dropped, a rotated dictionary is
+		// refetched. Both then fall through to the normal backoff.
+		c.handleDialRefusal(ctx, err)
 
 		c.stats.Reconnects.Add(1)
 		now := time.Now()
@@ -325,7 +398,28 @@ func (c *Consumer) GetStatsReport() StatsReport {
 		EarlyRejectedNonEnglish: c.stats.EarlyRejectedNonEnglish.Load(),
 		PostsDeleted:            c.stats.PostsDeleted.Load(),
 		AccountsInactive:        c.stats.AccountsInactive.Load(),
+		Protocol:                c.cfg.Protocol,
+		Compressed:              c.compressed.Load(),
+		BytesReceived:           c.stats.BytesReceived.Load(),
+		BytesDecompressed:       c.stats.BytesDecompressed.Load(),
+		EventsByCollection:      c.eventsByCollection(),
 	}
+}
+
+// eventsByCollection copies the measurement-mode counters under the mutex, so
+// the caller never shares the map the read loop keeps writing to. It returns
+// nil when measurement mode is off.
+func (c *Consumer) eventsByCollection() map[string]int64 {
+	if len(c.cfg.ExtraCollections) == 0 {
+		return nil
+	}
+	c.extraMu.Lock()
+	defer c.extraMu.Unlock()
+	out := make(map[string]int64, len(c.extraCounts))
+	for k, v := range c.extraCounts {
+		out[k] = v
+	}
+	return out
 }
 
 // ConnectionUptime returns the duration since the current connection was established.
@@ -391,6 +485,9 @@ func (c *Consumer) ForceReconnect() bool {
 }
 
 func (c *Consumer) buildURL() string {
+	if c.cfg.Protocol == ProtocolV2 {
+		return c.buildURLV2()
+	}
 	u, _ := url.Parse(c.ActiveEndpoint())
 	q := u.Query()
 	for _, col := range c.cfg.Collections {
@@ -405,8 +502,15 @@ func (c *Consumer) buildURL() string {
 }
 
 func (c *Consumer) connectAndConsume(ctx context.Context) error {
+	if c.cfg.Protocol == ProtocolV2 {
+		return c.connectAndConsumeV2(ctx)
+	}
+	return c.connectAndConsumeV1(ctx)
+}
+
+func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 	wsURL := c.buildURL()
-	slog.Info("connecting to jetstream", "url", wsURL)
+	slog.Info("connecting to jetstream", "url", wsURL, "protocol", ProtocolV1)
 
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
@@ -424,53 +528,11 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 		c.mu.Unlock()
 	}()
 
-	conn.SetCloseHandler(func(code int, text string) error {
-		return nil
-	})
-
-	// Liveness. Every read is bounded by readTimeout; the deadline is pushed
-	// out on each frame and on each pong. A peer that stops sending — including
-	// a silently black-holed TCP connection — therefore surfaces as a read
-	// error within readTimeout instead of hanging until the kernel keepalive.
-	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-		return fmt.Errorf("set read deadline: %w", err)
+	stopPings, err := startLiveness(ctx, conn)
+	if err != nil {
+		return err
 	}
-	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(readTimeout))
-	})
-
-	// WriteControl is safe to call concurrently with the read loop.
-	pingStop := make(chan struct{})
-	defer close(pingStop)
-	go func() {
-		ticker := time.NewTicker(pingInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-pingStop:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingWriteTimeout)); err != nil {
-					// A routine reconnect, a stall-triggered ForceReconnect or
-					// shutdown closes the connection underneath this goroutine.
-					// That is not a ping failure and must not be logged as one,
-					// nor closed again — the reconnect is already in progress.
-					select {
-					case <-pingStop:
-						return
-					case <-ctx.Done():
-						return
-					default:
-					}
-					slog.Warn("jetstream ping failed, forcing reconnect", "error", err)
-					_ = conn.Close() // unblocks ReadMessage; the caller reconnects
-					return
-				}
-			}
-		}
-	}()
+	defer stopPings()
 
 	slog.Info("connected to jetstream")
 
@@ -509,37 +571,124 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 		}
 
 		c.cursor.Store(event.TimeUS)
+		c.dispatch(&event)
+	}
+}
 
-		switch {
-		case event.IsPostCreate():
-			// handled below
-		case event.IsPostDelete():
-			if c.cfg.OnDelete != nil {
-				c.cfg.OnDelete(&event)
+// startLiveness bounds every read by readTimeout, pushing the deadline out on
+// each frame and each pong, and keeps the peer proving liveness with periodic
+// pings. A peer that stops sending — including a silently black-holed TCP
+// connection — therefore surfaces as a read error within readTimeout instead
+// of hanging until the kernel keepalive. The returned func stops the pinger
+// and must be called before the connection is closed.
+func startLiveness(ctx context.Context, conn *websocket.Conn) (func(), error) {
+	conn.SetCloseHandler(func(code int, text string) error {
+		return nil
+	})
+	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+		return nil, fmt.Errorf("set read deadline: %w", err)
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(readTimeout))
+	})
+
+	// WriteControl is safe to call concurrently with the read loop.
+	pingStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingStop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingWriteTimeout)); err != nil {
+					// A routine reconnect, a stall-triggered ForceReconnect or
+					// shutdown closes the connection underneath this goroutine.
+					// That is not a ping failure and must not be logged as one,
+					// nor closed again — the reconnect is already in progress.
+					select {
+					case <-pingStop:
+						return
+					case <-ctx.Done():
+						return
+					default:
+					}
+					slog.Warn("jetstream ping failed, forcing reconnect", "error", err)
+					_ = conn.Close() // unblocks ReadMessage; the caller reconnects
+					return
+				}
 			}
-			c.stats.PostsDeleted.Add(1)
-			continue
-		case event.IsAccountInactive():
-			if c.cfg.OnAccountInactive != nil {
-				c.cfg.OnAccountInactive(&event)
-			}
-			c.stats.AccountsInactive.Add(1)
-			continue
-		default:
-			c.stats.EventsSkipped.Add(1)
-			continue
 		}
+	}()
 
-		record := event.ParsePostRecord()
-		if record == nil {
-			c.stats.Errors.Add(1)
-			continue
-		}
+	var once sync.Once
+	return func() { once.Do(func() { close(pingStop) }) }, nil
+}
 
-		if c.cfg.OnPost != nil {
-			c.cfg.OnPost(&event, record)
+// dispatch routes one decoded event to the caller's handlers. Both wire
+// protocols normalise into Event, so this is the single place that decides
+// what a post create, a post delete and an account deactivation mean.
+func (c *Consumer) dispatch(event *Event) {
+	switch {
+	case event.IsPostCreate():
+		// handled below
+	case event.IsPostDelete():
+		if c.cfg.OnDelete != nil {
+			c.cfg.OnDelete(event)
 		}
-		c.stats.PostsProcessed.Add(1)
+		c.stats.PostsDeleted.Add(1)
+		return
+	case event.IsAccountInactive():
+		if c.cfg.OnAccountInactive != nil {
+			c.cfg.OnAccountInactive(event)
+		}
+		c.stats.AccountsInactive.Add(1)
+		return
+	default:
+		c.stats.EventsSkipped.Add(1)
+		return
+	}
+
+	record := event.ParsePostRecord()
+	if record == nil {
+		c.stats.Errors.Add(1)
+		return
+	}
+
+	if c.cfg.OnPost != nil {
+		c.cfg.OnPost(event, record)
+	}
+	c.stats.PostsProcessed.Add(1)
+}
+
+// resumeFromStoredCursor loads the persisted cursor for the active protocol
+// and applies the staleness gate: a cursor older than MaxCursorAge is dropped
+// in favour of the live tail, since replaying many hours of backlog arrives at
+// wire speed and overruns the downstream write buffer.
+func (c *Consumer) resumeFromStoredCursor(ctx context.Context) {
+	if c.cfg.Protocol == ProtocolV2 {
+		c.resumeFromStoredCursorV2(ctx)
+		return
+	}
+
+	cursor, err := c.loadInitialCursor(ctx)
+	if err != nil {
+		slog.Warn("failed to load cursor, starting from live tail", "error", err)
+	}
+	start, age, discarded := resolveStartCursor(cursor, c.cfg.MaxCursorAge, time.Now())
+	switch {
+	case discarded:
+		slog.Warn("persisted cursor too old, starting from live tail",
+			"cursor", cursor,
+			"cursor_age", age.Round(time.Second),
+			"max_cursor_age", c.cfg.MaxCursorAge,
+		)
+	case start > 0:
+		c.cursor.Store(start)
+		slog.Info("resuming from cursor", "cursor", start, "cursor_age", age.Round(time.Second))
 	}
 }
 
@@ -565,6 +714,17 @@ func (c *Consumer) cursorPersistLoop(ctx context.Context) {
 }
 
 func (c *Consumer) persistCursorNow(ctx context.Context) {
+	if c.cfg.Protocol == ProtocolV2 {
+		seq, timeUS := c.seq.Load(), c.cursor.Load()
+		if c.cfg.SaveCursorV2 == nil || seq == 0 {
+			return
+		}
+		if err := c.cfg.SaveCursorV2(ctx, seq, timeUS); err != nil {
+			slog.Warn("failed to persist cursor", "error", err, "seq", seq)
+		}
+		return
+	}
+
 	if c.cfg.SaveCursor == nil {
 		return
 	}

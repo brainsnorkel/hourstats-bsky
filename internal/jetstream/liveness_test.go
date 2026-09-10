@@ -125,6 +125,7 @@ func TestBuildURLUsesRewoundCursor(t *testing.T) {
 	const base = 1_725_911_162_329_308
 
 	c := NewConsumer(ConsumerConfig{
+		Protocol:     ProtocolV1,
 		Endpoint:     "wss://example.test/subscribe",
 		CursorRewind: 5 * time.Second,
 	})
@@ -137,7 +138,7 @@ func TestBuildURLUsesRewoundCursor(t *testing.T) {
 }
 
 func TestBuildURLOmitsCursorWhenUnset(t *testing.T) {
-	c := NewConsumer(ConsumerConfig{Endpoint: "wss://example.test/subscribe"})
+	c := NewConsumer(ConsumerConfig{Protocol: ProtocolV1, Endpoint: "wss://example.test/subscribe"})
 	if got := c.buildURL(); strings.Contains(got, "cursor=") {
 		t.Errorf("buildURL() = %q, want no cursor parameter", got)
 	}
@@ -223,7 +224,7 @@ func TestJitterBackoffHandlesNonPositive(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestForceReconnectWithoutConnection(t *testing.T) {
-	c := NewConsumer(ConsumerConfig{Endpoint: "wss://example.test/subscribe"})
+	c := NewConsumer(ConsumerConfig{Protocol: ProtocolV1, Endpoint: "wss://example.test/subscribe"})
 	if c.ForceReconnect() {
 		t.Error("ForceReconnect reported a closed connection when none was open")
 	}

@@ -85,6 +85,9 @@ type Collector struct {
 		earlyRejected     int64
 		postsDeleted      int64
 		accountsInactive  int64
+		bytesReceived     int64
+		bytesDecompressed int64
+		byCollection      map[string]int64
 		gcPauseTotalNs    uint64
 		gcCount           uint32
 		snapshotAt        time.Time // zero until the first snapshot
@@ -319,6 +322,8 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	var uptimeSeconds int
 	var deltaEvents, deltaPosts, deltaSkipped, deltaReconnects, deltaErrors, deltaRotations, deltaEarlyRejected int64
 	var deltaPostsDeleted, deltaAccountsInactive int64
+	var deltaBytesReceived, deltaBytesDecompressed int64
+	var deltaByCollection map[string]int64
 
 	if provider != nil {
 		report = provider.GetStatsReport()
@@ -335,6 +340,9 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		deltaEarlyRejected = counterDelta(report.EarlyRejectedNonEnglish, c.lastSeen.earlyRejected)
 		deltaPostsDeleted = counterDelta(report.PostsDeleted, c.lastSeen.postsDeleted)
 		deltaAccountsInactive = counterDelta(report.AccountsInactive, c.lastSeen.accountsInactive)
+		deltaBytesReceived = counterDelta(report.BytesReceived, c.lastSeen.bytesReceived)
+		deltaBytesDecompressed = counterDelta(report.BytesDecompressed, c.lastSeen.bytesDecompressed)
+		deltaByCollection = collectionDeltas(report.EventsByCollection, c.lastSeen.byCollection)
 
 		// Update last-seen values
 		c.lastSeen.eventsReceived = report.EventsReceived
@@ -346,6 +354,9 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		c.lastSeen.earlyRejected = report.EarlyRejectedNonEnglish
 		c.lastSeen.postsDeleted = report.PostsDeleted
 		c.lastSeen.accountsInactive = report.AccountsInactive
+		c.lastSeen.bytesReceived = report.BytesReceived
+		c.lastSeen.bytesDecompressed = report.BytesDecompressed
+		c.lastSeen.byCollection = report.EventsByCollection
 
 		activeEndpoint = report.ActiveEndpoint
 		uptimeSeconds = int(report.ConnectionUptime.Seconds())
@@ -490,16 +501,42 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	c.lastAnalysis.trendingDurationMs = 0
 	c.mu.Unlock()
 
-	slog.Info("stats snapshot taken",
+	// The wire-protocol fields have no stats_snapshots columns, so the live
+	// consumer report is what carries them: protocol and compression describe
+	// the connection, the byte counters its cost since the last snapshot.
+	logAttrs := []any{
 		"snapshot_id", snap.ID,
 		"english_posts", englishDelta,
 		"firehose_posts", firehoseDelta,
 		"early_rejected_non_english", deltaEarlyRejected,
-		"elapsed_minutes", math.Round(elapsedMinutes*10)/10,
+		"elapsed_minutes", math.Round(elapsedMinutes*10) / 10,
 		"posts_per_minute", postsPerMinute,
-	)
+		"protocol", report.Protocol,
+		"compressed", report.Compressed,
+		"bytes_received", deltaBytesReceived,
+		"bytes_decompressed", deltaBytesDecompressed,
+	}
+	for nsid, n := range deltaByCollection {
+		logAttrs = append(logAttrs, nsid+".events", n)
+	}
+	slog.Info("stats snapshot taken", logAttrs...)
 
 	return nil
+}
+
+// collectionDeltas returns the per-collection counts since the previous
+// snapshot. A current value below the last seen means the consumer was
+// recreated and its counters restarted at zero, so the whole value is the
+// delta — the same reasoning as counterDelta.
+func collectionDeltas(current, lastSeen map[string]int64) map[string]int64 {
+	if len(current) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(current))
+	for nsid, n := range current {
+		out[nsid] = counterDelta(n, lastSeen[nsid])
+	}
+	return out
 }
 
 // LogEvent creates and persists a StatsEvent. Non-blocking (logs error but doesn't propagate).

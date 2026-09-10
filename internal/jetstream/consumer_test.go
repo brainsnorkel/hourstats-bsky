@@ -210,17 +210,32 @@ func TestConsumerConfig_Defaults(t *testing.T) {
 	cfg := ConsumerConfig{}
 	cfg.setDefaults()
 
-	if cfg.Endpoint != AllEndpoints[0] {
-		t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, AllEndpoints[0])
+	if cfg.Protocol != ProtocolV2 {
+		t.Errorf("Protocol = %q, want %q", cfg.Protocol, ProtocolV2)
 	}
-	if len(cfg.Endpoints) != len(AllEndpoints) {
-		t.Errorf("Endpoints length = %d, want %d", len(cfg.Endpoints), len(AllEndpoints))
+	if cfg.Endpoint != AllEndpointsV2[0] {
+		t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, AllEndpointsV2[0])
+	}
+	if len(cfg.Endpoints) != len(AllEndpointsV2) {
+		t.Errorf("Endpoints length = %d, want %d", len(cfg.Endpoints), len(AllEndpointsV2))
 	}
 	if len(cfg.Collections) != 1 || cfg.Collections[0] != DefaultCollection {
 		t.Errorf("Collections = %v, want [%s]", cfg.Collections, DefaultCollection)
 	}
 	if cfg.CursorInterval != DefaultCursorInterval {
 		t.Errorf("CursorInterval = %v, want %v", cfg.CursorInterval, DefaultCursorInterval)
+	}
+}
+
+func TestConsumerConfig_V1Defaults(t *testing.T) {
+	cfg := ConsumerConfig{Protocol: ProtocolV1}
+	cfg.setDefaults()
+
+	if cfg.Endpoint != AllEndpoints[0] {
+		t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, AllEndpoints[0])
+	}
+	if len(cfg.Endpoints) != len(AllEndpoints) {
+		t.Errorf("Endpoints length = %d, want %d", len(cfg.Endpoints), len(AllEndpoints))
 	}
 }
 
@@ -298,6 +313,7 @@ func TestConsumer_BuildURL(t *testing.T) {
 	// Rewind disabled so this stays a test of URL assembly; the rewind itself
 	// is covered by TestBuildURLUsesRewoundCursor.
 	c := NewConsumer(ConsumerConfig{
+		Protocol:     ProtocolV1,
 		Endpoint:     "wss://jetstream2.us-east.bsky.network/subscribe",
 		Collections:  []string{"app.bsky.feed.post"},
 		CursorRewind: -1,
