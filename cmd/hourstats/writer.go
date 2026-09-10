@@ -35,7 +35,8 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 		}
 		n := len(batch)
 		start := time.Now()
-		if err := db.FlushPostBatch(ctx, batch); err != nil {
+		res, err := db.FlushPostBatch(ctx, batch)
+		if err != nil {
 			slog.Error("flush post batch failed", "batch_size", n, "error", err)
 			_ = collector.LogEvent(ctx, "batch_flush_error", fmt.Sprintf("size=%d err=%v", n, err))
 		}
@@ -43,7 +44,12 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 			slog.Warn("flush token batch failed", "batch_size", n, "error", err)
 		}
 		if dur := time.Since(start); dur > 1*time.Second {
-			slog.Warn("slow write flush", "batch_size", n, "duration_ms", dur.Milliseconds())
+			slog.Warn("slow write flush",
+				"batch_size", n,
+				"duration_ms", dur.Milliseconds(),
+				"deleted", res.Deleted,
+				"purged", res.Purged,
+			)
 			collector.IncrementSlowFlush(dur.Milliseconds())
 		}
 		batch = batch[:0]
@@ -76,7 +82,7 @@ func runWriteFlusher(ctx context.Context, db *store.Store, ch <-chan store.Pendi
 					return
 				}
 				n := len(batch)
-				if err := db.FlushPostBatch(drainCtx, batch); err != nil {
+				if _, err := db.FlushPostBatch(drainCtx, batch); err != nil {
 					slog.Error("shutdown drain flush failed", "batch_size", n, "error", err)
 				}
 				if err := db.FlushTokenBatch(drainCtx, batch); err != nil {

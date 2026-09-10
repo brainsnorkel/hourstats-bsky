@@ -789,3 +789,80 @@ func TestBoolToInt(t *testing.T) {
 		}
 	}
 }
+
+func TestFirehoseDeleteCounters(t *testing.T) {
+	c := New(&mockStatsStore{}, "")
+
+	c.IncrementPostDeletes()
+	c.IncrementPostDeletes()
+	c.IncrementAccountPurges()
+	c.IncrementTombstoneHits()
+	c.IncrementTombstoneHits()
+	c.IncrementTombstoneHits()
+
+	if got := c.SwapPostDeletes(); got != 2 {
+		t.Errorf("SwapPostDeletes = %d, want 2", got)
+	}
+	if got := c.SwapAccountPurges(); got != 1 {
+		t.Errorf("SwapAccountPurges = %d, want 1", got)
+	}
+	if got := c.SwapTombstoneHits(); got != 3 {
+		t.Errorf("SwapTombstoneHits = %d, want 3", got)
+	}
+
+	// Each swap resets its counter, so the next interval starts at zero.
+	if got := c.SwapPostDeletes(); got != 0 {
+		t.Errorf("SwapPostDeletes after reset = %d, want 0", got)
+	}
+	if got := c.SwapAccountPurges(); got != 0 {
+		t.Errorf("SwapAccountPurges after reset = %d, want 0", got)
+	}
+	if got := c.SwapTombstoneHits(); got != 0 {
+		t.Errorf("SwapTombstoneHits after reset = %d, want 0", got)
+	}
+}
+
+func TestTakeSnapshotIncludesDeleteCounters(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+	c.SetConsumer(&mockConsumerProvider{
+		report: jetstream.StatsReport{
+			EventsReceived:   10,
+			PostsDeleted:     4,
+			AccountsInactive: 1,
+		},
+	})
+
+	c.IncrementPostDeletes()
+	c.IncrementPostDeletes()
+	c.IncrementAccountPurges()
+	c.IncrementTombstoneHits()
+
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+	snap := ms.snapshots[0]
+
+	// The consumer saw 4 deletes on the wire but only 2 purges were queued
+	// (the rest were dropped or arrived before the callback was wired), so the
+	// wire count wins.
+	if snap.PostDeletes != 4 {
+		t.Errorf("PostDeletes = %d, want 4", snap.PostDeletes)
+	}
+	if snap.AccountPurges != 1 {
+		t.Errorf("AccountPurges = %d, want 1", snap.AccountPurges)
+	}
+	if snap.TombstoneHits != 1 {
+		t.Errorf("TombstoneHits = %d, want 1", snap.TombstoneHits)
+	}
+
+	// Counters are per-interval: a second snapshot with no new activity is zero.
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("TakeSnapshot (second): %v", err)
+	}
+	second := ms.snapshots[1]
+	if second.PostDeletes != 0 || second.AccountPurges != 0 || second.TombstoneHits != 0 {
+		t.Errorf("second snapshot = {%d %d %d}, want all zero",
+			second.PostDeletes, second.AccountPurges, second.TombstoneHits)
+	}
+}

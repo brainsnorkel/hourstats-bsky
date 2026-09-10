@@ -59,6 +59,14 @@ type Collector struct {
 	// Dropped-post counter — incremented when the write buffer is full
 	droppedPosts atomic.Int64
 
+	// Firehose delete/deactivation counters (hs-wsp.3). postDeletes and
+	// accountPurges count the purge writes queued from the firehose;
+	// tombstoneHits counts creates dropped because their delete already
+	// arrived (a cursor rewind replaying the create).
+	postDeletes   atomic.Int64
+	accountPurges atomic.Int64
+	tombstoneHits atomic.Int64
+
 	// Health metric counters (hs-21g)
 	slowFlushCount atomic.Int64
 	slowFlushMaxMs atomic.Int64
@@ -75,6 +83,8 @@ type Collector struct {
 		errors            int64
 		endpointRotations int64
 		earlyRejected     int64
+		postsDeleted      int64
+		accountsInactive  int64
 		gcPauseTotalNs    uint64
 		gcCount           uint32
 		snapshotAt        time.Time // zero until the first snapshot
@@ -253,6 +263,37 @@ func (c *Collector) SwapDroppedPosts() int64 {
 	return c.droppedPosts.Swap(0)
 }
 
+// IncrementPostDeletes counts one post delete queued from the firehose.
+func (c *Collector) IncrementPostDeletes() {
+	c.postDeletes.Add(1)
+}
+
+// SwapPostDeletes returns the current post-delete count and resets it to zero.
+func (c *Collector) SwapPostDeletes() int64 {
+	return c.postDeletes.Swap(0)
+}
+
+// IncrementAccountPurges counts one author purge queued from the firehose.
+func (c *Collector) IncrementAccountPurges() {
+	c.accountPurges.Add(1)
+}
+
+// SwapAccountPurges returns the current account-purge count and resets it to zero.
+func (c *Collector) SwapAccountPurges() int64 {
+	return c.accountPurges.Swap(0)
+}
+
+// IncrementTombstoneHits counts one create dropped because the post was
+// already deleted.
+func (c *Collector) IncrementTombstoneHits() {
+	c.tombstoneHits.Add(1)
+}
+
+// SwapTombstoneHits returns the current tombstone-hit count and resets it to zero.
+func (c *Collector) SwapTombstoneHits() int64 {
+	return c.tombstoneHits.Swap(0)
+}
+
 // RecordAnalysis records the results from the last analysis cycle (thread-safe).
 func (c *Collector) RecordAnalysis(postsConsidered, postsHydrated, hydrationErrors int, sentiment string, skipped bool) {
 	c.mu.Lock()
@@ -277,6 +318,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	var activeEndpoint string
 	var uptimeSeconds int
 	var deltaEvents, deltaPosts, deltaSkipped, deltaReconnects, deltaErrors, deltaRotations, deltaEarlyRejected int64
+	var deltaPostsDeleted, deltaAccountsInactive int64
 
 	if provider != nil {
 		report = provider.GetStatsReport()
@@ -291,6 +333,8 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		deltaErrors = counterDelta(report.Errors, c.lastSeen.errors)
 		deltaRotations = counterDelta(report.EndpointRotations, c.lastSeen.endpointRotations)
 		deltaEarlyRejected = counterDelta(report.EarlyRejectedNonEnglish, c.lastSeen.earlyRejected)
+		deltaPostsDeleted = counterDelta(report.PostsDeleted, c.lastSeen.postsDeleted)
+		deltaAccountsInactive = counterDelta(report.AccountsInactive, c.lastSeen.accountsInactive)
 
 		// Update last-seen values
 		c.lastSeen.eventsReceived = report.EventsReceived
@@ -300,6 +344,8 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		c.lastSeen.errors = report.Errors
 		c.lastSeen.endpointRotations = report.EndpointRotations
 		c.lastSeen.earlyRejected = report.EarlyRejectedNonEnglish
+		c.lastSeen.postsDeleted = report.PostsDeleted
+		c.lastSeen.accountsInactive = report.AccountsInactive
 
 		activeEndpoint = report.ActiveEndpoint
 		uptimeSeconds = int(report.ConnectionUptime.Seconds())
@@ -320,6 +366,14 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 
 	// Read and reset dropped-post counter
 	droppedDelta := c.droppedPosts.Swap(0)
+
+	// Read and reset the firehose delete counters. The consumer counts the
+	// events on the wire and the collector counts the purges queued for them,
+	// so the two agree while the callbacks are wired; take the larger so a
+	// consumer restart or a missing callback still shows the wire count.
+	postDeleteDelta := max(c.postDeletes.Swap(0), deltaPostsDeleted)
+	accountPurgeDelta := max(c.accountPurges.Swap(0), deltaAccountsInactive)
+	tombstoneHitDelta := c.tombstoneHits.Swap(0)
 
 	// Read and reset slow flush counters
 	slowFlushCount := c.slowFlushCount.Swap(0)
@@ -403,6 +457,9 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		SentimentResult:         sentimentResult,
 		PostingSkipped:          boolToInt(postingSkipped),
 		DroppedPosts:            int(droppedDelta),
+		PostDeletes:             int(postDeleteDelta),
+		AccountPurges:           int(accountPurgeDelta),
+		TombstoneHits:           int(tombstoneHitDelta),
 		HeapInuseBytes:          int64(memStats.HeapInuse),
 		HeapSysBytes:            int64(memStats.HeapSys),
 		SysBytes:                int64(memStats.Sys),

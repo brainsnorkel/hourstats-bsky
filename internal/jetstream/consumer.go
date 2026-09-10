@@ -64,6 +64,10 @@ var AllEndpoints = []string{
 // PostHandler is called for each new post event.
 type PostHandler func(event *Event, record *PostRecord)
 
+// EventHandler is called for events that carry no post record — a post delete
+// or an account going inactive.
+type EventHandler func(event *Event)
+
 // CursorSaver persists the latest cursor value.
 type CursorSaver func(ctx context.Context, cursor int64) error
 
@@ -79,6 +83,15 @@ type ConsumerConfig struct {
 	OnPost         PostHandler
 	SaveCursor     CursorSaver
 	LoadCursor     CursorLoader
+
+	// OnDelete is called for each post delete commit, so the caller can drop
+	// the post before it is scored. The event carries no record.
+	OnDelete EventHandler
+
+	// OnAccountInactive is called when an account stops being served
+	// (deactivated, deleted, suspended, takendown), so the caller can purge
+	// that author's buffered posts.
+	OnAccountInactive EventHandler
 
 	// OnEarlyReject is called, with the frame's first language tag, for each
 	// post create the bytes-level pre-filter drops before parsing. It lets the
@@ -143,6 +156,8 @@ type Stats struct {
 	Reconnects              atomic.Int64
 	Errors                  atomic.Int64
 	EarlyRejectedNonEnglish atomic.Int64
+	PostsDeleted            atomic.Int64
+	AccountsInactive        atomic.Int64
 }
 
 // StatsReport is an exported snapshot of consumer statistics.
@@ -156,6 +171,8 @@ type StatsReport struct {
 	ActiveEndpoint          string
 	ConnectionUptime        time.Duration
 	EarlyRejectedNonEnglish int64
+	PostsDeleted            int64
+	AccountsInactive        int64
 }
 
 // NewConsumer creates a new Jetstream consumer.
@@ -306,6 +323,8 @@ func (c *Consumer) GetStatsReport() StatsReport {
 		ActiveEndpoint:          c.ActiveEndpoint(),
 		ConnectionUptime:        uptime,
 		EarlyRejectedNonEnglish: c.stats.EarlyRejectedNonEnglish.Load(),
+		PostsDeleted:            c.stats.PostsDeleted.Load(),
+		AccountsInactive:        c.stats.AccountsInactive.Load(),
 	}
 }
 
@@ -491,7 +510,22 @@ func (c *Consumer) connectAndConsume(ctx context.Context) error {
 
 		c.cursor.Store(event.TimeUS)
 
-		if !event.IsPostCreate() {
+		switch {
+		case event.IsPostCreate():
+			// handled below
+		case event.IsPostDelete():
+			if c.cfg.OnDelete != nil {
+				c.cfg.OnDelete(&event)
+			}
+			c.stats.PostsDeleted.Add(1)
+			continue
+		case event.IsAccountInactive():
+			if c.cfg.OnAccountInactive != nil {
+				c.cfg.OnAccountInactive(&event)
+			}
+			c.stats.AccountsInactive.Add(1)
+			continue
+		default:
 			c.stats.EventsSkipped.Add(1)
 			continue
 		}
@@ -578,7 +612,10 @@ func scanFrameLang(data []byte) (reject bool, firstLang string) {
 	if !bytes.Contains(data, []byte(`"app.bsky.feed.post"`)) {
 		return false, ""
 	}
-	if !bytes.Contains(data, []byte(`"create"`)) {
+	// The exact operation token, not a bare `"create"`: a delete commit or an
+	// account event must never be mistaken for a create and dropped here,
+	// since those frames drive the delete/purge path in connectAndConsume.
+	if !bytes.Contains(data, []byte(`"operation":"create"`)) {
 		return false, ""
 	}
 

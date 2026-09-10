@@ -105,6 +105,10 @@ func sendPost(ctx context.Context, writeCh chan<- store.PendingWrite, pw store.P
 func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, collector *stats.Collector, writeCh chan<- store.PendingWrite, handle *consumerHandle) {
 	drops := &dropLimiter{window: dropWarnWindow}
 
+	// A reconnect rewinds the cursor, so a create can be replayed after its
+	// delete has already been applied. The tombstone set drops those creates.
+	tombs := newTombstones()
+
 	cfg := jetstream.ConsumerConfig{
 		// Posts the bytes-level pre-filter drops never reach OnPost, so they
 		// are counted here; without this the firehose total is only English
@@ -123,13 +127,18 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 			if !isEnglish(rec.Langs) {
 				return
 			}
+			uri := evt.PostURI()
+			if tombs.has(uri) {
+				collector.IncrementTombstoneHits()
+				return
+			}
 			cid := ""
 			if evt.Commit != nil {
 				cid = evt.Commit.CID
 			}
 			createdAt := normalizeTimestamp(rec.CreatedAt)
 			post := store.Post{
-				URI:       evt.PostURI(),
+				URI:       uri,
 				CID:       cid,
 				Text:      rec.Text,
 				AuthorDID: evt.DID,
@@ -166,6 +175,49 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 					"uri", post.URI,
 				)
 			}
+		},
+		// A delete removes the post from the buffer before it can be scored,
+		// and tombstones it so a replayed create does not put it back.
+		OnDelete: func(evt *jetstream.Event) {
+			uri := evt.PostURI()
+			tombs.add(uri, time.Now())
+			pw := store.PendingWrite{Op: store.WriteDelete, Post: store.Post{URI: uri}}
+			if !sendPost(ctx, writeCh, pw, writeSendTimeout) {
+				collector.IncrementDroppedPosts(1)
+				if n := drops.record(time.Now()); n > 0 {
+					slog.Warn("write buffer full, dropping posts",
+						"dropped_since_last_warning", n,
+						"buffer_len", len(writeCh),
+						"uri", uri,
+					)
+				}
+				return
+			}
+			collector.IncrementPostDeletes()
+		},
+		// A deactivated, deleted, suspended or taken-down account's posts must
+		// not be scored or quoted, so the whole author is purged from the
+		// buffer.
+		OnAccountInactive: func(evt *jetstream.Event) {
+			pw := store.PendingWrite{Op: store.WritePurgeAuthor, Post: store.Post{AuthorDID: evt.DID}}
+			if !sendPost(ctx, writeCh, pw, writeSendTimeout) {
+				collector.IncrementDroppedPosts(1)
+				if n := drops.record(time.Now()); n > 0 {
+					slog.Warn("write buffer full, dropping posts",
+						"dropped_since_last_warning", n,
+						"buffer_len", len(writeCh),
+					)
+				}
+				return
+			}
+			collector.IncrementAccountPurges()
+			status := ""
+			if evt.Account != nil {
+				status = evt.Account.Status
+			}
+			// Account events are continuous network-wide, so this is Debug;
+			// the count is on the stats snapshot as account_purges.
+			slog.Debug("account inactive, purging posts", "status", status, "did", evt.DID)
 		},
 		SaveCursor: func(saveCtx context.Context, cursor int64) error {
 			return db.SaveCursor(saveCtx, cursor)

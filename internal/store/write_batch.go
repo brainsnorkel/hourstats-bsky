@@ -2,14 +2,39 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
-// PendingWrite holds a post and its optional topic tokens for batch insertion.
+// WriteOp selects what a PendingWrite does to post_buffer.
+type WriteOp int
+
+const (
+	// WriteInsert upserts Post into post_buffer. It is the zero value, so a
+	// PendingWrite built without an Op behaves as it always has.
+	WriteInsert WriteOp = iota
+	// WriteDelete removes the single post identified by Post.URI, and its
+	// topic tokens. Used for firehose delete commits.
+	WriteDelete
+	// WritePurgeAuthor removes every buffered post by Post.AuthorDID, and
+	// their topic tokens. Used when an account goes inactive.
+	WritePurgeAuthor
+)
+
+// PendingWrite holds a post and its optional topic tokens for batch insertion,
+// or a deletion keyed by URI or author DID (see Op).
 type PendingWrite struct {
+	Op         WriteOp
 	Post       Post
 	TokensJSON string // empty string = no tokens for this post
 	CreatedAt  string
+}
+
+// FlushResult reports what one post batch did to post_buffer.
+type FlushResult struct {
+	Inserted int64
+	Deleted  int64
+	Purged   int64
 }
 
 // FlushWriteBatch inserts posts then tokens in separate transactions so that
@@ -19,21 +44,25 @@ func (s *Store) FlushWriteBatch(ctx context.Context, writes []PendingWrite) erro
 		return nil
 	}
 
-	if err := s.FlushPostBatch(ctx, writes); err != nil {
+	if _, err := s.FlushPostBatch(ctx, writes); err != nil {
 		return err
 	}
 	return s.FlushTokenBatch(ctx, writes)
 }
 
-// FlushPostBatch inserts posts into post_buffer in a single transaction.
-func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) error {
+// FlushPostBatch applies the batch to post_buffer in a single transaction.
+// Writes are applied in order, so a delete that follows an insert of the same
+// URI wins, and an insert that follows a delete of it also wins — that
+// ordering is what makes a firehose replay after a delete come out right.
+func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) (FlushResult, error) {
+	var res FlushResult
 	if len(writes) == 0 {
-		return nil
+		return res, nil
 	}
 
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin post batch tx: %w", err)
+		return res, fmt.Errorf("begin post batch tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -53,24 +82,96 @@ func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) error
 			engagement_score=excluded.engagement_score,
 			is_reply=excluded.is_reply`)
 	if err != nil {
-		return fmt.Errorf("prepare post stmt: %w", err)
+		return res, fmt.Errorf("prepare post stmt: %w", err)
 	}
 	defer stmt.Close()
 
 	now := nowUTC()
 	for _, w := range writes {
-		isReply := 0
-		if w.Post.IsReply {
-			isReply = 1
-		}
-		if _, err := stmt.ExecContext(ctx, w.Post.URI, w.Post.CID, w.Post.Text, w.Post.AuthorDID, w.Post.AuthorHandle,
-			w.Post.Likes, w.Post.Reposts, w.Post.Replies, w.Post.Sentiment, w.Post.EngagementScore,
-			w.Post.CreatedAt, now, isReply); err != nil {
-			return fmt.Errorf("insert post %s: %w", w.Post.URI, err)
+		switch w.Op {
+		case WriteDelete:
+			n, err := deletePostByURI(ctx, tx, w.Post.URI)
+			if err != nil {
+				return res, err
+			}
+			res.Deleted += n
+		case WritePurgeAuthor:
+			n, err := purgeAuthorPosts(ctx, tx, w.Post.AuthorDID)
+			if err != nil {
+				return res, err
+			}
+			res.Purged += n
+		default:
+			isReply := 0
+			if w.Post.IsReply {
+				isReply = 1
+			}
+			if _, err := stmt.ExecContext(ctx, w.Post.URI, w.Post.CID, w.Post.Text, w.Post.AuthorDID, w.Post.AuthorHandle,
+				w.Post.Likes, w.Post.Reposts, w.Post.Replies, w.Post.Sentiment, w.Post.EngagementScore,
+				w.Post.CreatedAt, now, isReply); err != nil {
+				return res, fmt.Errorf("insert post %s: %w", w.Post.URI, err)
+			}
+			res.Inserted++
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return res, fmt.Errorf("commit post batch tx: %w", err)
+	}
+	return res, nil
+}
+
+// deletePostByURI removes one post and its topic tokens, returning the number
+// of post_buffer rows removed (0 when the post was never buffered).
+func deletePostByURI(ctx context.Context, tx *sql.Tx, uri string) (int64, error) {
+	if uri == "" {
+		return 0, nil
+	}
+	// Nearly every delete on the firehose is for a post that was never
+	// buffered (non-English, or older than the retention window), so the
+	// primary-key delete on post_buffer runs first and the token tables are
+	// only touched when it removed a row.
+	result, err := tx.ExecContext(ctx, `DELETE FROM post_buffer WHERE uri = ?`, uri)
+	if err != nil {
+		return 0, fmt.Errorf("delete post %s: %w", uri, err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return 0, nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM topic_tokens WHERE post_uri = ?`, uri); err != nil {
+		return 0, fmt.Errorf("delete topic_tokens for %s: %w", uri, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM token_postings WHERE post_uri = ?`, uri); err != nil {
+		return 0, fmt.Errorf("delete token_postings for %s: %w", uri, err)
+	}
+	return n, nil
+}
+
+// purgeAuthorPosts removes every buffered post by one author and their topic
+// tokens, returning the number of post_buffer rows removed. The token deletes
+// run first: they resolve the author's URIs through post_buffer, which the
+// last statement then empties.
+func purgeAuthorPosts(ctx context.Context, tx *sql.Tx, authorDID string) (int64, error) {
+	if authorDID == "" {
+		return 0, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM topic_tokens WHERE post_uri IN (SELECT uri FROM post_buffer WHERE author_did = ?)`,
+		authorDID); err != nil {
+		return 0, fmt.Errorf("purge topic_tokens for author: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM token_postings WHERE post_uri IN (SELECT uri FROM post_buffer WHERE author_did = ?)`,
+		authorDID); err != nil {
+		return 0, fmt.Errorf("purge token_postings for author: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM post_buffer WHERE author_did = ?`, authorDID)
+	if err != nil {
+		return 0, fmt.Errorf("purge posts for author: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
 }
 
 // FlushTokenBatch inserts topic tokens in a single transaction.
@@ -79,7 +180,7 @@ func (s *Store) FlushPostBatch(ctx context.Context, writes []PendingWrite) error
 func (s *Store) FlushTokenBatch(ctx context.Context, writes []PendingWrite) error {
 	hasTokens := false
 	for _, w := range writes {
-		if w.TokensJSON != "" {
+		if w.Op == WriteInsert && w.TokensJSON != "" {
 			hasTokens = true
 			break
 		}
@@ -100,8 +201,14 @@ func (s *Store) FlushTokenBatch(ctx context.Context, writes []PendingWrite) erro
 	}
 	defer tokenStmt.Close()
 
-	for _, w := range writes {
-		if w.TokensJSON == "" {
+	// A delete or purge later in the same batch has already removed the post
+	// from post_buffer (FlushPostBatch runs first), so its tokens must not be
+	// written back here — they would outlive the post for the whole token
+	// retention window and still feed trending.
+	superseded := supersededTokenWrites(writes)
+
+	for i, w := range writes {
+		if w.Op != WriteInsert || w.TokensJSON == "" || superseded[i] {
 			continue
 		}
 		if _, err := tokenStmt.ExecContext(ctx, w.Post.URI, w.TokensJSON, w.CreatedAt); err != nil {
@@ -110,4 +217,33 @@ func (s *Store) FlushTokenBatch(ctx context.Context, writes []PendingWrite) erro
 	}
 
 	return tx.Commit()
+}
+
+// supersededTokenWrites marks the indexes of insert writes whose post is
+// removed again by a later delete or author purge in the same batch. It
+// returns nil for the common all-inserts batch.
+func supersededTokenWrites(writes []PendingWrite) map[int]bool {
+	var superseded map[int]bool
+	deletedURIs := make(map[string]bool)
+	purgedDIDs := make(map[string]bool)
+
+	// Walk backwards so every removal seen so far is one that happens later
+	// in the batch than the insert being examined.
+	for i := len(writes) - 1; i >= 0; i-- {
+		w := writes[i]
+		switch w.Op {
+		case WriteDelete:
+			deletedURIs[w.Post.URI] = true
+		case WritePurgeAuthor:
+			purgedDIDs[w.Post.AuthorDID] = true
+		default:
+			if deletedURIs[w.Post.URI] || purgedDIDs[w.Post.AuthorDID] {
+				if superseded == nil {
+					superseded = make(map[int]bool)
+				}
+				superseded[i] = true
+			}
+		}
+	}
+	return superseded
 }

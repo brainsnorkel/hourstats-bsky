@@ -5,10 +5,29 @@ import "encoding/json"
 // Event is the top-level Jetstream WebSocket message.
 // Jetstream events have 3 kinds: "commit", "identity", "account".
 type Event struct {
-	DID    string  `json:"did"`
-	TimeUS int64   `json:"time_us"`
-	Kind   string  `json:"kind"`
-	Commit *Commit `json:"commit,omitempty"`
+	DID     string        `json:"did"`
+	TimeUS  int64         `json:"time_us"`
+	Kind    string        `json:"kind"`
+	Commit  *Commit       `json:"commit,omitempty"`
+	Account *AccountEvent `json:"account,omitempty"`
+}
+
+// AccountEvent is the payload of a "kind":"account" event: the PDS reporting
+// that a repo's hosting status changed.
+type AccountEvent struct {
+	Active bool   `json:"active"`
+	Status string `json:"status,omitempty"`
+	DID    string `json:"did"`
+	Time   string `json:"time,omitempty"`
+}
+
+// accountStillHostedStatuses are inactive statuses that do NOT mean the
+// account's content is gone. Sync 1.1 added "desynchronized" and "throttled"
+// as transient hosting states: the repo still exists and its posts must be
+// kept.
+var accountStillHostedStatuses = map[string]bool{
+	"desynchronized": true,
+	"throttled":      true,
 }
 
 // Commit represents a repo commit event (create/update/delete).
@@ -73,6 +92,26 @@ func (e *Event) IsPostCreate() bool {
 		e.Commit != nil &&
 		e.Commit.Operation == "create" &&
 		e.Commit.Collection == "app.bsky.feed.post"
+}
+
+// IsPostDelete returns true if this event deletes a post record. Delete
+// commits carry no record and no cid.
+func (e *Event) IsPostDelete() bool {
+	return e.Kind == "commit" &&
+		e.Commit != nil &&
+		e.Commit.Operation == "delete" &&
+		e.Commit.Collection == "app.bsky.feed.post"
+}
+
+// IsAccountInactive returns true if this event reports an account whose
+// content should no longer be served — deactivated, deleted, suspended or
+// takendown. Transient hosting states (desynchronized, throttled) leave the
+// account in place and are not reported as inactive.
+func (e *Event) IsAccountInactive() bool {
+	return e.Kind == "account" &&
+		e.Account != nil &&
+		!e.Account.Active &&
+		!accountStillHostedStatuses[e.Account.Status]
 }
 
 // PostURI constructs the AT Protocol URI for the post: at://<did>/app.bsky.feed.post/<rkey>

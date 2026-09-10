@@ -523,6 +523,9 @@ func (s *Store) migrate() error {
 			inserted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_post_buffer_inserted_at ON post_buffer(inserted_at)`,
+		// Account events arrive continuously; purging an author's posts must
+		// not scan the whole buffer (~250k rows) for each one.
+		`CREATE INDEX IF NOT EXISTS idx_post_buffer_author_did ON post_buffer(author_did)`,
 
 		`CREATE TABLE IF NOT EXISTS cursor (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -737,6 +740,11 @@ func (s *Store) migrate() error {
 		`ALTER TABLE stats_snapshots ADD COLUMN rss_bytes INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stats_snapshots ADD COLUMN heap_released_bytes INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stats_snapshots ADD COLUMN stack_inuse_bytes INTEGER NOT NULL DEFAULT 0`,
+
+		// Firehose deletes and account deactivations (hs-wsp.3)
+		`ALTER TABLE stats_snapshots ADD COLUMN post_deletes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN account_purges INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN tombstone_hits INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, stmt := range stmts {

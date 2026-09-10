@@ -33,6 +33,9 @@ func TestInsertAndGetLatestSnapshot(t *testing.T) {
 		SentimentResult:         "positive",
 		PostingSkipped:          0,
 		DroppedPosts:            10,
+		PostDeletes:             7,
+		AccountPurges:           2,
+		TombstoneHits:           4,
 	}
 
 	if err := s.InsertStatsSnapshot(ctx, snap); err != nil {
@@ -57,6 +60,10 @@ func TestInsertAndGetLatestSnapshot(t *testing.T) {
 	}
 	if latest.SentimentResult != "positive" {
 		t.Errorf("SentimentResult = %q, want %q", latest.SentimentResult, "positive")
+	}
+	if latest.PostDeletes != 7 || latest.AccountPurges != 2 || latest.TombstoneHits != 4 {
+		t.Errorf("delete counters = {%d %d %d}, want {7 2 4}",
+			latest.PostDeletes, latest.AccountPurges, latest.TombstoneHits)
 	}
 }
 
