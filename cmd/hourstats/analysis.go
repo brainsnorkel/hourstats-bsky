@@ -27,6 +27,11 @@ const minPostsRequired = 500
 // topPostCount is how many top-engagement posts are listed in the summary post.
 const topPostCount = 3
 
+// topPostCandidates is how many are ranked and put to the feature gate, so a
+// rejected post is replaced by the next one down rather than shortening the
+// list. It stays inside the gate's per-call limit of 25 URIs.
+const topPostCandidates = 10
+
 var (
 	sentimentAnalyzerOnce sync.Once
 	sentimentAnalyzer     *analyzer.SentimentAnalyzer
@@ -306,6 +311,10 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	// publish this cycle's topics, never a stale snapshot.
 	var topicAnalysisDone <-chan topicAnalysisOutcome
 	if topicAnalyzer != nil {
+		// Rebound each cycle: the gate needs viewer state, which only an
+		// authenticated client sees, and this cycle's client is the one that
+		// just authenticated.
+		topicAnalyzer.SetExemplarGate(newExemplarGate(bskyClient))
 		ch := make(chan topicAnalysisOutcome, 1)
 		topicAnalysisDone = ch
 		slog.Info("topics: analysis goroutine started (parallel with hydration)")
@@ -434,20 +443,26 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	sort.Slice(analyzed, func(i, j int) bool {
 		return analyzed[i].EngagementScore > analyzed[j].EngagementScore
 	})
-	// Select the top posts, deduplicating by author so the same handle
-	// doesn't appear multiple times (which breaks facet linking).
-	var topPosts []analyzer.AnalyzedPost
+	// Select the candidates, deduplicating by author so the same handle
+	// doesn't appear multiple times (which breaks facet linking). More are
+	// ranked than are listed so the feature gate has somewhere to fall back to.
+	var candidates []analyzer.AnalyzedPost
 	seenAuthors := make(map[string]bool)
 	for _, ap := range analyzed {
 		if seenAuthors[ap.Author] {
 			continue
 		}
 		seenAuthors[ap.Author] = true
-		topPosts = append(topPosts, ap)
-		if len(topPosts) >= topPostCount {
+		candidates = append(candidates, ap)
+		if len(candidates) >= topPostCandidates {
 			break
 		}
 	}
+
+	// Gate before the run row is written, not just before posting: the daily
+	// and weekly reports read their top post out of `runs`, so a post that
+	// cannot be featured must not be recorded as this cycle's.
+	topPosts, quoteControlled, gateOK := gateTopPosts(cycleCtx, newFeatureGate(bskyClient), candidates)
 
 	topStorePosts := make([]store.Post, len(topPosts))
 	for i, ap := range topPosts {
@@ -568,22 +583,17 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			}
 		}
 	} else {
-		// The #1 post is the one we quote-embed. If its author disabled
-		// quoting, the embed would render as "Removed by author", so check
-		// first and fall back to an embed-free summary. Fail open: an API
-		// error here should not cost us the whole summary post.
-		var quoteControlled bool
-		if len(topPosts) > 0 {
-			disabled, err := bskyClient.EmbeddingDisabled(ctx, []string{topPosts[0].URI})
-			if err != nil {
-				slog.Warn("quote-control check failed, embedding as usual", "error", err, "uri", topPosts[0].URI)
-			} else if disabled[topPosts[0].URI] {
-				quoteControlled = true
-				slog.Info("top post cannot be quoted (quote control or block), posting without embed", "uri", topPosts[0].URI)
-			}
+		// The listed posts have already cleared the feature gate. What is left
+		// to decide is the embed: a quote-controlled #1 would render as
+		// "Removed by author", and a gate we could not reach means nothing in
+		// this post should amplify anyone — no embed, no links.
+		if !gateOK {
+			slog.Warn("feature gate unavailable, posting without embed or links", "run_id", runID)
+		} else if quoteControlled {
+			slog.Info("top post cannot be quoted (quote control), posting without embed", "uri", topPosts[0].URI)
 		}
 
-		postedURI, postedCID := postSummary(ctx, bskyClient, topPosts, overallSentiment, netSentimentPct, analysisMinutes, len(posts), quoteControlled)
+		postedURI, postedCID := postSummary(ctx, bskyClient, topPosts, overallSentiment, netSentimentPct, analysisMinutes, len(posts), quoteControlled, !gateOK)
 		if postedURI != "" {
 			runState.TopPostURI = postedURI
 			runState.TopPostCID = postedCID

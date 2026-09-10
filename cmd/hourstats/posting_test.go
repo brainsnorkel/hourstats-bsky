@@ -45,7 +45,7 @@ func TestPostSummarySkipsOnCancelledContext(t *testing.T) {
 	cancel()
 
 	poster := &fakeSummaryPoster{}
-	uri, cid := postSummary(ctx, poster, testTopPosts(), "positive", 12.5, 30, 1000, false)
+	uri, cid := postSummary(ctx, poster, testTopPosts(), "positive", 12.5, 30, 1000, false, false)
 
 	if got := poster.calls.Load(); got != 0 {
 		t.Errorf("PostTrendingSummary called %d times on a cancelled context, want 0", got)
@@ -57,7 +57,7 @@ func TestPostSummarySkipsOnCancelledContext(t *testing.T) {
 
 func TestPostSummaryPublishesOnLiveContext(t *testing.T) {
 	poster := &fakeSummaryPoster{}
-	uri, cid := postSummary(context.Background(), poster, testTopPosts(), "positive", 12.5, 30, 1000, false)
+	uri, cid := postSummary(context.Background(), poster, testTopPosts(), "positive", 12.5, 30, 1000, false, false)
 
 	if got := poster.calls.Load(); got != 1 {
 		t.Errorf("PostTrendingSummary called %d times, want 1", got)
@@ -69,7 +69,7 @@ func TestPostSummaryPublishesOnLiveContext(t *testing.T) {
 
 func TestPostSummaryReportsPostFailure(t *testing.T) {
 	poster := &fakeSummaryPoster{err: fmt.Errorf("bluesky rejected the post")}
-	uri, cid := postSummary(context.Background(), poster, testTopPosts(), "positive", 12.5, 30, 1000, false)
+	uri, cid := postSummary(context.Background(), poster, testTopPosts(), "positive", 12.5, 30, 1000, false, false)
 
 	if got := poster.calls.Load(); got != 1 {
 		t.Errorf("PostTrendingSummary called %d times, want 1", got)
@@ -88,7 +88,7 @@ func TestPostSummaryMarksQuoteControlledTopPost(t *testing.T) {
 	}})
 
 	poster := &fakeSummaryPoster{}
-	postSummary(context.Background(), poster, topPosts, "positive", 12.5, 30, 1000, true)
+	postSummary(context.Background(), poster, topPosts, "positive", 12.5, 30, 1000, true, false)
 
 	if len(poster.posts) != 2 {
 		t.Fatalf("PostTrendingSummary got %d posts, want 2", len(poster.posts))
@@ -101,9 +101,30 @@ func TestPostSummaryMarksQuoteControlledTopPost(t *testing.T) {
 	}
 }
 
+// TestPostSummaryNoLinkMarksEveryPost checks the unreachable-gate path: no
+// post in the summary may carry a handle link, not just the quoted one.
+func TestPostSummaryNoLinkMarksEveryPost(t *testing.T) {
+	topPosts := append(testTopPosts(), analyzer.AnalyzedPost{Post: analyzer.Post{
+		URI: "at://did:plc:b/app.bsky.feed.post/2", CID: "cid2",
+		Text: "world", Author: "bob.bsky.social", Likes: 5,
+	}})
+
+	poster := &fakeSummaryPoster{}
+	postSummary(context.Background(), poster, topPosts, "positive", 12.5, 30, 1000, true, true)
+
+	if len(poster.posts) != 2 {
+		t.Fatalf("PostTrendingSummary got %d posts, want 2", len(poster.posts))
+	}
+	for i, p := range poster.posts {
+		if !p.NoLink {
+			t.Errorf("post %d: NoLink = false, want every post unlinked when the gate is unavailable", i)
+		}
+	}
+}
+
 func TestPostSummaryLeavesQuoteControlUnsetByDefault(t *testing.T) {
 	poster := &fakeSummaryPoster{}
-	postSummary(context.Background(), poster, testTopPosts(), "positive", 12.5, 30, 1000, false)
+	postSummary(context.Background(), poster, testTopPosts(), "positive", 12.5, 30, 1000, false, false)
 
 	if len(poster.posts) != 1 {
 		t.Fatalf("PostTrendingSummary got %d posts, want 1", len(poster.posts))

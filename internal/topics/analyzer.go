@@ -75,6 +75,12 @@ func (a *Analyzer) SetExemplarDroppedHandler(fn func(topic string, candidates in
 	a.hydrator.SetDroppedHandler(fn)
 }
 
+// SetExemplarGate registers the feature gate every exemplar candidate must
+// pass before it can be published or sent to Gemini for validation.
+func (a *Analyzer) SetExemplarGate(g ExemplarGate) {
+	a.hydrator.SetGate(g)
+}
+
 func (a *Analyzer) setDocFreq(df *DocFreqStats) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

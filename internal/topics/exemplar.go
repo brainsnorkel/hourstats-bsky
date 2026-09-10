@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,9 +22,22 @@ type ExemplarValidator interface {
 	ValidateExemplars(ctx context.Context, pairs []ExemplarValidation) ([]ExemplarValidation, error)
 }
 
+// ExemplarGate decides which candidate posts may be featured at all. It maps
+// each URI to true (may be featured) or false. A non-nil error means the batch
+// was not judged and no URI in it may be used.
+//
+// The interface is declared here rather than imported so this package keeps no
+// dependency on internal/client; cmd/hourstats supplies the adapter.
+type ExemplarGate interface {
+	Check(ctx context.Context, surface string, uris []string) (map[string]bool, error)
+}
+
 type ExemplarHydrator struct {
 	store     ExemplarCandidateStore
 	validator ExemplarValidator
+	// gate rejects candidates whose author must not be featured. It runs
+	// before validation, so a gated-out user's text never reaches Gemini.
+	gate ExemplarGate
 	// onDropped is called when every validated candidate for a topic was
 	// rejected and the topic is published without an exemplar, so the rate
 	// of that trade-off is measurable rather than inferred from logs.
@@ -42,6 +56,11 @@ func NewExemplarHydrator(s ExemplarCandidateStore) *ExemplarHydrator {
 
 func (h *ExemplarHydrator) SetValidator(v ExemplarValidator) {
 	h.validator = v
+}
+
+// SetGate registers the feature gate every exemplar candidate must pass.
+func (h *ExemplarHydrator) SetGate(g ExemplarGate) {
+	h.gate = g
 }
 
 type exemplarResult struct {
@@ -204,6 +223,14 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 			"score", fmt.Sprintf("%.2f", top.Score))
 	}
 
+	// The gate runs before validation, so the text of a post that must not be
+	// featured is never sent to Gemini.
+	if h.gate != nil && len(picks) > 0 {
+		if !h.gatePicks(ctx, result, picks) {
+			h.dropAllExemplars(result, picks)
+		}
+	}
+
 	if h.validator != nil && len(picks) > 0 {
 		h.validatePicks(ctx, result, picks)
 	}
@@ -219,6 +246,106 @@ func (h *ExemplarHydrator) HydrateExemplars(ctx context.Context, topics []Identi
 	}
 
 	return result, nil
+}
+
+// gateBatchSize matches app.bsky.feed.getPosts' per-call URI limit, which is
+// what the gate is built on.
+const gateBatchSize = 25
+
+// gatePicks removes every candidate the feature gate rejects and promotes the
+// highest-ranked survivor of each topic. A topic left with no candidate is
+// published without an exemplar and counted as dropped.
+//
+// It reports false when the gate could not judge a batch even after a retry;
+// the caller then drops every exemplar for the cycle, because a candidate we
+// could not check must not be featured — nor have its text sent to Gemini.
+func (h *ExemplarHydrator) gatePicks(ctx context.Context, result []IdentifiedTopic, picks map[int][]rankedExemplar) bool {
+	indices := make([]int, 0, len(picks))
+	for i := range picks {
+		indices = append(indices, i)
+	}
+	sort.Ints(indices)
+
+	// One topic's fallback can be another's, so ask about each URI once.
+	uris := make([]string, 0, len(picks)*exemplarTopK)
+	queued := make(map[string]bool, len(picks)*exemplarTopK)
+	for _, i := range indices {
+		for _, c := range picks[i] {
+			if c.URI == "" || queued[c.URI] {
+				continue
+			}
+			queued[c.URI] = true
+			uris = append(uris, c.URI)
+		}
+	}
+	if len(uris) == 0 {
+		return true
+	}
+
+	allowed := make(map[string]bool, len(uris))
+	for start := 0; start < len(uris); start += gateBatchSize {
+		end := min(start+gateBatchSize, len(uris))
+		batch := uris[start:end]
+
+		verdicts, err := h.gate.Check(ctx, "exemplar", batch)
+		if err != nil {
+			slog.Warn("exemplar: feature gate check failed, retrying", "error", err, "candidates", len(batch))
+			verdicts, err = h.gate.Check(ctx, "exemplar", batch)
+		}
+		if err != nil {
+			slog.Warn("exemplar: feature gate check failed again", "error", err, "candidates", len(batch))
+			return false
+		}
+		for uri, ok := range verdicts {
+			allowed[uri] = ok
+		}
+	}
+
+	rejected, dropped := 0, 0
+	for _, i := range indices {
+		topK := picks[i]
+		kept := make([]rankedExemplar, 0, len(topK))
+		for _, c := range topK {
+			if allowed[c.URI] {
+				kept = append(kept, c)
+				continue
+			}
+			rejected++
+			slog.Info("exemplar: gate rejected candidate", "topic", result[i].Cluster.Label, "handle", c.Handle)
+		}
+		if len(kept) == 0 {
+			delete(picks, i)
+			result[i].ExemplarURI = ""
+			result[i].ExemplarHandle = ""
+			dropped++
+			slog.Warn("exemplar: no candidate passed the gate, dropping exemplar", "topic", result[i].Cluster.Label, "candidates", len(topK))
+			if h.onDropped != nil {
+				h.onDropped(result[i].Cluster.Label, len(topK))
+			}
+			continue
+		}
+		picks[i] = kept
+		if result[i].ExemplarURI != kept[0].URI {
+			result[i].ExemplarURI = kept[0].URI
+			result[i].ExemplarHandle = kept[0].Handle
+			slog.Info("exemplar: promoted after the gate", "topic", result[i].Cluster.Label, "handle", kept[0].Handle)
+		}
+	}
+	if rejected > 0 {
+		slog.Info("exemplar: gate applied", "rejected", rejected, "topics_without_exemplar", dropped)
+	}
+	return true
+}
+
+// dropAllExemplars clears every exemplar for the cycle, which is what an
+// unusable gate costs: the topics are still published, without links.
+func (h *ExemplarHydrator) dropAllExemplars(result []IdentifiedTopic, picks map[int][]rankedExemplar) {
+	for i := range picks {
+		result[i].ExemplarURI = ""
+		result[i].ExemplarHandle = ""
+		delete(picks, i)
+	}
+	slog.Warn("exemplar gate unavailable, publishing without exemplar links")
 }
 
 // validatePicks asks the validator about every candidate in a single call and

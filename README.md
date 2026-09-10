@@ -117,6 +117,21 @@ export GEMINI_MODEL="gemini-2.5-pro"  # optional, defaults to gemini-2.5-pro
 6. **Visualizations**: Generates sparklines and yearly charts
 7. **Trending Topics**: TF-IDF extraction + Gemini Pro grouping → text reply to sparkline with exemplar links
 
+## What Leaves the Machine
+
+Everything the bot sends off the Fly.io machine, and every user signal it honours before doing so.
+
+**Outbound data**
+
+- **Bluesky Jetstream** (inbound only): the public firehose. Nothing is sent upstream but the connection and its cursor.
+- **`app.bsky.feed.getPosts`** to `public.api.bsky.app`: post URIs, to hydrate engagement counts. The feature gate uses the same endpoint against the authenticated PDS, because viewer state (blocks, quote controls) is only populated for an authenticated caller.
+- **Google Gemini**: TF-IDF terms and short exemplar snippets (300 runes) for topic grouping and relevance checks — only for posts that have already passed the feature gate.
+- **AWS S3**: a daily SQLite backup of the essential tables.
+
+**Signals honoured before a post is featured**
+
+A post is quoted, linked, or listed only if it passes one gate (`internal/client/gate.go`), which is applied by every surface: the hourly summary, trending exemplars, and the daily and weekly quote replies. It respects the author's content visibility declaration (`hideFromAlgorithmicRecommendations`), quote controls (postgates suppress the embed only), blocks in either direction, adult-content and `!`-prefixed moderation labels (`!hide`, `!warn`, `!no-unauthenticated`, `!takedown`), and deletions or deactivations, which make a post absent from the authenticated view. Anything the gate cannot establish fails closed: the post is not featured.
+
 ## Features
 
 - ✅ Real-time Jetstream firehose ingestion (English posts)

@@ -209,26 +209,33 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 }
 
 // postWeeklyTopPostReply quotes the week's top post under the root, falling
-// back to a plain text reply when the author has disabled quoting. The check
-// fails open, matching the hourly summary.
+// back to a plain text reply when the author has only disabled quoting, and
+// skipping the reply entirely when the post must not be featured at all. The
+// week between the post and this reply is long enough for a block, a label, a
+// deletion or a visibility declaration to land, so the gate runs again here.
 func postWeeklyTopPostReply(ctx context.Context, bskyClient *client.BlueskyClient, r weeklyReport, replyText, rootURI, rootCID string) {
-	quoteControlled := false
-	if disabled, err := bskyClient.EmbeddingDisabled(ctx, []string{r.TopPost.URI}); err != nil {
-		slog.Warn("weekly report: quote-control check failed, embedding as usual", "error", err, "uri", r.TopPost.URI)
-	} else if disabled[r.TopPost.URI] {
-		quoteControlled = true
-	}
+	verdicts, gateErr := checkFeatureGate(ctx, newFeatureGate(bskyClient), "weekly", []string{r.TopPost.URI})
+	verdict := verdicts[r.TopPost.URI]
 
 	var err error
-	if quoteControlled {
+	switch {
+	case gateErr != nil:
+		// The root is already out and its guard key already set, so the week
+		// is reported either way; only the reply is lost.
+		slog.Info("weekly report: post of the week reply skipped, feature gate unavailable", "uri", r.TopPost.URI, "error", gateErr)
+		return
+	case !verdict.OK:
+		slog.Info("weekly report: post of the week reply skipped, it cannot be featured", "uri", r.TopPost.URI, "reason", verdict.Reason)
+		return
+	case !verdict.Quotable:
 		slog.Info("weekly report: top post is quote-controlled, replying without embed", "uri", r.TopPost.URI)
 		_, _, err = bskyClient.PostWithFacetsAsReply(ctx, replyText, nil, rootURI, rootCID, rootURI, rootCID)
-	} else {
+	default:
 		_, _, err = bskyClient.PostReplyWithQuote(ctx, replyText, rootURI, rootCID, rootURI, rootCID, r.TopPost.URI, r.TopPost.CID)
 	}
 	if err != nil {
 		slog.Warn("post of the week reply failed", "error", err)
 		return
 	}
-	slog.Info("post of the week reply posted", "top_post", r.TopPost.URI, "quote_controlled", quoteControlled)
+	slog.Info("post of the week reply posted", "top_post", r.TopPost.URI, "quotable", verdict.Quotable)
 }

@@ -207,6 +207,38 @@ func TestCreateUserHandleFacets(t *testing.T) {
 		}
 	})
 
+	t.Run("NoLink posts are named but not linked", func(t *testing.T) {
+		text := "Bluesky is #ok\n\n1. @alice.bsky.social +\n2. @bob.bsky.social -"
+		posts := []Post{
+			{URI: "at://did:plc:aaa/app.bsky.feed.post/111", Author: "alice.bsky.social", NoLink: true},
+			{URI: "at://did:plc:bbb/app.bsky.feed.post/222", Author: "bob.bsky.social", NoLink: true},
+		}
+		facets := createUserHandleFacets(text, posts)
+		if len(facets) != 1 {
+			t.Fatalf("got %d facets, want 1 (hashtag only, both handles unlinked)", len(facets))
+		}
+		if facets[0].Features[0].RichtextFacet_Tag == nil {
+			t.Error("the surviving facet should be the mood hashtag")
+		}
+	})
+
+	t.Run("NoLink does not shift a later duplicate handle", func(t *testing.T) {
+		text := "1. @alice.bsky.social +\n2. @alice.bsky.social -"
+		posts := []Post{
+			{URI: "at://did:plc:aaa/app.bsky.feed.post/111", Author: "alice.bsky.social", NoLink: true},
+			{URI: "at://did:plc:aaa/app.bsky.feed.post/222", Author: "alice.bsky.social"},
+		}
+		facets := createUserHandleFacets(text, posts)
+		if len(facets) != 1 {
+			t.Fatalf("got %d facets, want 1", len(facets))
+		}
+		// The second occurrence, not the first: searchFrom still advanced past
+		// the handle the gate suppressed.
+		if want := int64(strings.LastIndex(text, "@alice.bsky.social")); facets[0].Index.ByteStart != want {
+			t.Errorf("ByteStart = %d, want %d (the second occurrence)", facets[0].Index.ByteStart, want)
+		}
+	})
+
 	t.Run("duplicate handles get correct positions", func(t *testing.T) {
 		text := "1. @alice.bsky.social +\n2. @alice.bsky.social -"
 		posts := []Post{
@@ -372,111 +404,6 @@ func newTestClient(host string) *BlueskyClient {
 	return &BlueskyClient{
 		client: indigoclient.NewAPIClient(host),
 		handle: "hourstats.bsky.social",
-	}
-}
-
-func TestEmbeddingDisabled(t *testing.T) {
-	const (
-		disabledURI = "at://did:plc:aaa/app.bsky.feed.post/111"
-		allowedURI  = "at://did:plc:bbb/app.bsky.feed.post/222"
-		silentURI   = "at://did:plc:ccc/app.bsky.feed.post/333"
-		missingURI  = "at://did:plc:ddd/app.bsky.feed.post/444"
-	)
-
-	var gotPath string
-	var gotURIs []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotURIs = r.URL.Query()["uris"]
-		w.Header().Set("Content-Type", "application/json")
-		// silentURI has a viewer state with no embeddingDisabled field, which
-		// is what the AppView returns for a post with no postgate.
-		fmt.Fprintf(w, `{"posts":[
-			{"uri":%q,"cid":"c1","indexedAt":"2026-01-01T00:00:00Z","viewer":{"embeddingDisabled":true}},
-			{"uri":%q,"cid":"c2","indexedAt":"2026-01-01T00:00:00Z","viewer":{"embeddingDisabled":false}},
-			{"uri":%q,"cid":"c3","indexedAt":"2026-01-01T00:00:00Z","viewer":{}}
-		]}`, disabledURI, allowedURI, silentURI)
-	}))
-	defer srv.Close()
-
-	c := newTestClient(srv.URL)
-	got, err := c.EmbeddingDisabled(context.Background(), []string{disabledURI, allowedURI, silentURI, missingURI})
-	if err != nil {
-		t.Fatalf("EmbeddingDisabled() error = %v", err)
-	}
-
-	if gotPath != "/xrpc/app.bsky.feed.getPosts" {
-		t.Errorf("request path = %q, want %q", gotPath, "/xrpc/app.bsky.feed.getPosts")
-	}
-	if len(gotURIs) != 4 {
-		t.Errorf("sent %d uris params, want 4: %v", len(gotURIs), gotURIs)
-	}
-
-	want := map[string]bool{
-		disabledURI: true,
-		allowedURI:  false,
-		silentURI:   false,
-		// A post the authenticated view did not return (deleted, or hidden
-		// by a block) cannot render a usable card, so the embed is dropped.
-		missingURI: true,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d entries, want %d: %v", len(got), len(want), got)
-	}
-	for uri, wantDisabled := range want {
-		if got[uri] != wantDisabled {
-			t.Errorf("EmbeddingDisabled()[%q] = %v, want %v", uri, got[uri], wantDisabled)
-		}
-	}
-}
-
-func TestEmbeddingDisabledEmptyURIs(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected request to %s for an empty URI list", r.URL.Path)
-	}))
-	defer srv.Close()
-
-	got, err := newTestClient(srv.URL).EmbeddingDisabled(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("EmbeddingDisabled() error = %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("got %v, want an empty map", got)
-	}
-}
-
-func TestEmbeddingDisabledRejectsOversizedBatch(t *testing.T) {
-	uris := make([]string, maxGetPostsURIs+1)
-	for i := range uris {
-		uris[i] = fmt.Sprintf("at://did:plc:aaa/app.bsky.feed.post/%d", i)
-	}
-
-	if _, err := newTestClient("https://example.invalid").EmbeddingDisabled(context.Background(), uris); err == nil {
-		t.Fatal("expected an error for a batch over the getPosts limit, got nil")
-	}
-}
-
-func TestEmbeddingDisabledPropagatesAPIError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, `{"error":"InternalServerError","message":"boom"}`)
-	}))
-	defer srv.Close()
-
-	_, err := newTestClient(srv.URL).EmbeddingDisabled(context.Background(), []string{"at://did:plc:aaa/app.bsky.feed.post/111"})
-	if err == nil {
-		t.Fatal("expected an error from a 500 response, got nil")
-	}
-	// The caller fails open on error, so the message has to say what failed.
-	if !strings.Contains(err.Error(), "quote-control check") {
-		t.Errorf("error = %q, want it to name the quote-control check", err)
-	}
-}
-
-func TestEmbeddingDisabledUnauthenticatedClient(t *testing.T) {
-	c := &BlueskyClient{handle: "hourstats.bsky.social"}
-	if _, err := c.EmbeddingDisabled(context.Background(), []string{"at://did:plc:aaa/app.bsky.feed.post/111"}); err == nil {
-		t.Fatal("expected an error when the client is not authenticated, got nil")
 	}
 }
 

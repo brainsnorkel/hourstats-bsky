@@ -107,15 +107,31 @@ Bluesky Jetstream -> Consumer (filter English) -> SQLite post_buffer
                             (trending reply ends with "7day high & low UTC" and one "+14.1% Mon 14:01: label" line per extreme)
 ```
 
-Before posting the summary, the #1 post is checked for quote controls via an
-authenticated `app.bsky.feed.getPosts`: `Viewer.EmbeddingDisabled` (quote
-control), the author's `Viewer.BlockedBy`/`Blocking`/`BlockingByList` (a block in
-either direction renders the card as "Blocked"), and absence from the response
-(deleted or hidden). Viewer state is only populated when authenticated. When any
-of these hold the summary is posted without the record embed — which would
-otherwise render as "Removed by author" or "Blocked" — and its first line gains
-`· no embed, post can't be quoted`. The check fails open: an API error leaves the
-embed in place. The weekly post-of-the-week reply reuses the same check.
+Every surface that features an individual user's post passes one feature gate
+(`internal/client/gate.go`, `(*BlueskyClient).NewFeatureGate`): the hourly
+summary, the trending exemplars, and the daily and weekly quote replies. One
+authenticated `app.bsky.feed.getPosts` (up to 25 URIs; viewer state is only
+populated when authenticated) plus one `VisibilityResolver` lookup per distinct
+author DID (4 at a time) yields a `Verdict{OK, Quotable, Reason, AuthorDID}` per
+URI. `OK=false` means no quote, no link, no handle, with `Reason` one of
+`missing` (absent from the authenticated view: deleted, taken down,
+deactivated), `blocked` (`Viewer.BlockedBy`/`Blocking`/`BlockingByList`, either
+direction), `adult_label`, `label:<val>` (any `!`-prefixed moderation label on
+the post or the author, covering `!hide`, `!warn`, `!no-unauthenticated`,
+`!takedown`), `hide_from_recommendations` (the author's content visibility
+declaration) or `visibility_unknown` (the declaration could not be read twice
+running — a user we cannot check is not featured). `quote_control`
+(`Viewer.EmbeddingDisabled`) leaves `OK=true` with `Quotable=false`: the post is
+still listed with its handle link, but the record embed is dropped and the
+summary's first line gains `· no embed, post can't be quoted`. Each URI gets one
+`feature_gate` log line (`surface`, `uri`, `ok`, `quotable`, `reason`). The
+hourly cycle gates 10 ranked candidates and lists the first 3 that pass, before
+the run row is written, so `daily_top_post` and the weekly report inherit the
+decision; exemplars are gated before their text is sent to Gemini. Unlike the
+old quote-control check, the gate fails closed: after one retry, an unreachable
+gate costs the hourly summary its embed and all its handle links, drops every
+exemplar for the cycle, and skips the daily and weekly replies (their guard keys
+are still set).
 
 ### Internal Packages
 

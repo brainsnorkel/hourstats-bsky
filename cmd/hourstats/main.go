@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/stats"
 	"github.com/christophergentle/hourstats-bsky/internal/statsapi"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -114,6 +115,11 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// One resolver for the whole process, so an author's content visibility
+	// declaration is read once a day rather than once per surface that
+	// considers featuring them. Every feature gate is built from it.
+	visibilityResolver = client.NewVisibilityResolver(nil, nil, 0)
 
 	// The OOM killer takes the process between two samples and leaves nothing
 	// behind. The guard writes a heap profile and a goroutine dump beside the

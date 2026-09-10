@@ -255,6 +255,14 @@ type firehoseBackfillStore interface {
 // Daily top-post quote reply
 // ---------------------------------------------------------------------------
 
+// markDailyQuoteDone sets the guard key so the quote is attempted once a day,
+// whether it went out or was deliberately skipped.
+func markDailyQuoteDone(ctx context.Context, db *store.Store, today string) {
+	if err := db.SetKeyValue(ctx, "daily_quote_last_date", today); err != nil {
+		slog.Warn("persist daily quote date failed", "error", err)
+	}
+}
+
 func runDailyTopPostQuote(ctx context.Context, db *store.Store, handle, password string, dryRun bool) {
 	today := time.Now().UTC().Format("2006-01-02")
 	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
@@ -307,19 +315,41 @@ func runDailyTopPostQuote(ctx context.Context, db *store.Store, handle, password
 		return
 	}
 
-	_, _, err = bskyClient.PostReplyWithQuote(apiCtx, text,
-		yearlyURI, yearlyCID, yearlyURI, yearlyCID,
-		topPost.URI, topPost.CID,
-	)
+	// Yesterday's top post cleared the gate when its cycle ran, but a day is
+	// long enough for a block, a label, a deletion or a visibility declaration
+	// to land since. Re-check before quoting it in front of a new audience.
+	verdicts, gateErr := checkFeatureGate(apiCtx, newFeatureGate(bskyClient), "daily", []string{topPost.URI})
+	verdict := verdicts[topPost.URI]
+	switch {
+	case gateErr != nil:
+		// The guard key is still set: a post we could not clear now is not
+		// worth re-checking every run of the day, and there is a fresh top
+		// post tomorrow.
+		slog.Info("daily quote skipped, feature gate unavailable", "date", yesterday, "top_post", topPost.URI, "error", gateErr)
+		markDailyQuoteDone(ctx, db, today)
+		return
+	case !verdict.OK:
+		slog.Info("daily quote skipped, top post cannot be featured", "date", yesterday, "top_post", topPost.URI, "reason", verdict.Reason)
+		markDailyQuoteDone(ctx, db, today)
+		return
+	case !verdict.Quotable:
+		// A postgate forbids the embed, not the mention: reply in plain text.
+		slog.Info("daily quote: top post is quote-controlled, replying without embed", "top_post", topPost.URI)
+		_, _, err = bskyClient.PostWithFacetsAsReply(apiCtx, text, nil,
+			yearlyURI, yearlyCID, yearlyURI, yearlyCID)
+	default:
+		_, _, err = bskyClient.PostReplyWithQuote(apiCtx, text,
+			yearlyURI, yearlyCID, yearlyURI, yearlyCID,
+			topPost.URI, topPost.CID,
+		)
+	}
 	if err != nil {
 		slog.Warn("daily quote reply failed", "error", err)
 		return
 	}
 
-	if err := db.SetKeyValue(ctx, "daily_quote_last_date", today); err != nil {
-		slog.Warn("persist daily quote date failed", "error", err)
-	}
-	slog.Info("daily quote reply posted", "date", yesterday, "top_post", topPost.URI)
+	markDailyQuoteDone(ctx, db, today)
+	slog.Info("daily quote reply posted", "date", yesterday, "top_post", topPost.URI, "quotable", verdict.Quotable)
 }
 
 // ---------------------------------------------------------------------------

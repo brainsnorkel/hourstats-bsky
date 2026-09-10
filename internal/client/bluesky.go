@@ -34,6 +34,10 @@ type Post struct {
 	// post renders as app.bsky.embed.record#viewDetached — "Removed by
 	// author" — so the summary must drop the embed instead.
 	QuoteControlled bool
+	// NoLink suppresses this post's @handle link facet. It is set when the
+	// feature gate could not be consulted: the summary still names the handle,
+	// but nothing in it drives traffic to an account we could not check.
+	NoLink bool
 }
 
 // APIBatchStats contains statistics about the raw API response before filtering
@@ -426,82 +430,6 @@ func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment strin
 // maxGetPostsURIs is Bluesky's per-call limit for app.bsky.feed.getPosts.
 const maxGetPostsURIs = 25
 
-// EmbeddingDisabled reports, per URI, whether a quote embed of the post would
-// render as an unusable card: quoting disabled by the author, a block in
-// either direction, or the post missing from the authenticated view.
-//
-// The answer lives in the post's viewer state, which the AppView only
-// populates for authenticated requests, so this deliberately uses the
-// authenticated client rather than the public hydration host. URIs missing
-// from the response (deleted, blocked, never existed) map to false: a post we
-// cannot see is not a post we know to be quote-controlled.
-func (c *BlueskyClient) EmbeddingDisabled(ctx context.Context, uris []string) (map[string]bool, error) {
-	if c.client == nil {
-		return nil, fmt.Errorf("client not authenticated")
-	}
-	if len(uris) == 0 {
-		return map[string]bool{}, nil
-	}
-	if len(uris) > maxGetPostsURIs {
-		return nil, fmt.Errorf("too many URIs for getPosts: got %d, limit %d", len(uris), maxGetPostsURIs)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	out, err := bsky.FeedGetPosts(ctx, c.client, uris)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get posts for quote-control check: %w", err)
-	}
-
-	// A post absent from the authenticated view (deleted, or hidden by a
-	// block) would also render as an unusable card, so it counts too.
-	disabled := make(map[string]bool, len(uris))
-	for _, uri := range uris {
-		disabled[uri] = true
-	}
-	seen := make(map[string]bool, len(out.Posts))
-	for _, postView := range out.Posts {
-		if postView == nil {
-			continue
-		}
-		seen[postView.Uri] = true
-		unavailable, reason := quoteUnavailable(postView)
-		disabled[postView.Uri] = unavailable
-		if unavailable {
-			slog.Info("quote embed unavailable", "uri", postView.Uri, "reason", reason)
-		}
-	}
-	for _, uri := range uris {
-		if !seen[uri] {
-			slog.Info("quote embed unavailable", "uri", uri, "reason", "missing from authenticated view")
-		}
-	}
-	return disabled, nil
-}
-
-// quoteUnavailable reports whether quoting the post would render an unusable
-// card and why: the author disabled embedding ("Removed by author"), or a
-// block exists in either direction between the author and this account
-// ("Blocked"). Viewer state is only populated on an authenticated call.
-func quoteUnavailable(pv *bsky.FeedDefs_PostView) (bool, string) {
-	if pv.Viewer != nil && pv.Viewer.EmbeddingDisabled != nil && *pv.Viewer.EmbeddingDisabled {
-		return true, "embedding disabled by author"
-	}
-	if pv.Author != nil && pv.Author.Viewer != nil {
-		if pv.Author.Viewer.BlockedBy != nil && *pv.Author.Viewer.BlockedBy {
-			return true, "author blocks this account"
-		}
-		if pv.Author.Viewer.Blocking != nil && *pv.Author.Viewer.Blocking != "" {
-			return true, "this account blocks the author"
-		}
-		if pv.Author.Viewer.BlockingByList != nil {
-			return true, "author blocked via list"
-		}
-	}
-	return false, ""
-}
-
 // createEmbedCard creates an embed card for a post
 func (c *BlueskyClient) createEmbedCard(ctx context.Context, post Post) *bsky.FeedPost_Embed {
 	if post.URI == "" || post.CID == "" {
@@ -577,6 +505,13 @@ func createUserHandleFacets(text string, posts []Post) []*bsky.RichtextFacet {
 		startIndex := searchFrom + idx
 		endIndex := startIndex + len(handle)
 		searchFrom = endIndex
+
+		// A post the feature gate could not clear is named but not linked.
+		// searchFrom has already advanced past it, so a later duplicate of the
+		// same handle still lands on its own occurrence.
+		if post.NoLink {
+			continue
+		}
 
 		// Convert AT Protocol URI to web URL for clickable links
 		webURL := convertATURItoWebURL(post.URI)
