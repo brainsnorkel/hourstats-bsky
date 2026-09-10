@@ -582,6 +582,28 @@ func TestApplyRefusesUntilTheNewBinaryHasWritten(t *testing.T) {
 	}
 }
 
+// A -backup-dir whose parent does not exist must abort before any write:
+// store.Backup would otherwise create it, and on Fly that means the only
+// pre-write copy lands on the ephemeral root filesystem instead of the volume.
+func TestApplyRefusesMissingBackupDir(t *testing.T) {
+	dbPath, _ := seed(t)
+	missing := filepath.Join(t.TempDir(), "does-not-exist", "backups")
+
+	_, err := realign(t, dbPath, "-apply", "-backup-dir", missing)
+	if err == nil {
+		t.Fatal("apply succeeded with a missing backup dir, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "must already exist") {
+		t.Errorf("error = %v, want it to say the dir must exist", err)
+	}
+	if _, statErr := os.Stat(filepath.Dir(missing)); statErr == nil {
+		t.Errorf("refused apply created %s", filepath.Dir(missing))
+	}
+	if kv := keyValues(t, dbPath); len(kv) != 0 {
+		t.Errorf("refused apply wrote markers: %v", kv)
+	}
+}
+
 func TestApplyRefusesOnCompoundScoreDrift(t *testing.T) {
 	dbPath, _ := seed(t)
 	execSQL(t, dbPath, `UPDATE sentiment_history SET average_compound_score = 0.5 WHERE run_id = 'run-pre-00'`)

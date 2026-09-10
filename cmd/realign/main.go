@@ -598,6 +598,17 @@ func (r *realigner) backup(ctx context.Context, label string) (string, error) {
 	if filepath.Base(dir) == "backups" {
 		dir = filepath.Dir(dir)
 	}
+	// store.Backup creates missing directories, so a mistyped -backup-dir
+	// would silently land the only pre-write copy on the container's
+	// ephemeral root filesystem (seen in the staging rehearsal). Insist that
+	// the parent already exists, which on Fly means it is on the volume.
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("backup dir %s must already exist (refusing to create it): %w", dir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("backup dir %s is not a directory", dir)
+	}
 	// A large retention keeps this admin run from pruning the daily backups.
 	path, err := r.db.Backup(ctx, dir, r.opt.profile+"-"+label, 3650)
 	if err != nil {
