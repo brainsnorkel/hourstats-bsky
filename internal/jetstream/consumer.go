@@ -125,6 +125,15 @@ type ConsumerConfig struct {
 	// counted and dropped before any parsing beyond a byte scan for its NSID.
 	ExtraCollections []string
 
+	// ExtraKinds are v2 event kinds measured the same way: they are added to
+	// the subscription's kinds params on top of the commit and account kinds
+	// the bot consumes, and a frame of one of them is counted and dropped
+	// after a byte scan for its payload $type. Only "identity" and "sync" are
+	// meaningful; "commit" and "account" are already requested and ignored
+	// here, and anything else is dropped with a warning. Empty (the default)
+	// leaves the subscription exactly as it was.
+	ExtraKinds []string
+
 	// OnDelete is called for each post delete commit, so the caller can drop
 	// the post before it is scored. The event carries no record.
 	OnDelete EventHandler
@@ -156,6 +165,12 @@ type ConsumerConfig struct {
 	// OnStale is called, instead of OnPost, for each post create the MaxPostAge
 	// guard drops, with how far the record lagged its witness time.
 	OnStale func(event *Event, record *PostRecord, age time.Duration)
+
+	// StaleSamplePerHour turns on the stale-create diagnostic: up to this many
+	// sampled "stale create sample" lines an hour, plus an hourly summary of
+	// the DIDs behind the drops. 0 (the default) leaves it off, which is what
+	// production runs; it is meant for a staging soak.
+	StaleSamplePerHour int
 }
 
 func (c *ConsumerConfig) setDefaults() {
@@ -190,6 +205,7 @@ func (c *ConsumerConfig) setDefaults() {
 	if c.MaxPostAge == 0 {
 		c.MaxPostAge = DefaultMaxPostAge
 	}
+	c.ExtraKinds = normalizeExtraKinds(c.ExtraKinds)
 }
 
 // Consumer connects to a Jetstream WebSocket endpoint and processes post events.
@@ -213,12 +229,23 @@ type Consumer struct {
 	dictRejected bool
 	compressed   atomic.Bool
 
-	// Measurement mode: per-collection counters for cfg.ExtraCollections.
-	// needles are the precomputed `"collection":"<nsid>"` byte patterns.
-	extraMu     sync.Mutex
-	extraCounts map[string]int64
-	extraBytes  map[string]int64
-	needles     [][]byte
+	// Measurement mode: per-collection counters for cfg.ExtraCollections and
+	// per-kind counters for cfg.ExtraKinds, all guarded by extraMu. needles
+	// are the precomputed `"collection":"<nsid>"` byte patterns and
+	// kindNeedles the `"$type":"<nsid>#<kind>"` ones. kindSummaryBase holds
+	// the kind counts as of the last stale hourly summary, so that line can
+	// report the hour rather than the whole run.
+	extraMu         sync.Mutex
+	extraCounts     map[string]int64
+	extraBytes      map[string]int64
+	needles         [][]byte
+	kindCounts      map[string]int64
+	kindBytes       map[string]int64
+	kindNeedles     [][]byte
+	kindSummaryBase map[string]int64
+
+	// diag is the stale-create diagnostic, nil unless StaleSamplePerHour > 0.
+	diag *staleDiag
 
 	// Stale-frame cutoff, owned by the read loop: the RFC 3339 second prefix a
 	// rejected frame's createdAt must reach to count as live, recomputed at
@@ -280,6 +307,10 @@ type StatsReport struct {
 	// EventsByCollection counts frames for each of ConsumerConfig's
 	// ExtraCollections. It is nil when measurement mode is off.
 	EventsByCollection map[string]int64
+
+	// EventsByKind counts frames for each of ConsumerConfig's ExtraKinds. It
+	// is nil when kind measurement is off.
+	EventsByKind map[string]int64
 }
 
 // NewConsumer creates a new Jetstream consumer.
@@ -294,6 +325,16 @@ func NewConsumer(cfg ConsumerConfig) *Consumer {
 			c.needles[i] = []byte(`"collection":"` + nsid + `"`)
 		}
 	}
+	if len(c.cfg.ExtraKinds) > 0 {
+		c.kindCounts = make(map[string]int64, len(c.cfg.ExtraKinds))
+		c.kindBytes = make(map[string]int64, len(c.cfg.ExtraKinds))
+		c.kindSummaryBase = make(map[string]int64, len(c.cfg.ExtraKinds))
+		c.kindNeedles = make([][]byte, len(c.cfg.ExtraKinds))
+		for i, kind := range c.cfg.ExtraKinds {
+			c.kindNeedles[i] = []byte(`"$type":"` + subscribeNSID + "#" + kind + `"`)
+		}
+	}
+	c.diag = newStaleDiag(cfg.StaleSamplePerHour)
 	return c
 }
 
@@ -312,8 +353,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 	cursorCtx, cursorCancel := context.WithCancel(ctx)
 	defer cursorCancel()
 	go c.cursorPersistLoop(cursorCtx)
-	if len(c.cfg.ExtraCollections) > 0 {
-		go c.extraCollectionLogLoop(cursorCtx)
+	if len(c.cfg.ExtraCollections) > 0 || len(c.cfg.ExtraKinds) > 0 {
+		go c.extraVolumeLogLoop(cursorCtx)
 	}
 
 	// conn.ReadMessage does not observe ctx, so cancellation would otherwise
@@ -452,6 +493,7 @@ func (c *Consumer) GetStatsReport() StatsReport {
 		BytesReceived:           c.stats.BytesReceived.Load(),
 		BytesDecompressed:       c.stats.BytesDecompressed.Load(),
 		EventsByCollection:      c.eventsByCollection(),
+		EventsByKind:            c.eventsByKind(),
 	}
 }
 
@@ -467,6 +509,40 @@ func (c *Consumer) eventsByCollection() map[string]int64 {
 	out := make(map[string]int64, len(c.extraCounts))
 	for k, v := range c.extraCounts {
 		out[k] = v
+	}
+	return out
+}
+
+// eventsByKind copies the per-kind counters under the same mutex, and returns
+// nil when kind measurement is off.
+func (c *Consumer) eventsByKind() map[string]int64 {
+	if len(c.cfg.ExtraKinds) == 0 {
+		return nil
+	}
+	c.extraMu.Lock()
+	defer c.extraMu.Unlock()
+	out := make(map[string]int64, len(c.kindCounts))
+	for k, v := range c.kindCounts {
+		out[k] = v
+	}
+	return out
+}
+
+// kindCountsSinceSummary returns each measured kind's frame count since the
+// previous stale hourly summary and moves the baseline forward, so the two
+// diagnostics describe the same hour. It returns nil when kind measurement is
+// off.
+func (c *Consumer) kindCountsSinceSummary() map[string]int64 {
+	if len(c.cfg.ExtraKinds) == 0 {
+		return nil
+	}
+	c.extraMu.Lock()
+	defer c.extraMu.Unlock()
+	out := make(map[string]int64, len(c.cfg.ExtraKinds))
+	for _, kind := range c.cfg.ExtraKinds {
+		count := c.kindCounts[kind]
+		out[kind] = count - c.kindSummaryBase[kind]
+		c.kindSummaryBase[kind] = count
 	}
 	return out
 }
@@ -609,6 +685,7 @@ func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 			// or the firehose and per-language totals carry it instead.
 			if c.rejectedFrameIsStale(message) {
 				c.stats.PostsStale.Add(1)
+				c.recordStaleFrame(message, firstLang)
 				continue
 			}
 			c.stats.EarlyRejectedNonEnglish.Add(1)
@@ -715,6 +792,7 @@ func (c *Consumer) dispatch(event *Event) {
 
 	if age, stale := c.postAge(event, record); stale {
 		c.stats.PostsStale.Add(1)
+		c.recordStale(event, record, age)
 		if c.cfg.OnStale != nil {
 			c.cfg.OnStale(event, record, age)
 		}

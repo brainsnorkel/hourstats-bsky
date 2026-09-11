@@ -74,6 +74,11 @@ func (c *Consumer) buildURLV2() string {
 	for _, kind := range v2Kinds {
 		q.Add("kinds", kind)
 	}
+	// Measured kinds ride the same subscription as the measured collections:
+	// the server sends them, the read loop counts and drops them.
+	for _, kind := range c.cfg.ExtraKinds {
+		q.Add("kinds", kind)
+	}
 	// The v2 replay is inclusive of the requested seq and the post upsert is
 	// idempotent, so no rewind is needed: the read loop's seq dedup drops the
 	// one-frame overlap.
@@ -254,6 +259,13 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 			continue
 		}
 
+		// Likewise for a measured kind: an identity or sync frame is counted
+		// by its payload $type and dropped without being decoded.
+		if kind := c.matchExtraKind(message); kind != "" {
+			c.countExtraKind(kind, len(message))
+			continue
+		}
+
 		// The same bytes-level pre-filter as v1: drop frames that are clearly
 		// feed.post creates with no English language tag before paying for
 		// json.Unmarshal.
@@ -262,6 +274,7 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 			// or the firehose and per-language totals carry it instead.
 			if c.rejectedFrameIsStale(message) {
 				c.stats.PostsStale.Add(1)
+				c.recordStaleFrame(message, firstLang)
 				continue
 			}
 			c.stats.EarlyRejectedNonEnglish.Add(1)
@@ -333,14 +346,55 @@ func (c *Consumer) countExtraCollection(nsid string, frameBytes int) {
 	c.extraMu.Unlock()
 }
 
-// extraCollectionLogLoop reports the volume of the measured collections once a
-// minute, as counts and bytes since the previous line.
-func (c *Consumer) extraCollectionLogLoop(ctx context.Context) {
+// matchExtraKind reports which measured kind the raw frame belongs to, or ""
+// when it belongs to none. Like matchExtraCollection it is a byte scan, here
+// for the payload's `"$type":"<nsid>#<kind>"` token: a post whose text quoted
+// that token verbatim would be miscounted, which is an acceptable trade for a
+// staging diagnostic that never parses the frame.
+func (c *Consumer) matchExtraKind(data []byte) string {
+	for i, needle := range c.kindNeedles {
+		if bytes.Contains(data, needle) {
+			return c.cfg.ExtraKinds[i]
+		}
+	}
+	return ""
+}
+
+func (c *Consumer) countExtraKind(kind string, frameBytes int) {
+	c.extraMu.Lock()
+	c.kindCounts[kind]++
+	c.kindBytes[kind] += int64(frameBytes)
+	c.extraMu.Unlock()
+}
+
+// normalizeExtraKinds keeps the measurable v2 kinds and drops the rest:
+// commit and account are already on every subscription, and an unrecognised
+// value would be rejected by the server as an invalid request.
+func normalizeExtraKinds(kinds []string) []string {
+	var out []string
+	for _, kind := range kinds {
+		switch kind {
+		case "identity", "sync":
+			out = append(out, kind)
+		case "commit", "account":
+			slog.Info("jetstream extra kind already subscribed, ignoring", "kind", kind)
+		default:
+			slog.Warn("unknown jetstream extra kind, ignoring", "kind", kind)
+		}
+	}
+	return out
+}
+
+// extraVolumeLogLoop reports the volume of the measured collections and kinds
+// once a minute, as counts and bytes since the previous line.
+func (c *Consumer) extraVolumeLogLoop(ctx context.Context) {
 	ticker := time.NewTicker(extraCollectionLogInterval)
 	defer ticker.Stop()
 
 	prevCounts := make(map[string]int64, len(c.cfg.ExtraCollections))
 	prevBytes := make(map[string]int64, len(c.cfg.ExtraCollections))
+	prevKindCounts := make(map[string]int64, len(c.cfg.ExtraKinds))
+	prevKindBytes := make(map[string]int64, len(c.cfg.ExtraKinds))
 
 	for {
 		select {
@@ -348,6 +402,7 @@ func (c *Consumer) extraCollectionLogLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			attrs := make([]any, 0, len(c.cfg.ExtraCollections)*4)
+			kindAttrs := make([]any, 0, len(c.cfg.ExtraKinds)*4)
 			c.extraMu.Lock()
 			for _, nsid := range c.cfg.ExtraCollections {
 				count, seen := c.extraCounts[nsid], c.extraBytes[nsid]
@@ -357,8 +412,21 @@ func (c *Consumer) extraCollectionLogLoop(ctx context.Context) {
 				)
 				prevCounts[nsid], prevBytes[nsid] = count, seen
 			}
+			for _, kind := range c.cfg.ExtraKinds {
+				count, seen := c.kindCounts[kind], c.kindBytes[kind]
+				kindAttrs = append(kindAttrs,
+					kind+".events", count-prevKindCounts[kind],
+					kind+".bytes", seen-prevKindBytes[kind],
+				)
+				prevKindCounts[kind], prevKindBytes[kind] = count, seen
+			}
 			c.extraMu.Unlock()
-			slog.Info("jetstream extra collection volume", attrs...)
+			if len(attrs) > 0 {
+				slog.Info("jetstream extra collection volume", attrs...)
+			}
+			if len(kindAttrs) > 0 {
+				slog.Info("jetstream extra kind volume", kindAttrs...)
+			}
 		}
 	}
 }

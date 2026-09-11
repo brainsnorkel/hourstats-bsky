@@ -25,6 +25,9 @@ swap_size_mb = 512
   HEALTH_CHART_MEMORY_LIMIT_MB = "1024"
   # hs-wsp.7: count like/repost volume on staging (dropped, never processed)
   JETSTREAM_EXTRA_COLLECTIONS = "app.bsky.feed.like,app.bsky.feed.repost"
+  # staging-only diagnostics for where the stale creates come from (off in prod)
+  JETSTREAM_STALE_SAMPLE_PER_HOUR = "30"
+  JETSTREAM_EXTRA_KINDS = "sync,identity"
 
 [mounts]
   source = "data"

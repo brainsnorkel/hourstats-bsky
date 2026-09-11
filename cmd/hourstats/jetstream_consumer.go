@@ -123,11 +123,17 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 	// v2 delivers repo backfills through the live tail as ordinary creates, so
 	// only the record's own createdAt separates them from live posts.
 	maxPostAgeMinutes := envInt("JETSTREAM_MAX_POST_AGE_MINUTES", 120)
+	// Staging-only diagnostics for where those backfills come from, both off
+	// by default so production is unaffected.
+	staleSamplePerHour := envInt("JETSTREAM_STALE_SAMPLE_PER_HOUR", 0)
+	extraKinds := envList("JETSTREAM_EXTRA_KINDS")
 
 	cfg := jetstream.ConsumerConfig{
 		Protocol:           protocol,
 		DisableCompression: !envBool("JETSTREAM_COMPRESS", true),
 		ExtraCollections:   extraCollections,
+		ExtraKinds:         extraKinds,
+		StaleSamplePerHour: staleSamplePerHour,
 		// Posts the bytes-level pre-filter drops never reach OnPost, so they
 		// are counted here; without this the firehose total is only English
 		// plus untagged posts.
@@ -279,7 +285,9 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		"compressed", protocol == jetstream.ProtocolV2 && !cfg.DisableCompression,
 		"endpoints", endpoints,
 		"extra_collections", extraCollections,
+		"extra_kinds", extraKinds,
 		"max_post_age_minutes", maxPostAgeMinutes,
+		"stale_sample_per_hour", staleSamplePerHour,
 	)
 
 	for {
