@@ -36,6 +36,7 @@ func TestInsertAndGetLatestSnapshot(t *testing.T) {
 		PostDeletes:             7,
 		AccountPurges:           2,
 		TombstoneHits:           4,
+		StalePosts:              9,
 	}
 
 	if err := s.InsertStatsSnapshot(ctx, snap); err != nil {
@@ -64,6 +65,27 @@ func TestInsertAndGetLatestSnapshot(t *testing.T) {
 	if latest.PostDeletes != 7 || latest.AccountPurges != 2 || latest.TombstoneHits != 4 {
 		t.Errorf("delete counters = {%d %d %d}, want {7 2 4}",
 			latest.PostDeletes, latest.AccountPurges, latest.TombstoneHits)
+	}
+	if latest.StalePosts != 9 {
+		t.Errorf("StalePosts = %d, want 9", latest.StalePosts)
+	}
+
+	// The history readers select their own column lists, so each must carry
+	// the new column too.
+	since := now.Add(-time.Hour)
+	history, err := s.GetSnapshotHistory(ctx, since, 10)
+	if err != nil {
+		t.Fatalf("GetSnapshotHistory: %v", err)
+	}
+	if len(history) != 1 || history[0].StalePosts != 9 {
+		t.Errorf("GetSnapshotHistory StalePosts = %v, want one row with 9", history)
+	}
+	health, err := s.GetHealthHistory(ctx, since, 10)
+	if err != nil {
+		t.Fatalf("GetHealthHistory: %v", err)
+	}
+	if len(health) != 1 || health[0].StalePosts != 9 {
+		t.Errorf("GetHealthHistory StalePosts = %v, want one row with 9", health)
 	}
 }
 

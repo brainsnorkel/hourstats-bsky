@@ -867,6 +867,48 @@ func TestTakeSnapshotIncludesDeleteCounters(t *testing.T) {
 	}
 }
 
+func TestStalePostCounter(t *testing.T) {
+	c := New(&mockStatsStore{}, "")
+
+	c.IncrementStalePosts()
+	c.IncrementStalePosts()
+
+	if got := c.SwapStalePosts(); got != 2 {
+		t.Errorf("SwapStalePosts = %d, want 2", got)
+	}
+	if got := c.SwapStalePosts(); got != 0 {
+		t.Errorf("SwapStalePosts after reset = %d, want 0", got)
+	}
+}
+
+func TestTakeSnapshotIncludesStalePosts(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+	c.SetConsumer(&mockConsumerProvider{
+		report: jetstream.StatsReport{EventsReceived: 10, PostsStale: 7},
+	})
+
+	// Only the creates that survived the language pre-filter reach OnStale, so
+	// the collector sees fewer than the consumer counted on the wire.
+	c.IncrementStalePosts()
+	c.IncrementStalePosts()
+
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+	if got := ms.snapshots[0].StalePosts; got != 7 {
+		t.Errorf("StalePosts = %d, want 7", got)
+	}
+
+	// Per-interval: a second snapshot with no new backfill is zero.
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("TakeSnapshot (second): %v", err)
+	}
+	if got := ms.snapshots[1].StalePosts; got != 0 {
+		t.Errorf("second snapshot StalePosts = %d, want 0", got)
+	}
+}
+
 // The wire-protocol counters have no stats_snapshots columns, so what matters
 // is that the collector delta-tracks them against the live consumer report the
 // same way it does the endpoint counters.

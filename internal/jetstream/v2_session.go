@@ -258,6 +258,12 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 		// feed.post creates with no English language tag before paying for
 		// json.Unmarshal.
 		if reject, firstLang := scanFrameLang(message); reject {
+			// A rejected backfill frame must not reach OnEarlyReject either,
+			// or the firehose and per-language totals carry it instead.
+			if c.rejectedFrameIsStale(message) {
+				c.stats.PostsStale.Add(1)
+				continue
+			}
 			c.stats.EarlyRejectedNonEnglish.Add(1)
 			if c.cfg.OnEarlyReject != nil {
 				c.cfg.OnEarlyReject(firstLang)

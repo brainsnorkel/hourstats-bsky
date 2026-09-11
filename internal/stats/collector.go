@@ -67,6 +67,11 @@ type Collector struct {
 	accountPurges atomic.Int64
 	tombstoneHits atomic.Int64
 
+	// stalePosts counts post creates dropped as repo backfill: v2 delivers
+	// them through the live tail with a current witness time but a createdAt
+	// days to years old, and counting them would double the firehose totals.
+	stalePosts atomic.Int64
+
 	// Health metric counters (hs-21g)
 	slowFlushCount atomic.Int64
 	slowFlushMaxMs atomic.Int64
@@ -85,6 +90,7 @@ type Collector struct {
 		earlyRejected     int64
 		postsDeleted      int64
 		accountsInactive  int64
+		postsStale        int64
 		bytesReceived     int64
 		bytesDecompressed int64
 		byCollection      map[string]int64
@@ -276,6 +282,16 @@ func (c *Collector) SwapPostDeletes() int64 {
 	return c.postDeletes.Swap(0)
 }
 
+// IncrementStalePosts counts one post create dropped as repo backfill.
+func (c *Collector) IncrementStalePosts() {
+	c.stalePosts.Add(1)
+}
+
+// SwapStalePosts returns the current stale-post count and resets it to zero.
+func (c *Collector) SwapStalePosts() int64 {
+	return c.stalePosts.Swap(0)
+}
+
 // IncrementAccountPurges counts one author purge queued from the firehose.
 func (c *Collector) IncrementAccountPurges() {
 	c.accountPurges.Add(1)
@@ -321,7 +337,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	var activeEndpoint string
 	var uptimeSeconds int
 	var deltaEvents, deltaPosts, deltaSkipped, deltaReconnects, deltaErrors, deltaRotations, deltaEarlyRejected int64
-	var deltaPostsDeleted, deltaAccountsInactive int64
+	var deltaPostsDeleted, deltaAccountsInactive, deltaPostsStale int64
 	var deltaBytesReceived, deltaBytesDecompressed int64
 	var deltaByCollection map[string]int64
 
@@ -340,6 +356,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		deltaEarlyRejected = counterDelta(report.EarlyRejectedNonEnglish, c.lastSeen.earlyRejected)
 		deltaPostsDeleted = counterDelta(report.PostsDeleted, c.lastSeen.postsDeleted)
 		deltaAccountsInactive = counterDelta(report.AccountsInactive, c.lastSeen.accountsInactive)
+		deltaPostsStale = counterDelta(report.PostsStale, c.lastSeen.postsStale)
 		deltaBytesReceived = counterDelta(report.BytesReceived, c.lastSeen.bytesReceived)
 		deltaBytesDecompressed = counterDelta(report.BytesDecompressed, c.lastSeen.bytesDecompressed)
 		deltaByCollection = collectionDeltas(report.EventsByCollection, c.lastSeen.byCollection)
@@ -354,6 +371,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		c.lastSeen.earlyRejected = report.EarlyRejectedNonEnglish
 		c.lastSeen.postsDeleted = report.PostsDeleted
 		c.lastSeen.accountsInactive = report.AccountsInactive
+		c.lastSeen.postsStale = report.PostsStale
 		c.lastSeen.bytesReceived = report.BytesReceived
 		c.lastSeen.bytesDecompressed = report.BytesDecompressed
 		c.lastSeen.byCollection = report.EventsByCollection
@@ -385,6 +403,10 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	postDeleteDelta := max(c.postDeletes.Swap(0), deltaPostsDeleted)
 	accountPurgeDelta := max(c.accountPurges.Swap(0), deltaAccountsInactive)
 	tombstoneHitDelta := c.tombstoneHits.Swap(0)
+
+	// The consumer also counts the backfill the language pre-filter rejected,
+	// which never reaches OnStale, so its wire count is the larger of the two.
+	stalePostDelta := max(c.stalePosts.Swap(0), deltaPostsStale)
 
 	// Read and reset slow flush counters
 	slowFlushCount := c.slowFlushCount.Swap(0)
@@ -471,6 +493,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		PostDeletes:             int(postDeleteDelta),
 		AccountPurges:           int(accountPurgeDelta),
 		TombstoneHits:           int(tombstoneHitDelta),
+		StalePosts:              int(stalePostDelta),
 		HeapInuseBytes:          int64(memStats.HeapInuse),
 		HeapSysBytes:            int64(memStats.HeapSys),
 		SysBytes:                int64(memStats.Sys),
@@ -509,6 +532,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		"english_posts", englishDelta,
 		"firehose_posts", firehoseDelta,
 		"early_rejected_non_english", deltaEarlyRejected,
+		"stale_posts", stalePostDelta,
 		"elapsed_minutes", math.Round(elapsedMinutes*10) / 10,
 		"posts_per_minute", postsPerMinute,
 		"protocol", report.Protocol,

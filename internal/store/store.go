@@ -745,6 +745,9 @@ func (s *Store) migrate() error {
 		`ALTER TABLE stats_snapshots ADD COLUMN post_deletes INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stats_snapshots ADD COLUMN account_purges INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stats_snapshots ADD COLUMN tombstone_hits INTEGER NOT NULL DEFAULT 0`,
+
+		// Repo backfill delivered through the v2 live tail
+		`ALTER TABLE stats_snapshots ADD COLUMN stale_posts INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, stmt := range stmts {

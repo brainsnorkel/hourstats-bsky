@@ -120,6 +120,9 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 	// before the branch.
 	deletesEnabled := envBool("FIREHOSE_DELETES_ENABLED", true)
 	extraCollections := envList("JETSTREAM_EXTRA_COLLECTIONS")
+	// v2 delivers repo backfills through the live tail as ordinary creates, so
+	// only the record's own createdAt separates them from live posts.
+	maxPostAgeMinutes := envInt("JETSTREAM_MAX_POST_AGE_MINUTES", 120)
 
 	cfg := jetstream.ConsumerConfig{
 		Protocol:           protocol,
@@ -131,6 +134,11 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		OnEarlyReject: func(firstLang string) {
 			collector.IncrementFirehosePost()
 			collector.IncrementLanguage(primaryLang(firstLang))
+		},
+		// Backfill is neither a firehose post nor a post of its language: it
+		// was already counted the day it was written.
+		OnStale: func(_ *jetstream.Event, _ *jetstream.PostRecord, _ time.Duration) {
+			collector.IncrementStalePosts()
 		},
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
 			collector.IncrementFirehosePost()
@@ -208,6 +216,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		},
 		CursorRewind: time.Duration(envInt("JETSTREAM_CURSOR_REWIND_SECONDS", 5)) * time.Second,
 		MaxCursorAge: time.Duration(envInt("JETSTREAM_MAX_CURSOR_AGE_MINUTES", 360)) * time.Minute,
+		MaxPostAge:   time.Duration(maxPostAgeMinutes) * time.Minute,
 	}
 
 	// Left nil when disabled: the consumer still receives the frames but
@@ -270,6 +279,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		"compressed", protocol == jetstream.ProtocolV2 && !cfg.DisableCompression,
 		"endpoints", endpoints,
 		"extra_collections", extraCollections,
+		"max_post_age_minutes", maxPostAgeMinutes,
 	)
 
 	for {

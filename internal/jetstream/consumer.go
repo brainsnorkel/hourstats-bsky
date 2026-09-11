@@ -32,6 +32,18 @@ const (
 	// arrives at wire speed and overruns the downstream write buffer.
 	DefaultMaxCursorAge = 6 * time.Hour
 
+	// DefaultMaxPostAge bounds how far a post record's createdAt may lag the
+	// event's witness time before the create is treated as a repo backfill
+	// rather than a live post. Jetstream v2 delivers backfills through the live
+	// tail as ordinary creates with fresh seq numbers and a current witness
+	// time, so only the record's own clock tells them apart.
+	DefaultMaxPostAge = 2 * time.Hour
+
+	// staleCutoffLayout is the second-precision RFC 3339 prefix the bytes-level
+	// pre-filter compares lexicographically, so a rejected frame can be aged
+	// without parsing its createdAt.
+	staleCutoffLayout = "2006-01-02T15:04:05"
+
 	maxBackoff     = 30 * time.Second
 	initialBackoff = 1 * time.Second
 
@@ -135,6 +147,15 @@ type ConsumerConfig struct {
 	// begins from the live tail instead. Zero selects DefaultMaxCursorAge; a
 	// negative value disables the age check.
 	MaxCursorAge time.Duration
+
+	// MaxPostAge drops a post create whose record createdAt lags the event's
+	// witness time by more than this. Zero selects DefaultMaxPostAge; a
+	// negative value disables the check.
+	MaxPostAge time.Duration
+
+	// OnStale is called, instead of OnPost, for each post create the MaxPostAge
+	// guard drops, with how far the record lagged its witness time.
+	OnStale func(event *Event, record *PostRecord, age time.Duration)
 }
 
 func (c *ConsumerConfig) setDefaults() {
@@ -166,6 +187,9 @@ func (c *ConsumerConfig) setDefaults() {
 	if c.MaxCursorAge == 0 {
 		c.MaxCursorAge = DefaultMaxCursorAge
 	}
+	if c.MaxPostAge == 0 {
+		c.MaxPostAge = DefaultMaxPostAge
+	}
 }
 
 // Consumer connects to a Jetstream WebSocket endpoint and processes post events.
@@ -196,6 +220,12 @@ type Consumer struct {
 	extraBytes  map[string]int64
 	needles     [][]byte
 
+	// Stale-frame cutoff, owned by the read loop: the RFC 3339 second prefix a
+	// rejected frame's createdAt must reach to count as live, recomputed at
+	// most once a second rather than per frame.
+	staleCutoff   string
+	staleCutoffAt time.Time
+
 	// Endpoint rotation state.
 	endpointIdx       int          // index into cfg.Endpoints
 	endpointRotations atomic.Int64 // count of endpoint rotations
@@ -213,6 +243,12 @@ type Stats struct {
 	EarlyRejectedNonEnglish atomic.Int64
 	PostsDeleted            atomic.Int64
 	AccountsInactive        atomic.Int64
+
+	// PostsStale counts post creates dropped by the MaxPostAge guard: repo
+	// backfill delivered through the live tail. It counts both the creates
+	// dropped after parsing and the ones the language pre-filter had already
+	// rejected, which is why they no longer reach OnEarlyReject.
+	PostsStale atomic.Int64
 
 	// BytesReceived counts bytes as they arrive on the wire (compressed, on a
 	// dictionary zstd connection); BytesDecompressed counts the JSON the
@@ -234,6 +270,7 @@ type StatsReport struct {
 	EarlyRejectedNonEnglish int64
 	PostsDeleted            int64
 	AccountsInactive        int64
+	PostsStale              int64
 
 	Protocol          string
 	Compressed        bool
@@ -409,6 +446,7 @@ func (c *Consumer) GetStatsReport() StatsReport {
 		EarlyRejectedNonEnglish: c.stats.EarlyRejectedNonEnglish.Load(),
 		PostsDeleted:            c.stats.PostsDeleted.Load(),
 		AccountsInactive:        c.stats.AccountsInactive.Load(),
+		PostsStale:              c.stats.PostsStale.Load(),
 		Protocol:                c.cfg.Protocol,
 		Compressed:              c.compressed.Load(),
 		BytesReceived:           c.stats.BytesReceived.Load(),
@@ -567,6 +605,12 @@ func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 		// Non-post events (identity, account, like, etc.) have no "langs" field
 		// and are always passed through to the full parse path.
 		if reject, firstLang := scanFrameLang(message); reject {
+			// A rejected backfill frame must not reach OnEarlyReject either,
+			// or the firehose and per-language totals carry it instead.
+			if c.rejectedFrameIsStale(message) {
+				c.stats.PostsStale.Add(1)
+				continue
+			}
 			c.stats.EarlyRejectedNonEnglish.Add(1)
 			if c.cfg.OnEarlyReject != nil {
 				c.cfg.OnEarlyReject(firstLang)
@@ -666,6 +710,14 @@ func (c *Consumer) dispatch(event *Event) {
 	record := event.ParsePostRecord()
 	if record == nil {
 		c.stats.Errors.Add(1)
+		return
+	}
+
+	if age, stale := c.postAge(event, record); stale {
+		c.stats.PostsStale.Add(1)
+		if c.cfg.OnStale != nil {
+			c.cfg.OnStale(event, record, age)
+		}
 		return
 	}
 
@@ -844,4 +896,117 @@ func scanFrameLang(data []byte) (reject bool, firstLang string) {
 
 	// Scanned limit without finding an English tag — reject.
 	return true, firstLang
+}
+
+// parsePostCreatedAt parses a record's createdAt, accepting the same two
+// layouts cmd/hourstats normalises with. It reports false for anything it
+// cannot read, which the callers treat as fresh.
+func parsePostCreatedAt(raw string) (time.Time, bool) {
+	if raw == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339Nano, raw)
+	}
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// postAge returns how far the record's createdAt lags the event's witness
+// time, and whether that exceeds MaxPostAge. An unparseable createdAt is kept,
+// as it always was. So is a future-dated one: its age is negative, which is
+// client clock skew rather than a backfill.
+func (c *Consumer) postAge(event *Event, record *PostRecord) (time.Duration, bool) {
+	if c.cfg.MaxPostAge <= 0 || event.TimeUS == 0 {
+		return 0, false
+	}
+	created, ok := parsePostCreatedAt(record.CreatedAt)
+	if !ok {
+		return 0, false
+	}
+	age := time.UnixMicro(event.TimeUS).Sub(created)
+	return age, age > c.cfg.MaxPostAge
+}
+
+// rejectedFrameIsStale reports whether a frame the language pre-filter dropped
+// is repo backfill rather than a live post, using only a byte scan: the frame
+// was rejected precisely so it would never be parsed.
+func (c *Consumer) rejectedFrameIsStale(data []byte) bool {
+	cutoff := c.frameStaleCutoff()
+	if cutoff == "" {
+		return false
+	}
+	return createdAtBefore(scanFrameCreatedAt(data), cutoff)
+}
+
+// frameStaleCutoff returns the second-precision cutoff a frame's createdAt is
+// compared against, or "" when the age check is off. The witness clock is the
+// last event time seen on this stream, falling back to wall clock before the
+// first one. Formatting it per frame would cost more than the scan it guards,
+// so it is recomputed at most once a second; the read loop owns both fields.
+func (c *Consumer) frameStaleCutoff() string {
+	if c.cfg.MaxPostAge <= 0 {
+		return ""
+	}
+	witness := time.Now()
+	if timeUS := c.cursor.Load(); timeUS > 0 {
+		witness = time.UnixMicro(timeUS)
+	}
+	// A negative elapsed means the witness clock moved backwards (a cursor
+	// reset), so the cached value no longer describes this stream.
+	if elapsed := witness.Sub(c.staleCutoffAt); !c.staleCutoffAt.IsZero() && elapsed >= 0 && elapsed < time.Second {
+		return c.staleCutoff
+	}
+	c.staleCutoffAt = witness
+	c.staleCutoff = witness.Add(-c.cfg.MaxPostAge).UTC().Format(staleCutoffLayout)
+	return c.staleCutoff
+}
+
+// createdAtBefore compares a raw createdAt with a cutoff as bytes. Only the
+// canonical `YYYY-MM-DDTHH:MM:SS...Z` form is judged: a value with a numeric
+// offset or an odd shape is not comparable this way and is reported as fresh,
+// leaving it to the existing path.
+func createdAtBefore(createdAt, cutoff string) bool {
+	if len(createdAt) < len(staleCutoffLayout)+1 || createdAt[len(createdAt)-1] != 'Z' {
+		return false
+	}
+	for i, want := range []byte(staleCutoffLayout) {
+		switch want {
+		case '-', 'T', ':':
+			if createdAt[i] != want {
+				return false
+			}
+		default: // a layout digit
+			if createdAt[i] < '0' || createdAt[i] > '9' {
+				return false
+			}
+		}
+	}
+	return createdAt[:len(staleCutoffLayout)] < cutoff
+}
+
+// scanFrameCreatedAt returns the first `"createdAt":"..."` string value in the
+// frame, which in a post commit is the record's own timestamp. It returns ""
+// when the key is absent or the value runs past the bound.
+func scanFrameCreatedAt(data []byte) string {
+	const key = `"createdAt":"`
+	idx := bytes.Index(data, []byte(key))
+	if idx < 0 {
+		return ""
+	}
+	pos := idx + len(key)
+	// Long enough for RFC 3339 with a nanosecond fraction and an offset.
+	limit := pos + 64
+	if limit > len(data) {
+		limit = len(data)
+	}
+	for i := pos; i < limit; i++ {
+		if data[i] == '"' {
+			return string(data[pos:i])
+		}
+	}
+	return ""
 }
