@@ -13,6 +13,8 @@ Measured on `hourstats-staging` (shared-cpu-1x, 1024 MB) from 2026-09-11 00:04 U
 
 Likes and reposts together are about 6.6× the post event rate by count and roughly 80% of the bytes on the wire.
 
+**Caveat on the post row:** from about 01:00 UTC the v2 live tail began delivering repo backfills as ordinary creates with old `createdAt` (see hs-wsp.5 notes), so post counts after the first half hour are inflated by up to 2×; the like and repost rows are unaffected. The 00:00–00:30 window above predates the backfill.
+
 ## Cost (Fly Prometheus, 10-minute rates)
 
 | Sample | Build | CPU busy (% of 1 vCPU) | Net in | Memory used |
