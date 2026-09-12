@@ -25,6 +25,9 @@ swap_size_mb = 512
   HEALTH_CHART_MEMORY_LIMIT_MB = "1024"
   # hs-019.1: the per-DID create cap, set explicitly to document the default
   FIREHOSE_MAX_POSTS_PER_DID_PER_MINUTE = "60"
+  # Webhook proof: fires the stale_posts alert every snapshot. REMOVE after the Discord message is seen.
+  ALERT_STALE_POSTS_PER_SNAPSHOT = "1"
+  ALERT_DISCORD_MENTION = "@here"
   # every snapshot trips stale_posts (staging drops hundreds of thousands of
   # backfill creates a window), which is the point: it proves the alert path
   # end to end — the `alert` log line, the one-per-hour suppression, and

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,6 +28,10 @@ const discordTimeout = 10 * time.Second
 type Notifier struct {
 	profile    string
 	webhookURL string
+	// mention, when set, is prefixed to every Discord message: a user mention
+	// in Discord's numeric form ("<@123456789012345678>"), "@here" or
+	// "@everyone". Plain "@name" text does not ping anyone on Discord.
+	mention    string
 	httpClient *http.Client
 
 	mu   sync.Mutex
@@ -88,6 +93,16 @@ func (n *Notifier) claim(name string) bool {
 	return true
 }
 
+// SetMention sets the text prefixed to every Discord message so a person or
+// the channel is pinged. Discord only pings numeric user mentions
+// ("<@id>"), "@here" and "@everyone".
+func (n *Notifier) SetMention(m string) {
+	if n == nil {
+		return
+	}
+	n.mention = strings.TrimSpace(m)
+}
+
 // postDiscord sends one condition to the webhook. The body carries the profile
 // and the condition only: no DIDs, no handles, no post text, because the
 // channel is not a place where the bot's input data belongs.
@@ -96,7 +111,7 @@ func (n *Notifier) postDiscord(ctx context.Context, c Condition) {
 		return
 	}
 
-	body, err := json.Marshal(map[string]string{"content": discordMessage(n.profile, c)})
+	body, err := json.Marshal(discordPayload(n.mention, n.profile, c))
 	if err != nil {
 		slog.Warn("alert webhook payload could not be encoded", "name", c.Name, "error", err)
 		return
@@ -123,6 +138,19 @@ func (n *Notifier) postDiscord(ctx context.Context, c Condition) {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		slog.Warn("alert webhook returned an error status", "name", c.Name, "status", resp.StatusCode)
+	}
+}
+
+// discordPayload is the webhook body. allowed_mentions must name the mention
+// kinds explicitly or Discord renders "<@id>" and "@here" as inert text.
+func discordPayload(mention, profile string, c Condition) map[string]any {
+	content := discordMessage(profile, c)
+	if mention != "" {
+		content = mention + " " + content
+	}
+	return map[string]any{
+		"content":          content,
+		"allowed_mentions": map[string]any{"parse": []string{"users", "everyone"}},
 	}
 }
 

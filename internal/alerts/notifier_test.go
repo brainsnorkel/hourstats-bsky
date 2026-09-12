@@ -58,14 +58,14 @@ func TestNotify_DiscordBody(t *testing.T) {
 		t.Fatalf("posts = %d, want 1", len(bodies))
 	}
 
-	var payload map[string]string
+	var payload map[string]any
 	if err := json.Unmarshal([]byte(bodies[0]), &payload); err != nil {
 		t.Fatalf("decode body %q: %v", bodies[0], err)
 	}
-	if len(payload) != 1 {
-		t.Errorf("payload = %v, want only a content field", payload)
+	if len(payload) != 2 {
+		t.Errorf("payload = %v, want content and allowed_mentions only", payload)
 	}
-	content := payload["content"]
+	content, _ := payload["content"].(string)
 	for _, want := range []string{"hourstats-staging", "warn", "stale_posts", "threshold 1"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("content = %q, want it to contain %q", content, want)
@@ -188,4 +188,21 @@ func TestNotify_NoWebhookConfigured(t *testing.T) {
 func TestNotify_NilNotifier(t *testing.T) {
 	var n *Notifier
 	n.Notify(context.Background(), []Condition{{Name: "capped_posts", Severity: SeverityWarn}})
+}
+
+func TestDiscordPayloadMention(t *testing.T) {
+	c := Condition{Name: "stale_posts", Severity: SeverityWarn, Message: "m"}
+	got := discordPayload("<@123>", "staging", c)
+	content, _ := got["content"].(string)
+	if !strings.HasPrefix(content, "<@123> hourstats-staging warn: stale_posts") {
+		t.Fatalf("content = %q", content)
+	}
+	am, _ := got["allowed_mentions"].(map[string]any)
+	parse, _ := am["parse"].([]string)
+	if len(parse) != 2 || parse[0] != "users" || parse[1] != "everyone" {
+		t.Fatalf("allowed_mentions = %v", am)
+	}
+	if plain, _ := discordPayload("", "staging", c)["content"].(string); strings.HasPrefix(plain, " ") || strings.Contains(plain, "<@") {
+		t.Fatalf("empty mention altered content: %q", plain)
+	}
 }

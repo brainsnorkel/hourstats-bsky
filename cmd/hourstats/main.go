@@ -122,6 +122,7 @@ func main() {
 	alertThresholds := alerts.ThresholdsFromEnv()
 	alertState := alerts.NewState()
 	alertNotifier := alerts.NewNotifier(profile, os.Getenv("ALERT_DISCORD_WEBHOOK_URL"), nil)
+	alertNotifier.SetMention(os.Getenv("ALERT_DISCORD_MENTION"))
 	statsServer.SetAlertState(alertState)
 	slog.Info("alert thresholds configured",
 		"capped_posts", alertThresholds.CappedPostsPerSnapshot,
