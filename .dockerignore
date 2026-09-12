@@ -1,6 +1,9 @@
-.git
-.beads
-backups
-test-results
-*.test
-bin/
+# Allowlist: only what the build needs reaches the Fly remote builder.
+# The working tree holds .env (live app passwords), local backups, heap
+# profiles and analysis exports; none of it belongs in a build context.
+*
+!go.mod
+!go.sum
+!cmd
+!internal
+!Dockerfile
