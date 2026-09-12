@@ -272,6 +272,21 @@ func (c *Collector) LastPostReceived() time.Time {
 	return time.Unix(ts, 0)
 }
 
+// ReconnectCount returns the live consumer's lifetime reconnect count, or 0
+// when there is no consumer attached. The alert path uses it only as a
+// fallback: snapshots carry per-snapshot reconnect deltas, which is the
+// measure an hourly threshold wants, and they exist for every window but the
+// first one after a restart.
+func (c *Collector) ReconnectCount() int64 {
+	c.mu.RLock()
+	provider := c.provider
+	c.mu.RUnlock()
+	if provider == nil {
+		return 0
+	}
+	return provider.GetStatsReport().Reconnects
+}
+
 // IncrementDroppedPosts adds n to the dropped-post counter.
 func (c *Collector) IncrementDroppedPosts(n int) {
 	c.droppedPosts.Add(int64(n))

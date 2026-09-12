@@ -7,9 +7,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/christophergentle/hourstats-bsky/internal/alerts"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
@@ -365,6 +367,69 @@ func TestHealth_OK(t *testing.T) {
 	}
 	if got.DBSizeBytes != 1024*1024 {
 		t.Errorf("DBSizeBytes = %d", got.DBSizeBytes)
+	}
+}
+
+// TestHealth_AlertsFromTheLastEvaluation covers the two fields the alert path
+// adds, alongside the database fields that were there before it.
+func TestHealth_AlertsFromTheLastEvaluation(t *testing.T) {
+	s := newTestServer(&mockStore{dbHealth: &store.DatabaseHealth{DBSizeBytes: 4096}})
+
+	state := alerts.NewState()
+	since := time.Date(2026, 9, 12, 1, 0, 0, 0, time.UTC)
+	state.Set([]alerts.Condition{
+		{Name: "capped_posts", Severity: alerts.SeverityWarn, Message: "rate cap dropped 6000 posts"},
+		{Name: "memory_guard_trip", Severity: alerts.SeverityError, Message: "1 memory_guard_trip event(s)"},
+	}, since)
+	s.SetAlertState(state)
+
+	rr := doRequest(s, "GET", "/stats/health")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+
+	var got struct {
+		DBSizeBytes int64           `json:"db_size_bytes"`
+		Status      string          `json:"status"`
+		Alerts      []alerts.Active `json:"alerts"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.DBSizeBytes != 4096 {
+		t.Errorf("db_size_bytes = %d, want the existing field to survive", got.DBSizeBytes)
+	}
+	if got.Status != alerts.StatusError {
+		t.Errorf("status = %q, want %q", got.Status, alerts.StatusError)
+	}
+	if len(got.Alerts) != 2 {
+		t.Fatalf("alerts = %v, want two", got.Alerts)
+	}
+	if got.Alerts[0].Name != "capped_posts" || got.Alerts[0].Severity != alerts.SeverityWarn {
+		t.Errorf("alerts[0] = %+v", got.Alerts[0])
+	}
+	if !got.Alerts[0].Since.Equal(since) {
+		t.Errorf("alerts[0].since = %v, want %v", got.Alerts[0].Since, since)
+	}
+	if got.Alerts[1].Message != "1 memory_guard_trip event(s)" {
+		t.Errorf("alerts[1].message = %q", got.Alerts[1].Message)
+	}
+}
+
+// TestHealth_NoEvaluationYet covers the window between startup and the first
+// snapshot: status is ok and alerts is an empty array, never null.
+func TestHealth_NoEvaluationYet(t *testing.T) {
+	s := newTestServer(&mockStore{dbHealth: &store.DatabaseHealth{DBSizeBytes: 1}})
+	rr := doRequest(s, "GET", "/stats/health")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"status":"ok"`) {
+		t.Errorf("body = %s, want status ok", body)
+	}
+	if !strings.Contains(body, `"alerts":[]`) {
+		t.Errorf("body = %s, want an empty alerts array", body)
 	}
 }
 

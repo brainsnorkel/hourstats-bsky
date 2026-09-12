@@ -10,12 +10,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/christophergentle/hourstats-bsky/internal/alerts"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/stats"
 	"github.com/christophergentle/hourstats-bsky/internal/statsapi"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
+
+// alertEvaluationBudget bounds one alert evaluation: two small reads and, at
+// most, one webhook POST. It is wider than the POST's own 10s timeout so a slow
+// webhook does not cut the reads short, and far narrower than the 30-minute
+// snapshot interval so evaluations cannot pile up.
+const alertEvaluationBudget = 30 * time.Second
 
 func main() {
 	profile := envOr("HOURSTATS_PROFILE", "staging")
@@ -109,6 +116,23 @@ func main() {
 		Hours:         healthChartHours,
 		MemoryLimitMB: healthChartMemoryLimitMB,
 	})
+
+	// Alert thresholds are read once; the state is shared with the API so
+	// /stats/health reports the same evaluation the notifier acted on.
+	alertThresholds := alerts.ThresholdsFromEnv()
+	alertState := alerts.NewState()
+	alertNotifier := alerts.NewNotifier(profile, os.Getenv("ALERT_DISCORD_WEBHOOK_URL"), nil)
+	statsServer.SetAlertState(alertState)
+	slog.Info("alert thresholds configured",
+		"capped_posts", alertThresholds.CappedPostsPerSnapshot,
+		"stale_posts", alertThresholds.StalePostsPerSnapshot,
+		"reconnects_per_hour", alertThresholds.ReconnectsPerHour,
+		"cycle_seconds", alertThresholds.CycleSeconds,
+		"rss_pct", alertThresholds.RSSPct,
+		"total_memory_mb", alertThresholds.TotalMemoryMB,
+		"discord", os.Getenv("ALERT_DISCORD_WEBHOOK_URL") != "",
+	)
+
 	if err := statsServer.Start(); err != nil {
 		slog.Error("failed to start stats API", "error", err)
 	}
@@ -363,6 +387,13 @@ func main() {
 			if err := collector.TakeSnapshot(ctx); err != nil {
 				slog.Error("stats snapshot failed", "error", err)
 			}
+			// Evaluated off the loop: the reads and a webhook POST must not
+			// delay the next tick, and the budget is its own.
+			go func(report alerts.ConsumerReport) {
+				alertCtx, alertCancel := context.WithTimeout(context.WithoutCancel(ctx), alertEvaluationBudget)
+				defer alertCancel()
+				alerts.Run(alertCtx, db, report, alertThresholds, alertState, alertNotifier)
+			}(alerts.ConsumerReport{Reconnects: collector.ReconnectCount()})
 
 		case <-stallCheckTicker.C:
 			lastPost := collector.LastPostReceived()

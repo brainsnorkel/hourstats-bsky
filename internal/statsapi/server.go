@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/christophergentle/hourstats-bsky/internal/alerts"
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
@@ -56,6 +57,10 @@ type Server struct {
 	server      *http.Server // loopback (or STATS_API_BIND when set)
 	privServer  *http.Server // Fly 6PN private address; nil off Fly
 	healthChart HealthChartConfig
+	// alertState is the last alert evaluation, written by the snapshot
+	// goroutine and read by /stats/health. Nil until SetAlertState is called,
+	// which *alerts.State tolerates.
+	alertState *alerts.State
 }
 
 // New creates a new stats API server.
@@ -80,6 +85,13 @@ func New(store StatsStore, port int, healthCfg HealthChartConfig) *Server {
 		s.privServer = newHTTPServer(private, mux)
 	}
 	return s
+}
+
+// SetAlertState registers the shared alert state /stats/health reports from.
+// Call it before Start: the field itself is not synchronised, only the state
+// behind it, which is what the two goroutines actually share.
+func (s *Server) SetAlertState(state *alerts.State) {
+	s.alertState = state
 }
 
 // bindAddrs returns the loopback (or overridden) address and, on Fly, the
@@ -344,6 +356,15 @@ func (s *Server) handlePosting(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, activity)
 }
 
+// healthResponse is the database health with the last alert evaluation beside
+// it. DatabaseHealth is embedded so its fields stay at the top level of the
+// response and existing consumers keep parsing it unchanged.
+type healthResponse struct {
+	*store.DatabaseHealth
+	Status string          `json:"status"`
+	Alerts []alerts.Active `json:"alerts"`
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	health, err := s.store.GetDatabaseHealth(ctx)
@@ -352,7 +373,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	writeJSON(w, http.StatusOK, health)
+	status, active := s.alertState.Snapshot()
+	if active == nil {
+		active = []alerts.Active{}
+	}
+	writeJSON(w, http.StatusOK, healthResponse{DatabaseHealth: health, Status: status, Alerts: active})
 }
 
 func (s *Server) handleHealthHistory(w http.ResponseWriter, r *http.Request) {

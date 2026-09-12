@@ -500,6 +500,12 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		// topPosts is empty, so the run row below records no top post either
 		// and the daily and weekly reports cannot inherit an ungated one.
 		slog.Warn("feature gate unavailable, posting summary without top posts", "run_id", runID)
+		// Recorded as an event, like the other degradations, so the alert
+		// path sees an hour that published no top posts at all. The run id is
+		// the only detail: the candidates are exactly what the gate declined
+		// to vouch for.
+		_ = collector.LogEvent(context.WithoutCancel(ctx), "feature_gate_unavailable",
+			fmt.Sprintf("run_id=%s candidates=%d", runID, len(candidates)))
 	}
 
 	topStorePosts := make([]store.Post, len(topPosts))
