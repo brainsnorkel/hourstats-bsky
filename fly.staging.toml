@@ -23,11 +23,6 @@ swap_size_mb = 512
   SQLITE_MMAP_MB = "0"
   SQLITE_READ_CONNS = "3"
   HEALTH_CHART_MEMORY_LIMIT_MB = "1024"
-  # hs-wsp.7: count like/repost volume on staging (dropped, never processed)
-  JETSTREAM_EXTRA_COLLECTIONS = "app.bsky.feed.like,app.bsky.feed.repost"
-  # staging-only diagnostics for where the stale creates come from (off in prod)
-  JETSTREAM_STALE_SAMPLE_PER_HOUR = "30"
-  JETSTREAM_EXTRA_KINDS = "sync,identity"
   # hs-019.1: the per-DID create cap, set explicitly to document the default
   FIREHOSE_MAX_POSTS_PER_DID_PER_MINUTE = "60"
   # every snapshot trips stale_posts (staging drops hundreds of thousands of
