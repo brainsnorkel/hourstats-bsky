@@ -28,6 +28,8 @@ swap_size_mb = 512
   # Webhook proof: fires the stale_posts alert every snapshot. REMOVE after the Discord message is seen.
   ALERT_STALE_POSTS_PER_SNAPSHOT = "1"
   ALERT_DISCORD_MENTION = "@here"
+  # Webhook proof of a pinged (actionable) alert: cycle_duration fires on the next analysis snapshot. REMOVE after.
+  ALERT_CYCLE_SECONDS = "1"
   # every snapshot trips stale_posts (staging drops hundreds of thousands of
   # backfill creates a window), which is the point: it proves the alert path
   # end to end — the `alert` log line, the one-per-hour suppression, and
