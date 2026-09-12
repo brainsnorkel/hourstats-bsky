@@ -38,11 +38,18 @@ func (m *mockStatsStore) InsertStatsEvent(_ context.Context, e *store.StatsEvent
 }
 
 type mockConsumerProvider struct {
-	report jetstream.StatsReport
+	report    jetstream.StatsReport
+	offenders jetstream.Offenders
+	takes     int
 }
 
 func (m *mockConsumerProvider) GetStatsReport() jetstream.StatsReport {
 	return m.report
+}
+
+func (m *mockConsumerProvider) TakeOffenders() jetstream.Offenders {
+	m.takes++
+	return m.offenders
 }
 
 // --- Tests ---
@@ -970,5 +977,62 @@ func TestCollectionDeltas(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("collectionDeltas()[%q] = %d, want %d", k, got[k], v)
 		}
+	}
+}
+
+// TestTakeSnapshot_TakesOffenders: the per-account breakdown is read once per
+// snapshot, so the accounts an alert names cover exactly the window that
+// snapshot's counters do.
+func TestTakeSnapshot_TakesOffenders(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+
+	provider := &mockConsumerProvider{
+		offenders: jetstream.Offenders{
+			Since:      time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC),
+			Stale:      []jetstream.DIDCount{{DID: "did:plc:importer", Count: 1200}},
+			StaleTotal: 1500,
+		},
+	}
+	c.SetConsumer(provider)
+
+	if got := c.Offenders(); got.Stale != nil {
+		t.Errorf("Offenders before the first snapshot = %+v, want the zero value", got)
+	}
+
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+	if provider.takes != 1 {
+		t.Errorf("TakeOffenders called %d times, want once per snapshot", provider.takes)
+	}
+
+	got := c.Offenders()
+	if len(got.Stale) != 1 || got.Stale[0].DID != "did:plc:importer" {
+		t.Errorf("Offenders = %+v, want the provider's breakdown", got)
+	}
+	if !got.Since.Equal(provider.offenders.Since) {
+		t.Errorf("Since = %v, want %v", got.Since, provider.offenders.Since)
+	}
+}
+
+// TestTakeSnapshot_NilProviderOffenders: with no consumer to ask, the alert
+// path gets an empty breakdown rather than the previous window's accounts.
+func TestTakeSnapshot_NilProviderOffenders(t *testing.T) {
+	ms := &mockStatsStore{}
+	c := New(ms, "")
+	c.SetConsumer(&mockConsumerProvider{
+		offenders: jetstream.Offenders{Stale: []jetstream.DIDCount{{DID: "did:plc:importer", Count: 5}}},
+	})
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+
+	c.SetConsumer(nil)
+	if err := c.TakeSnapshot(context.Background()); err != nil {
+		t.Fatalf("TakeSnapshot with nil provider: %v", err)
+	}
+	if got := c.Offenders(); got.Stale != nil || !got.Since.IsZero() {
+		t.Errorf("Offenders = %+v, want the zero value", got)
 	}
 }

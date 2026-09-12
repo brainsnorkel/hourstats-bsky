@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -46,6 +47,30 @@ type Condition struct {
 	Name       string `json:"name"`
 	Severity   string `json:"severity"`
 	Message    string `json:"message"`
+	// Accounts are the busiest accounts behind a drop counter, highest first,
+	// for the conditions that have one. The message already names them, but
+	// /stats/health carries them structurally as well so a script does not
+	// have to read English. It is nil for every other condition.
+	Accounts []DIDCount `json:"accounts,omitempty"`
+}
+
+// DIDCount is one account and the number of drops it accounts for. It mirrors
+// jetstream.DIDCount rather than importing it, for the same reason
+// ConsumerReport mirrors StatsReport.
+type DIDCount struct {
+	DID   string `json:"did"`
+	Count int64  `json:"count"`
+}
+
+// Offenders is the per-account breakdown of the three drop counters the
+// consumer accumulated since Since. The lists are the busiest accounts only,
+// highest first; an empty list means the consumer reported none, which is what
+// a restart between snapshots looks like.
+type Offenders struct {
+	Since  time.Time
+	Stale  []DIDCount
+	Capped []DIDCount
+	Denied []DIDCount
 }
 
 // Thresholds holds every number Evaluate compares against, so a test can set
@@ -167,6 +192,12 @@ type ConsumerReport struct {
 	// fallback: snapshots store per-snapshot reconnect deltas, which is the
 	// measure an hourly threshold wants.
 	Reconnects int64
+
+	// Offenders names the accounts behind the stale, capped and denied
+	// counters of the window this evaluation covers. It is the zero value
+	// when there is no consumer to ask, in which case the three drop
+	// conditions read exactly as they did before it existed.
+	Offenders Offenders
 }
 
 // alertingEvents maps the stats_events types worth alerting on to a severity.
@@ -218,6 +249,64 @@ var eventOrder = []string{
 	"seq_floor_reset",
 }
 
+// defaultOffenderWindowMinutes is the window the per-account rates are
+// computed over when the consumer's own window cannot be measured — the
+// snapshot cadence, which is what that window almost always is.
+const defaultOffenderWindowMinutes = 30.0
+
+// offenderWindowMinutes is how long the breakdown accumulated for: from the
+// consumer's last read to this snapshot. The snapshot's time is used rather
+// than the wall clock because Evaluate has no clock, and because the counts
+// stop at the snapshot that took them.
+func offenderWindowMinutes(since time.Time, latest *store.StatsSnapshot) float64 {
+	if since.IsZero() || latest == nil || latest.SnapshotTime.IsZero() {
+		return defaultOffenderWindowMinutes
+	}
+	minutes := latest.SnapshotTime.Sub(since).Minutes()
+	if minutes <= 0 {
+		return defaultOffenderWindowMinutes
+	}
+	return minutes
+}
+
+// accountsPrefix introduces the per-account breakdown. It is the last thing in
+// a flood condition's message, so the notifier can rewrite the DIDs after it
+// as handles without disturbing the prose before it.
+const accountsPrefix = "Top accounts this half hour: "
+
+// accountsText names the busiest accounts behind a drop counter, as
+// "Top accounts this half hour: <did> <n> posts (~<rate>/min); ...". It
+// returns "" when there is no breakdown to report.
+func accountsText(accounts []DIDCount, minutes float64) string {
+	if len(accounts) == 0 {
+		return ""
+	}
+	if minutes <= 0 {
+		minutes = defaultOffenderWindowMinutes
+	}
+	entries := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		entries = append(entries, fmt.Sprintf("%s %d posts (~%.1f/min)",
+			a.DID, a.Count, float64(a.Count)/minutes))
+	}
+	return accountsPrefix + strings.Join(entries, "; ")
+}
+
+// floodCondition builds one of the three drop-counter conditions, naming the
+// accounts behind it when the consumer reported any. The DIDs go in the
+// message because the channel this reaches is the operator's own.
+func floodCondition(name, message string, accounts []DIDCount, minutes float64) Condition {
+	if text := accountsText(accounts, minutes); text != "" {
+		message += " " + text
+	}
+	return Condition{
+		Name:     name,
+		Severity: SeverityWarn,
+		Message:  message,
+		Accounts: accounts,
+	}
+}
+
 // prevInt reads one counter from the previous snapshot, or 0 when absent.
 func prevInt(p *store.StatsSnapshot, get func(*store.StatsSnapshot) int) int64 {
 	if p == nil {
@@ -247,6 +336,8 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 	var conds []Condition
 
 	if latest != nil {
+		offenderMinutes := offenderWindowMinutes(report.Offenders.Since, latest)
+
 		// Dropped posts mean the write buffer was full and firehose posts
 		// were thrown away. One window of it is a spike; two in a row is
 		// sustained loss, which is why the previous snapshot is required.
@@ -261,24 +352,20 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 		}
 
 		if latest.CappedPosts > cfg.CappedPostsPerSnapshot {
-			conds = append(conds, Condition{
-				Name:     "capped_posts",
-				Severity: SeverityWarn,
-				Message: fmt.Sprintf("%d posts were dropped this half hour by the per-account rate cap (%s). Meaning: some accounts posted faster than the cap allows, which is what a spam or import flood looks like; their excess never reached the buffer or the counts. Normal on prod is a few hundred. Check: the 'capped posts hourly summary' log line for the accounts, and whether the firehose total looks inflated.",
+			conds = append(conds, floodCondition("capped_posts",
+				fmt.Sprintf("%d posts were dropped this half hour by the per-account rate cap (%s). Meaning: some accounts posted faster than the cap allows, which is what a spam or import flood looks like; their excess never reached the buffer or the counts. Normal on prod is a few hundred. Check: the 'capped posts hourly summary' log line for the accounts, and whether the firehose total looks inflated.",
 					latest.CappedPosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.CappedPosts }), int64(cfg.CappedPostsPerSnapshot))),
-			})
+				report.Offenders.Capped, offenderMinutes))
 		}
 
 		// The denylist doing its job is information, not a problem; it only
 		// becomes one at a volume that says the list is matching far more
 		// than it was written for.
 		if latest.DeniedPosts > cfg.DeniedPostsWarn {
-			conds = append(conds, Condition{
-				Name:     "denied_posts",
-				Severity: SeverityWarn,
-				Message: fmt.Sprintf("%d posts from denylisted accounts were dropped this half hour (%s). Meaning: the operator denylist is matching far more than it was written for; either a listed account is flooding or the list has grown. Check: key_value firehose_deny_dids and FIREHOSE_DENY_DIDS, and the stale/capped counters for the same accounts.",
+			conds = append(conds, floodCondition("denied_posts",
+				fmt.Sprintf("%d posts from denylisted accounts were dropped this half hour (%s). Meaning: the operator denylist is matching far more than it was written for; either a listed account is flooding or the list has grown. Check: key_value firehose_deny_dids and FIREHOSE_DENY_DIDS, and the stale/capped counters for the same accounts.",
 					latest.DeniedPosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.DeniedPosts }), int64(cfg.DeniedPostsWarn))),
-			})
+				report.Offenders.Denied, offenderMinutes))
 		} else if latest.DeniedPosts > 0 {
 			conds = append(conds, Condition{
 				Name:     "denied_posts",
@@ -288,12 +375,10 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 		}
 
 		if latest.StalePosts > cfg.StalePostsPerSnapshot {
-			conds = append(conds, Condition{
-				Name:     "stale_posts",
-				Severity: SeverityWarn,
-				Message: fmt.Sprintf("%d posts were dropped this half hour because their createdAt was more than the allowed age before (or ahead of) the time Jetstream delivered them (%s). Meaning: accounts are importing or replaying old posts, or Jetstream re-delivered history; none of it entered the analysis window. Normal on prod is 60k to 250k per half hour from a few importing accounts. Check: the 'stale create hourly summary' line if diagnostics are on, and whether English counts also jumped (that would mean a live flood, not backfill).",
+			conds = append(conds, floodCondition("stale_posts",
+				fmt.Sprintf("%d posts were dropped this half hour because their createdAt was more than the allowed age before (or ahead of) the time Jetstream delivered them (%s). Meaning: accounts are importing or replaying old posts, or Jetstream re-delivered history; none of it entered the analysis window. Normal on prod is 60k to 250k per half hour from a few importing accounts. Check: the 'stale create hourly summary' line if diagnostics are on, and whether English counts also jumped (that would mean a live flood, not backfill).",
 					latest.StalePosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.StalePosts }), int64(cfg.StalePostsPerSnapshot))),
-			})
+				report.Offenders.Stale, offenderMinutes))
 		}
 
 		if latest.OversizedPosts > cfg.OversizedPosts {

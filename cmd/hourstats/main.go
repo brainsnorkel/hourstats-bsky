@@ -12,6 +12,7 @@ import (
 
 	"github.com/christophergentle/hourstats-bsky/internal/alerts"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
+	"github.com/christophergentle/hourstats-bsky/internal/jetstream"
 	"github.com/christophergentle/hourstats-bsky/internal/stats"
 	"github.com/christophergentle/hourstats-bsky/internal/statsapi"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -23,6 +24,30 @@ import (
 // webhook does not cut the reads short, and far narrower than the 30-minute
 // snapshot interval so evaluations cannot pile up.
 const alertEvaluationBudget = 30 * time.Second
+
+// alertOffenders converts the consumer's per-account breakdown into the alert
+// package's own copy of it. The two structs are deliberately separate: the
+// alert package states its inputs itself so its tests can, and so it never
+// depends on the consumer.
+func alertOffenders(o jetstream.Offenders) alerts.Offenders {
+	return alerts.Offenders{
+		Since:  o.Since,
+		Stale:  alertDIDCounts(o.Stale),
+		Capped: alertDIDCounts(o.Capped),
+		Denied: alertDIDCounts(o.Denied),
+	}
+}
+
+func alertDIDCounts(counts []jetstream.DIDCount) []alerts.DIDCount {
+	if len(counts) == 0 {
+		return nil
+	}
+	out := make([]alerts.DIDCount, 0, len(counts))
+	for _, c := range counts {
+		out = append(out, alerts.DIDCount{DID: c.DID, Count: c.Count})
+	}
+	return out
+}
 
 func main() {
 	profile := envOr("HOURSTATS_PROFILE", "staging")
@@ -399,7 +424,10 @@ func main() {
 				alertCtx, alertCancel := context.WithTimeout(context.WithoutCancel(ctx), alertEvaluationBudget)
 				defer alertCancel()
 				alerts.Run(alertCtx, db, report, alertThresholds, alertState, alertNotifier)
-			}(alerts.ConsumerReport{Reconnects: collector.ReconnectCount()})
+			}(alerts.ConsumerReport{
+				Reconnects: collector.ReconnectCount(),
+				Offenders:  alertOffenders(collector.Offenders()),
+			})
 
 		case <-stallCheckTicker.C:
 			lastPost := collector.LastPostReceived()

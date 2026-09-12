@@ -317,6 +317,11 @@ type Consumer struct {
 	// MaxPostsPerDIDPerMinute > 0.
 	limiter *didLimiter
 
+	// offenders is the per-account breakdown of the stale, capped and denied
+	// counters, read and reset by the stats snapshot. It is always on: the
+	// alert path has no other way to name the accounts behind a flood.
+	offenders *offenderTracker
+
 	// Stale-frame cutoff, owned by the read loop: the RFC 3339 second prefix a
 	// rejected frame's createdAt must reach to count as live, recomputed at
 	// most once a second rather than per frame.
@@ -427,6 +432,7 @@ func NewConsumer(cfg ConsumerConfig) *Consumer {
 	}
 	c.diag = newStaleDiag(cfg.StaleSamplePerHour)
 	c.limiter = newDIDLimiter(cfg.MaxPostsPerDIDPerMinute)
+	c.offenders = newOffenderTracker(time.Now())
 	return c
 }
 
@@ -833,6 +839,7 @@ func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 			// or the firehose and per-language totals carry it instead.
 			if c.rejectedFrameIsStale(message) {
 				c.stats.PostsStale.Add(1)
+				c.noteStaleFrame(message)
 				c.recordStaleFrame(message, firstLang)
 				continue
 			}
@@ -954,6 +961,7 @@ func (c *Consumer) dispatch(event *Event) {
 
 	if age, drop, future := c.postAge(event, record); drop {
 		c.stats.PostsStale.Add(1)
+		c.offenders.addStale(event.DID)
 		if future {
 			c.stats.PostsFuture.Add(1)
 		}

@@ -13,6 +13,10 @@ type Active struct {
 	Severity string    `json:"severity"`
 	Message  string    `json:"message"`
 	Since    time.Time `json:"since"`
+	// Accounts carries the drop-counter conditions' per-account breakdown, so
+	// /stats/health reports the accounts as data and not only inside the
+	// message. Absent for conditions that have none.
+	Accounts []DIDCount `json:"accounts,omitempty"`
 }
 
 // State is the last evaluation, shared between the evaluating goroutine and
@@ -56,6 +60,7 @@ func (s *State) Set(conds []Condition, now time.Time) {
 			Severity: c.Severity,
 			Message:  c.Message,
 			Since:    start,
+			Accounts: c.Accounts,
 		})
 	}
 	s.since = seen

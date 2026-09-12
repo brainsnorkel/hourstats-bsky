@@ -351,6 +351,7 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 			// or the firehose and per-language totals carry it instead.
 			if c.rejectedFrameIsStale(message) {
 				c.stats.PostsStale.Add(1)
+				c.noteStaleFrame(message)
 				c.recordStaleFrame(message, firstLang)
 				continue
 			}

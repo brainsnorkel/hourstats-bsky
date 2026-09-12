@@ -417,3 +417,111 @@ func TestState_NilIsUsable(t *testing.T) {
 		t.Errorf("nil state = %q/%v, want ok/nil", status, active)
 	}
 }
+
+// TestEvaluate_NamesTopAccounts: the three flood conditions exist so an
+// operator can act, and acting means knowing which accounts to look at. The
+// rate is the count over the window the consumer accumulated it in, which is
+// what separates "a busy account" from "a machine".
+func TestEvaluate_NamesTopAccounts(t *testing.T) {
+	snapshotTime := time.Date(2026, 9, 12, 12, 30, 0, 0, time.UTC)
+	report := ConsumerReport{Offenders: Offenders{
+		Since: snapshotTime.Add(-30 * time.Minute),
+		Stale: []DIDCount{
+			{DID: "did:plc:importer", Count: 1200},
+			{DID: "did:plc:second", Count: 15},
+		},
+		Capped: []DIDCount{{DID: "did:plc:loud", Count: 6000}},
+		Denied: []DIDCount{{DID: "did:plc:blocked", Count: 300000}},
+	}}
+
+	latest := &store.StatsSnapshot{
+		SnapshotTime: snapshotTime,
+		StalePosts:   defaultStalePostsPerSnapshot + 1,
+		CappedPosts:  defaultCappedPostsPerSnapshot + 1,
+		DeniedPosts:  defaultDeniedPostsWarn + 1,
+	}
+
+	conds := Evaluate(latest, nil, nil, report, testThresholds())
+
+	byName := map[string]Condition{}
+	for _, c := range conds {
+		byName[c.Name] = c
+	}
+
+	stale, ok := byName["stale_posts"]
+	if !ok {
+		t.Fatalf("conditions = %v, want stale_posts", names(conds))
+	}
+	wantSuffix := "Top accounts this half hour: did:plc:importer 1200 posts (~40.0/min); did:plc:second 15 posts (~0.5/min)"
+	if !strings.HasSuffix(stale.Message, wantSuffix) {
+		t.Errorf("stale message = %q, want it to end with %q", stale.Message, wantSuffix)
+	}
+	if len(stale.Accounts) != 2 || stale.Accounts[0].DID != "did:plc:importer" {
+		t.Errorf("stale accounts = %+v, want the breakdown carried structurally", stale.Accounts)
+	}
+
+	capped := byName["capped_posts"]
+	if !strings.HasSuffix(capped.Message, "Top accounts this half hour: did:plc:loud 6000 posts (~200.0/min)") {
+		t.Errorf("capped message = %q", capped.Message)
+	}
+	denied := byName["denied_posts"]
+	if !strings.HasSuffix(denied.Message, "Top accounts this half hour: did:plc:blocked 300000 posts (~10000.0/min)") {
+		t.Errorf("denied message = %q", denied.Message)
+	}
+	if denied.Severity != SeverityWarn {
+		t.Errorf("denied severity = %q, want warn", denied.Severity)
+	}
+}
+
+// TestEvaluate_NoAccountsLeavesMessageAlone: a consumer that reported nothing
+// (a restart between snapshots, or the info-level denylist trickle) must not
+// produce a dangling "Top accounts" line.
+func TestEvaluate_NoAccountsLeavesMessageAlone(t *testing.T) {
+	latest := &store.StatsSnapshot{
+		SnapshotTime: time.Date(2026, 9, 12, 12, 30, 0, 0, time.UTC),
+		StalePosts:   defaultStalePostsPerSnapshot + 1,
+		DeniedPosts:  1,
+	}
+	for _, c := range Evaluate(latest, nil, nil, ConsumerReport{}, testThresholds()) {
+		if strings.Contains(c.Message, accountsPrefix) {
+			t.Errorf("%s names accounts with none reported: %q", c.Name, c.Message)
+		}
+		if c.Accounts != nil {
+			t.Errorf("%s accounts = %+v, want nil", c.Name, c.Accounts)
+		}
+	}
+}
+
+// TestOffenderWindowMinutes: the rate divisor is the window the consumer
+// actually accumulated in, falling back to the snapshot cadence when it cannot
+// be measured — a rate of "per unknown" would be worse than an assumed one.
+func TestOffenderWindowMinutes(t *testing.T) {
+	snapshotTime := time.Date(2026, 9, 12, 12, 30, 0, 0, time.UTC)
+	latest := &store.StatsSnapshot{SnapshotTime: snapshotTime}
+
+	if got := offenderWindowMinutes(snapshotTime.Add(-15*time.Minute), latest); got != 15 {
+		t.Errorf("measured window = %v, want 15", got)
+	}
+	if got := offenderWindowMinutes(time.Time{}, latest); got != defaultOffenderWindowMinutes {
+		t.Errorf("zero Since = %v, want the fallback", got)
+	}
+	if got := offenderWindowMinutes(snapshotTime.Add(time.Minute), latest); got != defaultOffenderWindowMinutes {
+		t.Errorf("Since after the snapshot = %v, want the fallback", got)
+	}
+	if got := offenderWindowMinutes(snapshotTime.Add(-15*time.Minute), nil); got != defaultOffenderWindowMinutes {
+		t.Errorf("no snapshot = %v, want the fallback", got)
+	}
+}
+
+// TestAccountsTextFallbackRate: with no measurable window the rate is computed
+// over the snapshot cadence, so 900 posts reads as 30/min rather than +Inf.
+func TestAccountsTextFallbackRate(t *testing.T) {
+	got := accountsText([]DIDCount{{DID: "did:plc:a", Count: 900}}, 0)
+	want := "Top accounts this half hour: did:plc:a 900 posts (~30.0/min)"
+	if got != want {
+		t.Errorf("accountsText = %q, want %q", got, want)
+	}
+	if accountsText(nil, 30) != "" {
+		t.Error("accountsText with no accounts should be empty")
+	}
+}

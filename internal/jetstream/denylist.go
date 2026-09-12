@@ -91,5 +91,6 @@ func deniedCreateDID(data []byte) string {
 // ever reaches a Debug line, never an Info one.
 func (c *Consumer) countDeniedCreate(did string) {
 	c.stats.PostsDenied.Add(1)
+	c.offenders.addDenied(did)
 	slog.Debug("dropped a create from a denied did", "did", did)
 }

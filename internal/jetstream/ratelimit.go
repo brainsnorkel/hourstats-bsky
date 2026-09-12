@@ -210,6 +210,7 @@ func (c *Consumer) allowDIDRate(event *Event) bool {
 	}
 	if !ok {
 		c.stats.PostsCapped.Add(1)
+		c.offenders.addCapped(event.DID)
 	}
 	return ok
 }

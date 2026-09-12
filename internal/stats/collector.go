@@ -22,6 +22,10 @@ const defaultSnapshotWindowMinutes = 30.0
 // ConsumerStatsProvider is satisfied by *jetstream.Consumer
 type ConsumerStatsProvider interface {
 	GetStatsReport() jetstream.StatsReport
+	// TakeOffenders returns the accounts behind the stale, capped and denied
+	// counters since the previous call and starts a new window, so the
+	// breakdown lines up with the snapshot's own deltas.
+	TakeOffenders() jetstream.Offenders
 }
 
 // StatsStore is the subset of store.Store we need
@@ -55,6 +59,10 @@ type Collector struct {
 	// them, keyed by primary language subtag ("en", "pt", "und").
 	langMu     sync.Mutex
 	langCounts map[string]int64
+
+	// lastOffenders is the per-account breakdown taken at the last snapshot,
+	// held for the alert evaluation that follows it. Guarded by mu.
+	lastOffenders jetstream.Offenders
 
 	// Dropped-post counter — incremented when the write buffer is full
 	droppedPosts atomic.Int64
@@ -287,6 +295,15 @@ func (c *Collector) ReconnectCount() int64 {
 	return provider.GetStatsReport().Reconnects
 }
 
+// Offenders returns the per-account breakdown taken at the last snapshot. The
+// alert evaluation runs immediately after TakeSnapshot, so this is that
+// snapshot's window; before the first snapshot it is the zero value.
+func (c *Collector) Offenders() jetstream.Offenders {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastOffenders
+}
+
 // IncrementDroppedPosts adds n to the dropped-post counter.
 func (c *Collector) IncrementDroppedPosts(n int) {
 	c.droppedPosts.Add(int64(n))
@@ -370,6 +387,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	c.mu.RUnlock()
 
 	var report jetstream.StatsReport
+	var offenders jetstream.Offenders
 	var activeEndpoint string
 	var uptimeSeconds int
 	var deltaEvents, deltaPosts, deltaSkipped, deltaReconnects, deltaErrors, deltaRotations, deltaEarlyRejected int64
@@ -380,6 +398,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 
 	if provider != nil {
 		report = provider.GetStatsReport()
+		offenders = provider.TakeOffenders()
 
 		// Compute deltas from last snapshot. runJetstream builds a fresh
 		// Consumer after a fatal error, so these counters restart at zero
@@ -424,6 +443,12 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	} else {
 		slog.Warn("consumer provider is nil, using zeros for consumer stats")
 	}
+
+	// Held for the alert evaluation that follows this snapshot. The DIDs are
+	// only ever read from here by the alert path; nothing logs them at Info.
+	c.mu.Lock()
+	c.lastOffenders = offenders
+	c.mu.Unlock()
 
 	// Read and reset traffic counters (these are only read by TakeSnapshot, so Swap is safe)
 	englishDelta := c.englishPosts.Swap(0)
