@@ -60,7 +60,7 @@ fly ssh console -a hourstats-prod -C "su-exec hourstats realign -dry-run"   # On
 | `VACUUM_FREELIST_PCT` | `20` | Freelist share of total pages the weekly VACUUM must exceed to run; below it the rewrite is skipped with an info log |
 | `REPORTS_ENABLED` | `false` | Enable the weekly (Monday) week-in-review thread and the monthly (1st) candlestick + volume thread |
 | `REPORTS_RUN_AT_STARTUP` | (empty) | Comma list of `weekly`, `monthly`. Runs the named reports once, ~30s after startup, still honouring the `key_value` guards and `DRY_RUN`. Requires `REPORTS_ENABLED=true`. For staging tests; unset it before leaving an app running |
-| `STATS_API_BIND` | (unset) | Override the stats API listen address (tests). Unset, the server listens on `127.0.0.1:9111` and, when `FLY_PRIVATE_IP` is set, on the Fly private IPv6 address; never on all interfaces. Read/write/idle timeouts and a 64 KiB header cap apply |
+| `STATS_API_BIND` | (unset) | Override the stats API listen address (tests). Unset, the server listens on `127.0.0.1:9111` and, when `FLY_PRIVATE_IP` is set, on the Fly private IPv6 address; never on all interfaces and not on `::1`, so over `fly ssh console` use `wget -qO- http://127.0.0.1:9111/...` (busybox resolves `localhost` to `::1` first). Read/write/idle timeouts and a 64 KiB header cap apply |
 | `HEALTH_CHART_HOURS` | `6` | Default hours for health chart generation |
 | `HEALTH_CHART_MEMORY_LIMIT_MB` | `512` | Memory limit line on health charts |
 | `MEMORY_GUARD_ENABLED` | `true` | In-process memory guard. Watches RSS every 500ms during a cycle and the daily job, writes a heap profile and goroutine dump past the warn threshold, cancels the cycle past the trip threshold |
