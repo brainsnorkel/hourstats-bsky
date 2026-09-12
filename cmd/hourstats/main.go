@@ -140,6 +140,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The denylist is published before anything that could post: the consumer
+	// refreshes it on its own schedule, but a startup report runs ahead of its
+	// first dial and the feature gate reads the same list.
+	publishDenyList(ctx, db)
+
 	// One resolver for the whole process, so an author's content visibility
 	// declaration is read once a day rather than once per surface that
 	// considers featuring them. Every feature gate is built from it.

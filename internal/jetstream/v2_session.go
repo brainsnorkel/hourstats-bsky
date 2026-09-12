@@ -86,6 +86,7 @@ func (c *Consumer) dialCursorV2() int64 {
 	if c.cfg.CursorRewind > 0 {
 		timeUS -= c.cfg.CursorRewind.Microseconds()
 	}
+	timeUS = c.applyCursorFloor(timeUS)
 	if timeUS < minTimestampCursorV2 {
 		return 0
 	}
@@ -285,6 +286,12 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 		}
 		msgType, message, err := conn.ReadMessage()
 		if err != nil {
+			// The same wedge as v1: the timestamp cursor still names the last
+			// event delivered, so the rewind would dial back in before the
+			// refused frame. v2 sets the floor for the same reason.
+			if errors.Is(err, websocket.ErrReadLimit) {
+				c.noteOversizedFrame()
+			}
 			return fmt.Errorf("read: %w", err)
 		}
 
@@ -386,8 +393,12 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 			}
 			// The floor cannot be reached from this stream. Take this frame
 			// as the new tip rather than dropping the rest of the session.
+			floor := c.seq.Load()
 			slog.Error("jetstream seq floor rejected every recent frame, resetting to the live tip",
-				"dropped", seqDrops, "floor", c.seq.Load(), "seq", event.Seq)
+				"dropped", seqDrops, "floor", floor, "seq", event.Seq)
+			if c.cfg.OnSeqFloorReset != nil {
+				c.cfg.OnSeqFloorReset(int64(seqDrops), floor, event.Seq)
+			}
 			c.seq.Store(0)
 			c.cursor.Store(0)
 		}

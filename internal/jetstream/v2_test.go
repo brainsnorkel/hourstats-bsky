@@ -772,10 +772,16 @@ func TestConsumerV2_SeqFloorGuardResetsAfterRun(t *testing.T) {
 	defer srv.Close()
 
 	posts := make(chan string, 4)
+	// The reset is a stats event the alerts package already watches for, and the
+	// package holds no collector, so the callback is the only way out.
+	resets := make(chan [3]int64, 4)
 	consumer := NewConsumer(ConsumerConfig{
 		Endpoint:           wsEndpoint(srv.URL),
 		DisableCompression: true,
 		OnPost:             func(evt *Event, _ *PostRecord) { posts <- evt.PostURI() },
+		OnSeqFloorReset: func(dropped, floor, seq int64) {
+			resets <- [3]int64{dropped, floor, seq}
+		},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -788,6 +794,16 @@ func TestConsumerV2_SeqFloorGuardResetsAfterRun(t *testing.T) {
 	got := waitForPost(t, posts, "the guard to reset the floor")
 	if !strings.HasSuffix(got, "3low") {
 		t.Errorf("second post = %q, want the frame that tripped the guard", got)
+	}
+
+	select {
+	case r := <-resets:
+		if r != [3]int64{maxConsecutiveSeqDrops, 100, 5} {
+			t.Errorf("OnSeqFloorReset(dropped=%d, floor=%d, seq=%d), want (%d, 100, 5)",
+				r[0], r[1], r[2], maxConsecutiveSeqDrops)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("OnSeqFloorReset was never called")
 	}
 	cancel()
 }

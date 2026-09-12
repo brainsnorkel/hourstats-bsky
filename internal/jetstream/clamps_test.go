@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -243,9 +244,146 @@ func TestConsumerV2_FutureDatedDropped(t *testing.T) {
 	}
 }
 
+// TestConsumerV1_OversizedFrameDoesNotWedgeTheCursor is the wedge the read
+// limit opened: the refused frame kills the connection with the cursor still at
+// the last event delivered, so the ordinary 5s rewind dials back in *before*
+// that frame and is handed it again — forever, with nothing after it ever read.
+// The reconnect must resume one microsecond past the last event instead, and the
+// refusal must be counted.
+func TestConsumerV1_OversizedFrameDoesNotWedgeTheCursor(t *testing.T) {
+	const firstTimeUS = 1789120800000000 // createFrame's time_us
+	second := strings.Replace(
+		strings.Replace(createFrame, `"rkey":"3abc"`, `"rkey":"3def"`, 1),
+		`"time_us":1789120800000000`, `"time_us":1789120800000002`, 1)
+
+	endpoint, cursors := serveV1FramesRecordingCursor(t, [][]string{
+		{createFrame, oversizedFrame(3 << 20)},
+		{second},
+	})
+
+	var mu sync.Mutex
+	var posts []string
+	consumer := NewConsumer(ConsumerConfig{
+		Protocol:      ProtocolV1,
+		Endpoint:      endpoint,
+		MaxPostAge:    -1,
+		MaxPostFuture: -1,
+		OnPost: func(evt *Event, _ *PostRecord) {
+			mu.Lock()
+			posts = append(posts, evt.PostURI())
+			mu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	waitForSlow(t, func() bool { return consumer.GetStatsReport().PostsProcessed == 2 })
+	cancel()
+
+	report := consumer.GetStatsReport()
+	if report.OversizedFrames != 1 {
+		t.Errorf("OversizedFrames = %d, want 1", report.OversizedFrames)
+	}
+
+	got := cursors()
+	if len(got) < 2 {
+		t.Fatalf("connections = %v, want at least 2", got)
+	}
+	if got[0] != "" {
+		t.Errorf("first connection cursor = %q, want the live tail", got[0])
+	}
+	// Not firstTimeUS-5s: the rewind is what replays the refused frame.
+	if want := strconv.FormatInt(firstTimeUS+1, 10); got[1] != want {
+		t.Errorf("reconnect cursor = %q, want %q (one microsecond past the last event delivered)", got[1], want)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(posts) != 2 || !strings.HasSuffix(posts[1], "3def") {
+		t.Errorf("posts = %v, want the create after the oversized frame to arrive", posts)
+	}
+}
+
+// TestConsumerV2_OversizedFrameDoesNotWedgeTheCursor is the same wedge on v2:
+// its timestamp cursor is rewound on every dial too, so the refused frame would
+// be replayed just the same.
+func TestConsumerV2_OversizedFrameDoesNotWedgeTheCursor(t *testing.T) {
+	witness := time.Now().UTC().Truncate(time.Second)
+	first := v2PostFrame(1, "3abc", witness, witness, "en")
+	second := v2PostFrame(2, "3def", witness.Add(2*time.Microsecond), witness, "en")
+
+	endpoint, cursors := serveV2ConnectionsRecordingCursor(t, [][]string{
+		{first, oversizedFrame(3 << 20)},
+		{second},
+	})
+
+	consumer := NewConsumer(ConsumerConfig{
+		Protocol:           ProtocolV2,
+		Endpoint:           endpoint,
+		DisableCompression: true,
+		OnPost:             func(*Event, *PostRecord) {},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	waitForSlow(t, func() bool { return consumer.GetStatsReport().PostsProcessed == 2 })
+	cancel()
+
+	if got := consumer.GetStatsReport().OversizedFrames; got != 1 {
+		t.Errorf("OversizedFrames = %d, want 1", got)
+	}
+	got := cursors()
+	if len(got) < 2 {
+		t.Fatalf("connections = %v, want at least 2", got)
+	}
+	if want := strconv.FormatInt(witness.UnixMicro()+1, 10); got[1] != want {
+		t.Errorf("reconnect cursor = %q, want %q (one microsecond past the last event witnessed)", got[1], want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// serveV1FramesRecordingCursor is serveV1Frames plus the cursor query parameter
+// each connection arrived with, so a test can assert where a reconnect resumed.
+func serveV1FramesRecordingCursor(t *testing.T, batches [][]string) (endpoint string, cursors func() []string) {
+	t.Helper()
+	handler, cursors := cursorRecorder(framesHandler(t, batches))
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http"), cursors
+}
+
+// serveV2ConnectionsRecordingCursor is the same on the v2 subscribe path.
+func serveV2ConnectionsRecordingCursor(t *testing.T, batches [][]string) (endpoint string, cursors func() []string) {
+	t.Helper()
+	handler, cursors := cursorRecorder(framesHandler(t, batches))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/xrpc/"+subscribeNSID, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return wsEndpoint(srv.URL), cursors
+}
+
+func cursorRecorder(next http.HandlerFunc) (http.HandlerFunc, func() []string) {
+	var mu sync.Mutex
+	var seen []string
+	return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			seen = append(seen, r.URL.Query().Get("cursor"))
+			mu.Unlock()
+			next(w, r)
+		}, func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]string(nil), seen...)
+		}
+}
 
 // oversizedFrame builds a single well-formed v1 create frame of at least n
 // bytes, so the only thing wrong with it is its size.

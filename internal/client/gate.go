@@ -179,8 +179,9 @@ func (g *FeatureGate) Check(ctx context.Context, surface string, uris []string) 
 		sysLabel, labelled := systemLabel(pv)
 		switch {
 		case g.denied(v.AuthorDID):
-			// First: the denylist is a standing operator decision, and it
-			// settles the post without a single further call.
+			// First: the denylist is a standing operator decision, so it
+			// settles the post here and saves the visibility lookup below
+			// (the getPosts batch has already been paid for).
 			v.OK, v.Quotable, v.Reason = false, false, ReasonDenied
 		case blockedEitherWay(pv):
 			v.OK, v.Quotable, v.Reason = false, false, ReasonBlocked

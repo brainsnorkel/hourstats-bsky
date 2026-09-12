@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -157,6 +158,13 @@ type ConsumerConfig struct {
 	// caller keep counting those posts in firehose and per-language totals.
 	OnEarlyReject func(firstLang string)
 
+	// OnCapped is called, with the record's first language tag, for each post
+	// create the per-DID cap drops. A capped create never reaches OnPost, so
+	// without this it is missing from the firehose and per-language totals that
+	// OnEarlyReject keeps for the same repo's non-English creates — the two
+	// series would drift apart for no reason the numbers explain.
+	OnCapped func(firstLang string)
+
 	// CursorRewind is subtracted from the cursor on every (re)connect, on both
 	// protocols: v1 rewinds its time_us cursor, v2 its timestamp cursor.
 	// Zero selects DefaultCursorRewind; a negative value disables rewinding.
@@ -181,6 +189,13 @@ type ConsumerConfig struct {
 	// drop, with how far the record lagged its witness time (negative for a
 	// future-dated record).
 	OnStale func(event *Event, record *PostRecord, age time.Duration)
+
+	// OnSeqFloorReset is called when the v2 dedup floor has rejected
+	// maxConsecutiveSeqDrops frames in a row and is reset to the live tip, with
+	// how many frames were dropped, the floor that rejected them and the seq
+	// taken as the new tip. The package holds no stats collector, so this is the
+	// only way the event reaches one.
+	OnSeqFloorReset func(dropped, floor, seq int64)
 
 	// MaxPostsPerDIDPerMinute caps how many post creates one repo may
 	// contribute per minute, with a burst of one minute's worth. 0 (the
@@ -262,6 +277,15 @@ type Consumer struct {
 	// is persisted for diagnostics but never resumed from. 0 on v1.
 	seq atomic.Int64
 
+	// cursorFloor is the earliest event time the next dial may ask for. It is
+	// set when the read limit refuses a frame: that kills the connection with
+	// the cursor still sitting at the last event actually delivered, so the
+	// ordinary rewind would dial back in before the refused frame and be handed
+	// it again, forever. The floor is the cursor one microsecond past that last
+	// event, and it only ever clamps a rewind — it cannot move the cursor
+	// forward on its own. 0 means no floor.
+	cursorFloor atomic.Int64
+
 	// Dictionary zstd state (v2 only), owned by the Run goroutine; compressed
 	// mirrors "decoder != nil" for GetStatsReport. dictRejected latches when
 	// the server keeps refusing the dictionary, degrading this run to an
@@ -335,6 +359,11 @@ type Stats struct {
 	// operator denylist.
 	PostsDenied atomic.Int64
 
+	// OversizedFrames counts messages the WebSocket read limit refused. Each
+	// one costs the connection, so a rising count is the signal that the tail
+	// is being cut short by frames this process will never be able to read.
+	OversizedFrames atomic.Int64
+
 	// BytesReceived counts bytes as they arrive on the wire (compressed, on a
 	// dictionary zstd connection); BytesDecompressed counts the JSON the
 	// decoder produced. On an uncompressed connection the two are equal.
@@ -359,6 +388,7 @@ type StatsReport struct {
 	PostsFuture             int64
 	PostsCapped             int64
 	PostsDenied             int64
+	OversizedFrames         int64
 
 	Protocol          string
 	Compressed        bool
@@ -560,6 +590,7 @@ func (c *Consumer) GetStatsReport() StatsReport {
 		PostsFuture:             c.stats.PostsFuture.Load(),
 		PostsCapped:             c.stats.PostsCapped.Load(),
 		PostsDenied:             c.stats.PostsDenied.Load(),
+		OversizedFrames:         c.stats.OversizedFrames.Load(),
 		Protocol:                c.cfg.Protocol,
 		Compressed:              c.compressed.Load(),
 		BytesReceived:           c.stats.BytesReceived.Load(),
@@ -657,6 +688,40 @@ func rewindCursor(cursor int64, rewind time.Duration) int64 {
 	return rewound
 }
 
+// noteOversizedFrame records a message the read limit refused and raises the
+// cursor floor past the last event this connection delivered.
+//
+// The frame itself is gone: gorilla fails the read without handing over a byte,
+// so its own event time is unknowable and it can be re-delivered by a server
+// that still holds it. What the floor prevents is the guaranteed loop — the
+// rewind dialling back in *before* the events we already have and walking into
+// the same frame on every attempt. It also means the replay costs no duplicate
+// work for the events either side of it.
+func (c *Consumer) noteOversizedFrame() {
+	c.stats.OversizedFrames.Add(1)
+	last := c.cursor.Load()
+	if last > 0 {
+		c.cursor.Store(last + 1)
+		c.cursorFloor.Store(last + 1)
+	}
+	slog.Warn("jetstream frame exceeded the read limit, the connection is lost",
+		"protocol", c.cfg.Protocol,
+		"read_limit_bytes", v2ReadLimit,
+		"cursor_time", formatCursorTime(c.cursor.Load()),
+		"oversized_frames", c.stats.OversizedFrames.Load(),
+	)
+}
+
+// applyCursorFloor clamps a rewound cursor to the floor, so a reconnect after
+// an oversized frame never asks for events from before the last one delivered.
+// A live-tail dial (0) is left alone.
+func (c *Consumer) applyCursorFloor(cursor int64) int64 {
+	if floor := c.cursorFloor.Load(); cursor > 0 && cursor < floor {
+		return floor
+	}
+	return cursor
+}
+
 // jitterBackoff scales d by a random factor within +/-backoffJitter so that
 // concurrent reconnects do not synchronise on the same retry instants.
 func jitterBackoff(d time.Duration) time.Duration {
@@ -690,7 +755,7 @@ func (c *Consumer) buildURL() string {
 	for _, col := range c.cfg.Collections {
 		q.Add("wantedCollections", col)
 	}
-	cursor := rewindCursor(c.cursor.Load(), c.cfg.CursorRewind)
+	cursor := c.applyCursorFloor(rewindCursor(c.cursor.Load(), c.cfg.CursorRewind))
 	if cursor > 0 {
 		q.Set("cursor", fmt.Sprintf("%d", cursor))
 	}
@@ -743,6 +808,9 @@ func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 		}
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			if errors.Is(err, websocket.ErrReadLimit) {
+				c.noteOversizedFrame()
+			}
 			return fmt.Errorf("read: %w", err)
 		}
 
@@ -859,14 +927,8 @@ func startLiveness(ctx context.Context, conn *websocket.Conn) (func(), error) {
 func (c *Consumer) dispatch(event *Event) {
 	switch {
 	case event.IsPostCreate():
-		// The per-DID cap is applied before anything else a create costs — the
-		// record parse, the language and firehose counting the caller does in
-		// OnPost — so one loud repo cannot spend the window's budget. Deletes
-		// and account events below are never capped: they only ever remove
-		// rows.
-		if !c.allowDIDRate(event) {
-			return
-		}
+		// Handled below, after the record is parsed: the per-DID cap sits after
+		// the age guards so a backfill burst cannot spend a live repo's tokens.
 	case event.IsPostDelete():
 		if c.cfg.OnDelete != nil {
 			c.cfg.OnDelete(event)
@@ -902,10 +964,32 @@ func (c *Consumer) dispatch(event *Event) {
 		return
 	}
 
+	// The per-DID cap is applied here: after the age guards, so a repo's
+	// backfill burst does not spend the tokens its live posts need, and before
+	// OnPost, so a capped create costs nothing downstream. OnCapped keeps it in
+	// the firehose and language totals all the same. Deletes and account events
+	// above are never capped: they only ever remove rows.
+	if !c.allowDIDRate(event) {
+		if c.cfg.OnCapped != nil {
+			c.cfg.OnCapped(firstLangTag(record.Langs))
+		}
+		return
+	}
+
 	if c.cfg.OnPost != nil {
 		c.cfg.OnPost(event, record)
 	}
 	c.stats.PostsProcessed.Add(1)
+}
+
+// firstLangTag is the record's first language tag, or "" when it carries none. It
+// is the parsed equivalent of what the bytes-level pre-filter hands
+// OnEarlyReject, so both callbacks report a language the same way.
+func firstLangTag(langs []string) string {
+	if len(langs) == 0 {
+		return ""
+	}
+	return langs[0]
 }
 
 // resumeFromStoredCursor loads the persisted cursor for the active protocol

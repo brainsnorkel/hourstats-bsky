@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/christophergentle/hourstats-bsky/internal/denylist"
 	"github.com/christophergentle/hourstats-bsky/internal/jetstream"
 	"github.com/christophergentle/hourstats-bsky/internal/stats"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -161,6 +162,21 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 			collector.IncrementFirehosePost()
 			collector.IncrementLanguage(primaryLang(firstLang))
 		},
+		// A create the per-DID cap drops is still a post that crossed the
+		// firehose, exactly like one the language pre-filter rejected. Counting
+		// it here is what keeps the firehose total and the language shares from
+		// drifting for the repos the cap clips.
+		OnCapped: func(firstLang string) {
+			collector.IncrementFirehosePost()
+			collector.IncrementLanguage(primaryLang(firstLang))
+		},
+		// The reset happens deep inside the consumer, which holds no collector;
+		// the alerts package already knows this event type and was waiting for
+		// something to write it.
+		OnSeqFloorReset: func(dropped, floor, seq int64) {
+			_ = collector.LogEvent(ctx, "seq_floor_reset",
+				fmt.Sprintf("dropped=%d floor=%d seq=%d", dropped, floor, seq))
+		},
 		// Backfill is neither a firehose post nor a post of its language: it
 		// was already counted the day it was written.
 		OnStale: func(_ *jetstream.Event, _ *jetstream.PostRecord, _ time.Duration) {
@@ -256,8 +272,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		// The stored denylist is the union's second half. A missing row reads as
 		// the empty list, exactly like an unset FIREHOSE_DENY_DIDS.
 		LoadDenyList: func(loadCtx context.Context) ([]string, error) {
-			raw, _ := db.GetKeyValue(loadCtx, denyListKey)
-			return splitList(raw), nil
+			return storedDenyDIDs(loadCtx, db), nil
 		},
 		CursorRewind:            time.Duration(envInt("JETSTREAM_CURSOR_REWIND_SECONDS", 5)) * time.Second,
 		MaxCursorAge:            time.Duration(envInt("JETSTREAM_MAX_CURSOR_AGE_MINUTES", 360)) * time.Minute,
@@ -354,6 +369,27 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		_ = collector.LogEvent(ctx, "consumer_restart", fmt.Sprintf("unexpected exit: %v", err))
 		slog.Error("jetstream consumer exited unexpectedly, restarting immediately", "error", err)
 	}
+}
+
+// storedDenyDIDs reads the denylist row from key_value. A missing row — the
+// norm — reads as the empty list, so the read error is deliberately swallowed
+// rather than reported as a failed load that would keep a stale list in place.
+func storedDenyDIDs(ctx context.Context, db *store.Store) []string {
+	raw, _ := db.GetKeyValue(ctx, denyListKey)
+	return splitList(raw)
+}
+
+// publishDenyList publishes the union of FIREHOSE_DENY_DIDS and the stored row
+// as the process-wide denylist. The consumer republishes the same union before
+// its first dial and every few minutes after, but it is not the only reader:
+// the posting feature gate consults the same list, and a job that runs before
+// Consumer.Run — a REPORTS_RUN_AT_STARTUP report — would otherwise see an empty
+// one and feature an account the operator has denied.
+func publishDenyList(ctx context.Context, db *store.Store) {
+	union := append(envList("FIREHOSE_DENY_DIDS"), storedDenyDIDs(ctx, db)...)
+	denylist.Replace(union)
+	// The count only: the list names individual accounts.
+	slog.Info("firehose denylist loaded at startup", "denied_dids", denylist.Len())
 }
 
 // oversizedPost reports whether a record's text is past the rune limit, and

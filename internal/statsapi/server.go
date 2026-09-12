@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -96,12 +97,22 @@ func (s *Server) SetAlertState(state *alerts.State) {
 
 // bindAddrs returns the loopback (or overridden) address and, on Fly, the
 // private 6PN address to listen on as well.
+//
+// FLY_PRIVATE_IP is parsed rather than trusted: a value that is not an IP
+// address would otherwise be concatenated into a bind address that fails at
+// listen time, which now aborts startup. An unparseable one is a misconfigured
+// environment, not a reason to lose the loopback listener too, so it is warned
+// about and skipped.
 func bindAddrs(port int) (local, private string) {
 	if override := os.Getenv("STATS_API_BIND"); override != "" {
 		return override, ""
 	}
 	local = net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	if ip := os.Getenv("FLY_PRIVATE_IP"); ip != "" {
+		if net.ParseIP(ip) == nil {
+			slog.Warn("FLY_PRIVATE_IP is not an IP address, serving stats on loopback only", "value", ip)
+			return local, ""
+		}
 		private = net.JoinHostPort(ip, strconv.Itoa(port))
 	}
 	return local, private
@@ -119,7 +130,12 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
-// Start begins serving HTTP requests in a background goroutine.
+// Start binds every listener and then serves on each in its own goroutine.
+//
+// The bind happens here rather than inside the goroutines: ListenAndServe only
+// reports a failed bind to the goroutine that called it, so a port already in
+// use or an unbindable address used to surface as one ERROR line and an API
+// that was simply never there. Returning the error lets the caller decide.
 func (s *Server) Start() error {
 	addrs := []string{s.server.Addr}
 	if s.privServer != nil {
@@ -127,16 +143,33 @@ func (s *Server) Start() error {
 	}
 	slog.Info("starting stats API server", "port", s.port, "addrs", addrs)
 
-	serve := func(srv *http.Server) {
-		go func() {
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	type bound struct {
+		srv *http.Server
+		ln  net.Listener
+	}
+	var listeners []bound
+	for _, srv := range []*http.Server{s.server, s.privServer} {
+		if srv == nil {
+			continue
+		}
+		ln, err := net.Listen("tcp", srv.Addr)
+		if err != nil {
+			// A partial bind is not a working API: close what opened so the
+			// port is free for the next attempt.
+			for _, open := range listeners {
+				_ = open.ln.Close()
+			}
+			return fmt.Errorf("listen on %s: %w", srv.Addr, err)
+		}
+		listeners = append(listeners, bound{srv: srv, ln: ln})
+	}
+
+	for _, b := range listeners {
+		go func(srv *http.Server, ln net.Listener) {
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("stats API server error", "addr", srv.Addr, "error", err)
 			}
-		}()
-	}
-	serve(s.server)
-	if s.privServer != nil {
-		serve(s.privServer)
+		}(b.srv, b.ln)
 	}
 	return nil
 }

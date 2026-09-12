@@ -474,6 +474,47 @@ func TestBindAddrs(t *testing.T) {
 	}
 }
 
+// A FLY_PRIVATE_IP that is not an IP address would be concatenated into an
+// address that cannot be bound, which now fails Start outright. It is skipped
+// instead, so a misconfigured environment still gets the loopback listener.
+func TestBindAddrs_MalformedPrivateIP(t *testing.T) {
+	t.Setenv("STATS_API_BIND", "")
+
+	// "fdaa:0:1234::3:9111" is deliberately absent: it parses as an ordinary
+	// IPv6 address, so there is nothing to reject.
+	for _, bad := range []string{"not-an-ip", "127.0.0.1:9111", "fdaa:0:1234::3%eth0", " "} {
+		t.Run(bad, func(t *testing.T) {
+			t.Setenv("FLY_PRIVATE_IP", bad)
+			local, private := bindAddrs(9111)
+			if local != "127.0.0.1:9111" {
+				t.Errorf("local = %q, want the loopback listener to survive", local)
+			}
+			if private != "" {
+				t.Errorf("private = %q, want no second listener for %q", private, bad)
+			}
+		})
+	}
+}
+
+// Start binds up front, so an address already in use is returned to the caller
+// rather than logged from inside a goroutine and forgotten.
+func TestStart_ReportsABindFailure(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	defer ln.Close()
+
+	t.Setenv("STATS_API_BIND", ln.Addr().String())
+	t.Setenv("FLY_PRIVATE_IP", "")
+
+	s := New(&mockStore{}, 9111, HealthChartConfig{})
+	if err := s.Start(); err == nil {
+		_ = s.Shutdown(context.Background())
+		t.Fatal("Start() error = nil, want an error for an address already in use")
+	}
+}
+
 func TestNew_TimeoutsAndLoopbackBind(t *testing.T) {
 	t.Setenv("STATS_API_BIND", "")
 	t.Setenv("FLY_PRIVATE_IP", "fdaa:0:1234::3")

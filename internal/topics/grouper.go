@@ -195,8 +195,14 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 	// "__discard__" sentinel the prompt asks for, which is not a validation
 	// failure worth warning about; the two other steps are independent of it.
 	clusters = filterGenericClusters(clusters)
-	clusters = validateClusters(clusters)
-	clusters = normalizeClusterKeywords(clusters, terms)
+	validated := validateClusters(clusters)
+	if len(validated) == 0 && len(clusters) > 0 {
+		// Returning (empty, nil) here read as "the model had nothing to say",
+		// which suppressed the post; it is a validation failure, so the caller
+		// must be free to fall through to the offline fallback instead.
+		return nil, fmt.Errorf("%w: all clusters failed output validation", ErrTopicsUnavailable)
+	}
+	clusters = normalizeClusterKeywords(validated, terms)
 
 	for _, c := range clusters {
 		slog.Info("grouper: topic", "label", c.Label, "justification", c.Justification)
@@ -223,7 +229,10 @@ var (
 	// and continues in letters, digits, spaces and a short list of punctuation,
 	// up to maxLabelRunes. Everything else — control characters, newlines,
 	// markdown, angle brackets, "@", "#" — is rejected rather than repaired.
-	validLabelPattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} '&.,:!?()/-]{0,59}$`)
+	// \p{Pd} and the double quote are here for the folded forms
+	// foldPunctuation produces, so a legitimate label is never dropped for
+	// carrying punctuation we just normalised.
+	validLabelPattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} '&.,:!?()/"\p{Pd}-]{0,59}$`)
 	// outputHandlePattern matches an @handle-looking token. The allowlist above
 	// already bars "@" from a label; descriptions and alt text need their own
 	// check, and a handle we did not resolve must never be published.
@@ -256,7 +265,10 @@ func validateClusters(clusters []TopicCluster) []TopicCluster {
 // validateCluster returns one cluster with its prose normalised, or a
 // non-empty reason naming the first check it failed.
 func validateCluster(c TopicCluster) (TopicCluster, string) {
-	c.Label = strings.TrimSpace(c.Label)
+	// The fold runs before the charset check, so a label the offline fallback
+	// joined with a middle dot, or one the model wrote with smart quotes and an
+	// em dash, is normalised rather than rejected.
+	c.Label = foldPunctuation(strings.TrimSpace(c.Label))
 	// The regex bounds the length too; checking it first only buys a reason
 	// that says which rule was broken, and keeps the bound stated in Go rather
 	// than only inside the pattern.
@@ -325,10 +337,33 @@ func containsBlockedTerm(s string) bool {
 	return false
 }
 
-// collapseText strips control characters and collapses every run of
-// whitespace to a single space, so the result can never carry a newline or a
-// tab. Whitespace becomes a space before the collapse rather than being
-// dropped, so "a\nb" stays two words.
+// punctuationFolder maps the punctuation that reaches us in a non-ASCII form
+// onto the ASCII the allowlist accepts: the smart quotes and dashes a model
+// writes, the ellipsis it likes, and the middle dot the offline fallback joins
+// two terms with (offline.go's bigramToLabel). Folding is not cosmetic — before
+// it, every "A · B" label the offline path produced failed the charset check and
+// the whole degraded snapshot was dropped.
+var punctuationFolder = strings.NewReplacer(
+	"’", "'", // ’ right single quotation mark
+	"‘", "'", // ‘ left single quotation mark
+	"“", `"`, // “ left double quotation mark
+	"”", `"`, // ” right double quotation mark
+	"–", "-", // – en dash
+	"—", "-", // — em dash
+	"·", "-", // · middle dot
+	"…", "...", // … horizontal ellipsis
+)
+
+// foldPunctuation applies punctuationFolder. It is called on a label before it
+// is validated, and on prose via collapseText.
+func foldPunctuation(s string) string {
+	return punctuationFolder.Replace(s)
+}
+
+// collapseText folds the non-ASCII punctuation, strips control characters and
+// collapses every run of whitespace to a single space, so the result can never
+// carry a newline or a tab. Whitespace becomes a space before the collapse
+// rather than being dropped, so "a\nb" stays two words.
 func collapseText(s string) string {
 	cleaned := strings.Map(func(r rune) rune {
 		switch {
@@ -338,7 +373,7 @@ func collapseText(s string) string {
 			return -1
 		}
 		return r
-	}, s)
+	}, foldPunctuation(s))
 	return strings.Join(strings.Fields(cleaned), " ")
 }
 
@@ -350,12 +385,19 @@ func collapseText(s string) string {
 // A delimiter is replaced by a space rather than deleted, so removing one
 // cannot glue two words together, and the whitespace is collapsed again
 // afterwards to absorb it.
+//
+// The match is a pattern rather than two literals because the literals were
+// exact: "</POST>" and "</ post>" both close the block in the model's reading
+// and neither was stripped.
 func sanitizeForPrompt(s string) string {
 	s = collapseText(s)
-	s = strings.ReplaceAll(s, "</post>", " ")
-	s = strings.ReplaceAll(s, "<post", " ")
+	s = postDelimiterPattern.ReplaceAllString(s, " ")
 	return strings.Join(strings.Fields(s), " ")
 }
+
+// postDelimiterPattern matches an opening or closing <post> tag in any case,
+// with any attributes and with whitespace around the slash and the name.
+var postDelimiterPattern = regexp.MustCompile(`(?i)<\s*/?\s*post[^>]*>`)
 
 // normalizeClusterKeywords lowercases and trims the model's keywords and drops
 // any that were not among the terms it was given. A hallucinated or Title-Cased

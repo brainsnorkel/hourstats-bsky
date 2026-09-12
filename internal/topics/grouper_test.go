@@ -674,6 +674,47 @@ func TestNormalizeClusterKeywords(t *testing.T) {
 	}
 }
 
+// A response whose every cluster fails output validation is a failure, not an
+// empty answer: returning (nil, nil) suppressed the trending post, where an
+// error lets RunAnalysisCycle fall through to the offline fallback.
+func TestGroupAndLabel_AllClustersFailValidationIsAnError(t *testing.T) {
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "Follow @evil.bsky.social", Keywords: []string{"trump"}},
+		{Label: "Visit", Description: "http://evil.example", Keywords: []string{"trump"}},
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	clusters, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "trump", Score: 9}})
+	if err == nil {
+		t.Fatal("expected an error when every cluster fails validation, got nil")
+	}
+	if !errors.Is(err, ErrTopicsUnavailable) {
+		t.Errorf("err = %v, want it to wrap ErrTopicsUnavailable", err)
+	}
+	if clusters != nil {
+		t.Errorf("clusters = %v, want nil", clusters)
+	}
+}
+
+// An all-"__discard__" response keeps its old meaning: the model did answer and
+// judged every term too vague, which is not a validation failure.
+func TestGroupAndLabel_AllDiscardedIsNotAnError(t *testing.T) {
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "__discard__", Keywords: []string{"trump"}, Justification: "too vague"},
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	clusters, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "trump", Score: 9}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(clusters) != 0 {
+		t.Errorf("clusters = %v, want none", clusters)
+	}
+}
+
 func TestGroupAndLabel_DropsUnknownKeywords(t *testing.T) {
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{{
 		Label:    "Donald Trump",

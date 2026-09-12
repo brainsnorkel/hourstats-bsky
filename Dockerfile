@@ -25,9 +25,17 @@ COPY --from=builder /realign /usr/local/bin/realign
 # The bot itself must not run as root: it parses untrusted firehose JSON and
 # writes heap profiles next to the database. But Fly mounts the volume at /data
 # owned by root:root, and a process running as uid 1000 cannot create the
-# database there. So the container starts as root, fixes /data ownership if it
-# has not been fixed already, and execs the real binary through su-exec as
-# hourstats. Every subsequent boot only stats the directory.
+# database there. So the container starts as root, fixes the ownership of
+# anything under /data that is not the app user's, and execs the real binary
+# through su-exec as hourstats.
+#
+# The check is on the files, not on /data itself: root-run maintenance inside
+# the volume — a `fly ssh console -C realign`, a backup written by hand — leaves
+# root-owned files in a directory that is already owned by hourstats, and the
+# uid-1000 process then cannot write them. `find ! -user hourstats` is a no-op
+# when the volume is clean, and -maxdepth 2 keeps it to the files that matter
+# (the db and its -wal/-shm, backups/, the memguard dumps) rather than walking a
+# large backups tree on every boot.
 #
 # There is deliberately no `USER hourstats` directive: it would run the
 # entrypoint as uid 1000, which can neither chown the root-owned volume nor
@@ -37,17 +45,16 @@ COPY --from=builder /realign /usr/local/bin/realign
 # and the su-exec and execs directly.
 #
 # `fly ssh console -C "realign -dry-run"` is unaffected: Fly's ssh sessions are
-# spawned by the init as root and never go through the entrypoint, which is what
-# realign needs — it writes a local backup and rewrites history in place.
+# spawned by the init as root and never go through the entrypoint. Prefer
+# `fly ssh console -C "su-exec hourstats realign -dry-run"` all the same, so the
+# backup and the rewrite land as the app user and the next boot has nothing to
+# chown.
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'set -e' \
     '' \
     'if [ "$(id -u)" = 0 ] && [ -d /data ]; then' \
-    '    if [ "$(stat -c %u /data)" != 1000 ]; then' \
-    '        echo "entrypoint: /data is not owned by hourstats, chowning" >&2' \
-    '        chown -R hourstats:hourstats /data' \
-    '    fi' \
+    '    find /data -maxdepth 2 ! -user hourstats -exec chown hourstats:hourstats {} +' \
     'fi' \
     '' \
     'if [ "$#" -eq 0 ]; then' \

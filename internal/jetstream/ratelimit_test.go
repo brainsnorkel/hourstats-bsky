@@ -278,3 +278,115 @@ func TestConsumerV2_CapAppliesToTheWire(t *testing.T) {
 		t.Errorf("OnPost calls = %d, want 1: the over-cap creates must not be counted", counted)
 	}
 }
+
+// capTestEvent builds a post create for the dispatch-level cap tests, with the
+// record's language tags and createdAt under the test's control.
+func capTestEvent(did, rkey string, witness, createdAt time.Time, langs string) *Event {
+	return &Event{
+		DID:    did,
+		TimeUS: witness.UnixMicro(),
+		Kind:   "commit",
+		Commit: &Commit{
+			Rev:        "r1",
+			Operation:  "create",
+			Collection: DefaultCollection,
+			Rkey:       rkey,
+			Record: []byte(fmt.Sprintf(`{"$type":"app.bsky.feed.post","text":"hi",`+
+				`"createdAt":%q,"langs":[%s]}`, createdAt.UTC().Format(time.RFC3339), langs)),
+		},
+	}
+}
+
+// TestDispatchCappedCreatesReachOnCapped: a capped create never reaches OnPost,
+// where the caller does its firehose and per-language counting. Without OnCapped
+// it is missing from both totals, while the same repo's non-English creates are
+// counted through OnEarlyReject — the two series drift for no visible reason.
+func TestDispatchCappedCreatesReachOnCapped(t *testing.T) {
+	var mu sync.Mutex
+	var capped, posted []string
+
+	c := NewConsumer(ConsumerConfig{
+		MaxPostsPerDIDPerMinute: 1,
+		MaxPostAge:              -1,
+		MaxPostFuture:           -1,
+		OnPost: func(_ *Event, rec *PostRecord) {
+			mu.Lock()
+			posted = append(posted, firstLangTag(rec.Langs))
+			mu.Unlock()
+		},
+		OnCapped: func(lang string) {
+			mu.Lock()
+			capped = append(capped, lang)
+			mu.Unlock()
+		},
+	})
+
+	witness := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	c.dispatch(capTestEvent("did:plc:loud", "3a", witness, witness, `"en"`))
+	c.dispatch(capTestEvent("did:plc:loud", "3b", witness, witness, `"pt-BR","en"`))
+	c.dispatch(capTestEvent("did:plc:loud", "3c", witness, witness, ``))
+
+	if got := c.GetStatsReport().PostsCapped; got != 2 {
+		t.Errorf("PostsCapped = %d, want 2", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(posted, ",") != "en" {
+		t.Errorf("posted langs = %v, want only the first create", posted)
+	}
+	// The first tag, exactly as the byte-level pre-filter reports it to
+	// OnEarlyReject, and "" when the record carries none.
+	if strings.Join(capped, "|") != "pt-BR|" {
+		t.Errorf("capped langs = %q, want [pt-BR, \"\"]", capped)
+	}
+}
+
+// TestDispatchCapAppliesAfterTheAgeGuards: the cap used to run before the
+// record was even parsed, so a repo's backfill burst — which is dropped a
+// moment later and never stored — spent the tokens its live posts needed.
+func TestDispatchCapAppliesAfterTheAgeGuards(t *testing.T) {
+	var mu sync.Mutex
+	var posted, stale int
+
+	c := NewConsumer(ConsumerConfig{
+		MaxPostsPerDIDPerMinute: 2,
+		MaxPostAge:              2 * time.Hour,
+		MaxPostFuture:           10 * time.Minute,
+		OnPost: func(*Event, *PostRecord) {
+			mu.Lock()
+			posted++
+			mu.Unlock()
+		},
+		OnStale: func(*Event, *PostRecord, time.Duration) {
+			mu.Lock()
+			stale++
+			mu.Unlock()
+		},
+	})
+
+	witness := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	backfill := witness.Add(-72 * time.Hour)
+	for _, rkey := range []string{"3old1", "3old2", "3old3", "3old4"} {
+		c.dispatch(capTestEvent("did:plc:migrating", rkey, witness, backfill, `"en"`))
+	}
+	c.dispatch(capTestEvent("did:plc:migrating", "3live1", witness, witness, `"en"`))
+	c.dispatch(capTestEvent("did:plc:migrating", "3live2", witness, witness, `"en"`))
+
+	report := c.GetStatsReport()
+	if report.PostsStale != 4 {
+		t.Errorf("PostsStale = %d, want 4", report.PostsStale)
+	}
+	if report.PostsCapped != 0 {
+		t.Errorf("PostsCapped = %d, want 0: backfill must not spend the repo's tokens", report.PostsCapped)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if stale != 4 {
+		t.Errorf("OnStale calls = %d, want 4", stale)
+	}
+	if posted != 2 {
+		t.Errorf("OnPost calls = %d, want both live creates through", posted)
+	}
+}
