@@ -22,9 +22,10 @@ const (
 	DefaultCollection     = "app.bsky.feed.post"
 	DefaultCursorInterval = 10 * time.Second
 
-	// DefaultCursorRewind is subtracted from the cursor on every (re)connect.
-	// Jetstream recommends rewinding a few seconds so events in flight at the
-	// moment the connection dropped are replayed rather than lost.
+	// DefaultCursorRewind is subtracted from the cursor on every (re)connect,
+	// on both protocols. Jetstream recommends rewinding a few seconds so
+	// events in flight at the moment the connection dropped are replayed
+	// rather than lost.
 	DefaultCursorRewind = 5 * time.Second
 
 	// DefaultMaxCursorAge bounds how stale a persisted cursor may be before it
@@ -87,8 +88,9 @@ type CursorSaver func(ctx context.Context, cursor int64) error
 // CursorLoader retrieves the last saved cursor value (0 = no cursor).
 type CursorLoader func(ctx context.Context) (int64, error)
 
-// CursorSaverV2 persists the latest v2 cursor: the seq to resume from and the
-// event time it was witnessed at, which is what the startup age check reads.
+// CursorSaverV2 persists the latest v2 cursor: the event time to resume from
+// and the seq witnessed at it. Only the time is read back -- seqs are per
+// instance -- but the seq is kept for diagnostics.
 type CursorSaverV2 func(ctx context.Context, seq, timeUS int64) error
 
 // CursorLoaderV2 retrieves the last saved v2 cursor (0, 0 = no cursor).
@@ -109,7 +111,7 @@ type ConsumerConfig struct {
 	SaveCursor     CursorSaver
 	LoadCursor     CursorLoader
 
-	// SaveCursorV2/LoadCursorV2 persist the v2 seq cursor. They replace
+	// SaveCursorV2/LoadCursorV2 persist the v2 cursor pair. They replace
 	// SaveCursor/LoadCursor when Protocol is ProtocolV2, so the two protocols
 	// never share a stored row: the values are not interchangeable.
 	SaveCursorV2 CursorSaverV2
@@ -148,7 +150,8 @@ type ConsumerConfig struct {
 	// caller keep counting those posts in firehose and per-language totals.
 	OnEarlyReject func(firstLang string)
 
-	// CursorRewind is subtracted from the cursor on every (re)connect.
+	// CursorRewind is subtracted from the cursor on every (re)connect, on both
+	// protocols: v1 rewinds its time_us cursor, v2 its timestamp cursor.
 	// Zero selects DefaultCursorRewind; a negative value disables rewinding.
 	CursorRewind time.Duration
 
@@ -216,8 +219,9 @@ type Consumer struct {
 	conn   *websocket.Conn
 	stats  Stats
 
-	// seq is the v2 cursor: the highest seq delivered, used both as the
-	// resume point and as the dedup floor for the inclusive replay. 0 on v1.
+	// seq is the highest v2 seq delivered on the current connection: the
+	// dedup floor, reset to 0 at every dial because seqs are per instance. It
+	// is persisted for diagnostics but never resumed from. 0 on v1.
 	seq atomic.Int64
 
 	// Dictionary zstd state (v2 only), owned by the Run goroutine; compressed
@@ -423,11 +427,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 				"drops_in_window", rotateAfterDrops,
 			)
 			if c.cfg.Protocol == ProtocolV2 {
-				// Two v2 instances are not guaranteed to share a seq space, so
-				// a floor learned from the old endpoint can sit above
-				// everything the new one emits — every frame would fail the
-				// dedup and ingest would stall with no error anywhere. Take
-				// the new endpoint's live tip instead.
+				// A rotation follows repeated instability, so the new endpoint
+				// starts clean at its live tip rather than replaying a window
+				// the failing endpoint may have half-delivered. The seq floor
+				// goes with it; it is per instance and reset at every dial
+				// anyway.
 				c.seq.Store(0)
 				c.cursor.Store(0)
 				slog.Warn("jetstream cursor reset for the endpoint rotation, starting from live tip",
@@ -857,7 +861,10 @@ func (c *Consumer) cursorPersistLoop(ctx context.Context) {
 func (c *Consumer) persistCursorNow(ctx context.Context) {
 	if c.cfg.Protocol == ProtocolV2 {
 		seq, timeUS := c.seq.Load(), c.cursor.Load()
-		if c.cfg.SaveCursorV2 == nil || seq == 0 {
+		// The witnessed time is what a resume reads; the seq rides along for
+		// diagnostics and is 0 between a dial and that connection's first
+		// event.
+		if c.cfg.SaveCursorV2 == nil || timeUS == 0 {
 			return
 		}
 		if err := c.cfg.SaveCursorV2(ctx, seq, timeUS); err != nil {

@@ -105,9 +105,9 @@ func sendPost(ctx context.Context, writeCh chan<- store.PendingWrite, pw store.P
 func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, collector *stats.Collector, writeCh chan<- store.PendingWrite, handle *consumerHandle) {
 	drops := &dropLimiter{window: dropWarnWindow}
 
-	// A reconnect replays from before the last event seen — v1 rewinds the
-	// cursor, v2 resumes inclusively — so a create can arrive again after its
-	// delete has been applied. The tombstone set drops those creates.
+	// A reconnect replays from before the last event seen — both protocols
+	// rewind their cursor a few seconds — so a create can arrive again after
+	// its delete has been applied. The tombstone set drops those creates.
 	tombs := newTombstones()
 
 	protocol := jetstream.ProtocolV2
@@ -205,9 +205,11 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 				)
 			}
 		},
-		// v1 resumes from a time_us cursor in the cursor table; v2 from a seq
-		// in key_value. The consumer only calls the pair its protocol selects,
-		// so a fallback to v1 finds its own row exactly as it left it.
+		// Both protocols resume from a unix-microsecond event time, v1 from
+		// the cursor table and v2 from key_value (where the seq is stored
+		// alongside it for diagnostics only). The consumer calls just the pair
+		// its protocol selects, so a fallback to v1 finds its own row exactly
+		// as it left it.
 		SaveCursor: func(saveCtx context.Context, cursor int64) error {
 			return db.SaveCursor(saveCtx, cursor)
 		},

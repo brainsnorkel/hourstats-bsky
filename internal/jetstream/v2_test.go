@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -256,10 +257,28 @@ func TestBuildURLV2(t *testing.T) {
 		t.Errorf("cursor = %v, want no cursor before any event", q["cursor"])
 	}
 
+	// A witnessed event time is sent as a unix-microsecond cursor, rewound by
+	// CursorRewind. The seq is never sent: it belongs to the instance that
+	// issued it.
+	witness := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC).UnixMicro()
 	c.seq.Store(4242)
+	c.cursor.Store(witness)
 	q = mustQuery(t, c.buildURLV2())
-	if got := q.Get("cursor"); got != "4242" {
-		t.Errorf("cursor = %q, want the seq 4242", got)
+	want := strconv.FormatInt(witness-DefaultCursorRewind.Microseconds(), 10)
+	if got := q.Get("cursor"); got != want {
+		t.Errorf("cursor = %q, want the witnessed time rewound by %s (%s)", got, DefaultCursorRewind, want)
+	}
+	if got, _ := strconv.ParseInt(q.Get("cursor"), 10, 64); got < minTimestampCursorV2 {
+		t.Errorf("cursor = %d, under the %d threshold: the server would read it as a seq",
+			got, int64(minTimestampCursorV2))
+	}
+
+	// A rewind that would take the cursor under the threshold is dropped
+	// rather than sent as a value the server reads as a seq.
+	c.cursor.Store(minTimestampCursorV2 + 1)
+	q = mustQuery(t, c.buildURLV2())
+	if _, ok := q["cursor"]; ok {
+		t.Errorf("cursor = %v, want none when the rewind falls under the timestamp threshold", q["cursor"])
 	}
 }
 
@@ -492,11 +511,12 @@ func TestConsumerV2_CursorTooOldStartsFromTip(t *testing.T) {
 
 	done := make(chan struct{})
 	var once sync.Once
+	witnessed := time.Now().UnixMicro()
 	consumer := NewConsumer(ConsumerConfig{
 		Endpoint:           wsEndpoint(srv.URL),
 		DisableCompression: true,
 		LoadCursorV2: func(context.Context) (int64, int64, error) {
-			return 999, time.Now().UnixMicro(), nil
+			return 999, witnessed, nil
 		},
 		OnPost: func(*Event, *PostRecord) { once.Do(func() { close(done) }) },
 	})
@@ -517,8 +537,9 @@ func TestConsumerV2_CursorTooOldStartsFromTip(t *testing.T) {
 	if len(cursors) < 2 {
 		t.Fatalf("dial attempts = %d, want at least 2", len(cursors))
 	}
-	if cursors[0] != "999" {
-		t.Errorf("first dial cursor = %q, want the persisted seq 999", cursors[0])
+	want := strconv.FormatInt(witnessed-DefaultCursorRewind.Microseconds(), 10)
+	if cursors[0] != want {
+		t.Errorf("first dial cursor = %q, want the persisted time rewound (%s), never the seq 999", cursors[0], want)
 	}
 	if cursors[1] != "" {
 		t.Errorf("second dial cursor = %q, want no cursor (live tip)", cursors[1])
@@ -634,11 +655,12 @@ func v2CreateFrameSeq(seq int64, rkey string) string {
 		seq, v2CreateTime, rkey)
 }
 
-// TestConsumerV2_EndpointRotationResetsSeqFloor is the silent-stall case: two
-// v2 instances need not share a seq space, so a floor carried across a
-// rotation can sit above everything the new endpoint emits. The first endpoint
-// only drops the connection; after the rotation the second serves seq 5 while
-// the persisted floor is 100, and its events must still be delivered.
+// TestConsumerV2_EndpointRotationResetsSeqFloor covers the rotation: a
+// rotation follows repeated instability, so the new endpoint is dialled at its
+// live tip with no cursor at all, and the seq floor does not travel with it.
+// The first endpoint only drops the connection; after the rotation the second
+// serves seq 5 while the persisted cursor named seq 100, and its events must
+// still be delivered.
 func TestConsumerV2_EndpointRotationResetsSeqFloor(t *testing.T) {
 	upgrader := websocket.Upgrader{Subprotocols: []string{subscribeSubprotocol}}
 
@@ -718,8 +740,8 @@ func TestConsumerV2_EndpointRotationResetsSeqFloor(t *testing.T) {
 }
 
 // TestConsumerV2_SeqFloorGuardResetsAfterRun covers the in-session guard: a
-// floor nothing in the stream can clear must not silently swallow the whole
-// connection.
+// floor nothing in the rest of the stream can clear must not silently swallow
+// the connection.
 func TestConsumerV2_SeqFloorGuardResetsAfterRun(t *testing.T) {
 	upgrader := websocket.Upgrader{Subprotocols: []string{subscribeSubprotocol}}
 	mux := http.NewServeMux()
@@ -729,6 +751,11 @@ func TestConsumerV2_SeqFloorGuardResetsAfterRun(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+		// One frame sets the floor at 100; every frame after it is below the
+		// floor, so the guard must fire on the last of them.
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(v2CreateFrameSeq(100, "3high"))); err != nil {
+			return
+		}
 		frame := []byte(v2CreateFrameSeq(5, "3low"))
 		for i := 0; i < maxConsecutiveSeqDrops; i++ {
 			if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
@@ -744,25 +771,193 @@ func TestConsumerV2_SeqFloorGuardResetsAfterRun(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	done := make(chan struct{})
-	var once sync.Once
+	posts := make(chan string, 4)
 	consumer := NewConsumer(ConsumerConfig{
 		Endpoint:           wsEndpoint(srv.URL),
 		DisableCompression: true,
-		LoadCursorV2: func(context.Context) (int64, int64, error) {
-			return 100, time.Now().UnixMicro(), nil
-		},
-		OnPost: func(*Event, *PostRecord) { once.Do(func() { close(done) }) },
+		OnPost:             func(evt *Event, _ *PostRecord) { posts <- evt.PostURI() },
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = consumer.Run(ctx) }()
 
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("timed out: the dedup floor dropped every frame with no reset")
+	if got := waitForPost(t, posts, "the frame that sets the floor"); !strings.HasSuffix(got, "3high") {
+		t.Fatalf("first post = %q, want the seq 100 frame", got)
+	}
+	got := waitForPost(t, posts, "the guard to reset the floor")
+	if !strings.HasSuffix(got, "3low") {
+		t.Errorf("second post = %q, want the frame that tripped the guard", got)
 	}
 	cancel()
+}
+
+// waitForPost returns the next post URI the consumer dispatched, failing the
+// test if none arrives.
+func waitForPost(t *testing.T, posts <-chan string, what string) string {
+	t.Helper()
+	select {
+	case uri := <-posts:
+		return uri
+	case <-time.After(30 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		return ""
+	}
+}
+
+// TestConsumerV2_ReconnectResumesByTimestamp: a seq names an event only within
+// the instance that issued it, so the reconnect must ask for the time of the
+// last event it saw, rewound, and never for that event's seq.
+func TestConsumerV2_ReconnectResumesByTimestamp(t *testing.T) {
+	// A production-scale seq: sent to a different instance it would name an
+	// event tens of millions of frames away.
+	const liveSeq = 25_797_075_281
+
+	var (
+		mu      sync.Mutex
+		cursors []string
+	)
+	upgrader := websocket.Upgrader{Subprotocols: []string{subscribeSubprotocol}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/xrpc/"+subscribeNSID, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		cursors = append(cursors, r.URL.Query().Get("cursor"))
+		n := len(cursors)
+		mu.Unlock()
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		frame := v2CreateFrameSeq(liveSeq, fmt.Sprintf("3conn%d", n))
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	posts := make(chan string, 4)
+	consumer := NewConsumer(ConsumerConfig{
+		Endpoint:           wsEndpoint(srv.URL),
+		DisableCompression: true,
+		OnPost:             func(evt *Event, _ *PostRecord) { posts <- evt.PostURI() },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = consumer.Run(ctx) }()
+
+	if got := waitForPost(t, posts, "the first connection's post"); !strings.HasSuffix(got, "3conn1") {
+		t.Fatalf("first post = %q, want the first connection's frame", got)
+	}
+	if !consumer.ForceReconnect() {
+		t.Fatal("ForceReconnect() = false, want the live connection to be closed")
+	}
+	if got := waitForPost(t, posts, "the second connection's post"); !strings.HasSuffix(got, "3conn2") {
+		t.Errorf("second post = %q, want the reconnected connection's frame", got)
+	}
+	cancel()
+
+	witness, err := time.Parse(time.RFC3339Nano, v2CreateTime)
+	if err != nil {
+		t.Fatalf("parse %q: %v", v2CreateTime, err)
+	}
+	want := strconv.FormatInt(witness.UnixMicro()-DefaultCursorRewind.Microseconds(), 10)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(cursors) < 2 {
+		t.Fatalf("dial attempts = %d, want at least 2", len(cursors))
+	}
+	if cursors[0] != "" {
+		t.Errorf("first dial cursor = %q, want none (live tip)", cursors[0])
+	}
+	if cursors[1] != want {
+		t.Errorf("second dial cursor = %q, want the last event time rewound by %s (%s), not the seq %d",
+			cursors[1], DefaultCursorRewind, want, int64(liveSeq))
+	}
+}
+
+// TestConsumerV2_ReconnectAcrossInstanceSeqSpaces: the hostname fronts several
+// instances numbering their events independently, so the one that answers a
+// reconnect can be tens of millions of seqs either side of the last one seen.
+// The dedup floor is per connection, so the new connection's first frame is
+// delivered immediately either way -- no 10,000-frame stall when it is behind,
+// no silent acceptance of a gap when it is ahead.
+func TestConsumerV2_ReconnectAcrossInstanceSeqSpaces(t *testing.T) {
+	const (
+		firstSeq = int64(25_797_075_281)
+		delta    = int64(40_000_000)
+	)
+	for _, tc := range []struct {
+		name     string
+		otherSeq int64
+	}{
+		{"instance behind", firstSeq - delta},
+		{"instance ahead", firstSeq + delta},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu    sync.Mutex
+				dials int
+			)
+			upgrader := websocket.Upgrader{Subprotocols: []string{subscribeSubprotocol}}
+			mux := http.NewServeMux()
+			mux.HandleFunc("/xrpc/"+subscribeNSID, func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				dials++
+				n := dials
+				mu.Unlock()
+
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				seq, rkey := firstSeq, "3first"
+				if n > 1 {
+					seq, rkey = tc.otherSeq, "3second"
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(v2CreateFrameSeq(seq, rkey))); err != nil {
+					return
+				}
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			posts := make(chan string, 4)
+			consumer := NewConsumer(ConsumerConfig{
+				Endpoint:           wsEndpoint(srv.URL),
+				DisableCompression: true,
+				OnPost:             func(evt *Event, _ *PostRecord) { posts <- evt.PostURI() },
+			})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = consumer.Run(ctx) }()
+
+			if got := waitForPost(t, posts, "the first instance's post"); !strings.HasSuffix(got, "3first") {
+				t.Fatalf("first post = %q, want the first instance's frame", got)
+			}
+			if !consumer.ForceReconnect() {
+				t.Fatal("ForceReconnect() = false, want the live connection to be closed")
+			}
+			if got := waitForPost(t, posts, "the other instance's post"); !strings.HasSuffix(got, "3second") {
+				t.Errorf("second post = %q, want the frame from seq %d", got, tc.otherSeq)
+			}
+			cancel()
+		})
+	}
 }

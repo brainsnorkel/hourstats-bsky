@@ -18,10 +18,18 @@ import (
 const extraCollectionLogInterval = time.Minute
 
 // maxConsecutiveSeqDrops is how many frames in a row the seq dedup may reject
-// before the floor itself is treated as wrong. A reconnect overlap is a
-// handful of frames; thousands in a row means the floor came from a different
-// v2 instance's seq space and nothing will ever clear it.
+// before the floor itself is treated as wrong. The floor is reset on every
+// dial, so it should only ever reject a frame this connection already
+// delivered; thousands in a row means it is wrong for this stream and nothing
+// will ever clear it.
 const maxConsecutiveSeqDrops = 10000
+
+// minTimestampCursorV2 is the lexicon's cursor threshold: a value at or above
+// it is read as unix microseconds and translated to the first seq the instance
+// witnessed at or after that instant; below it the value is a sequence number.
+// A rewind that would take a cursor under the threshold is dropped rather than
+// sent, since an instance would read it as a seq from its own space.
+const minTimestampCursorV2 = 1_000_000_000_000_000
 
 // The decompression buffer is reused for the life of the connection, so a
 // single outsized frame would otherwise pin its capacity until the socket
@@ -31,9 +39,12 @@ const (
 	initialDecBuf     = 64 << 10
 )
 
-// resumeFromStoredCursorV2 loads the persisted (seq, time) pair. The age gate
-// reads the witnessed time saved alongside the seq, because a seq carries no
-// clock of its own.
+// resumeFromStoredCursorV2 loads the persisted (seq, time) pair and resumes
+// from the time. v2 seq numbers are per instance -- two connections to the
+// same hostname at the same moment can be tens of millions apart -- so the
+// witnessed time is the only value that means the same thing to whichever
+// instance answers the next dial. The seq is loaded for the log line and for
+// nothing else.
 func (c *Consumer) resumeFromStoredCursorV2(ctx context.Context) {
 	if c.cfg.LoadCursorV2 == nil {
 		return
@@ -43,21 +54,51 @@ func (c *Consumer) resumeFromStoredCursorV2(ctx context.Context) {
 		slog.Warn("failed to load cursor, starting from live tip", "error", err)
 		return
 	}
-	if seq <= 0 {
+	if timeUS <= 0 {
 		return
 	}
 	start, age, discarded := resolveStartCursor(timeUS, c.cfg.MaxCursorAge, time.Now())
 	if discarded {
 		slog.Warn("persisted cursor too old, starting from live tip",
 			"seq", seq,
+			"cursor_time", formatCursorTime(timeUS),
 			"cursor_age", age.Round(time.Second),
 			"max_cursor_age", c.cfg.MaxCursorAge,
 		)
 		return
 	}
-	c.seq.Store(seq)
 	c.cursor.Store(start)
-	slog.Info("resuming from cursor", "seq", seq, "cursor_age", age.Round(time.Second))
+	slog.Info("resuming from cursor",
+		"seq", seq,
+		"cursor_time", formatCursorTime(start),
+		"cursor_age", age.Round(time.Second),
+	)
+}
+
+// dialCursorV2 is the cursor value the next dial sends: the last witnessed
+// event time rewound by CursorRewind, or 0 for the live tip. It is always a
+// unix-microsecond timestamp, never a seq.
+func (c *Consumer) dialCursorV2() int64 {
+	timeUS := c.cursor.Load()
+	if timeUS <= 0 {
+		return 0
+	}
+	if c.cfg.CursorRewind > 0 {
+		timeUS -= c.cfg.CursorRewind.Microseconds()
+	}
+	if timeUS < minTimestampCursorV2 {
+		return 0
+	}
+	return timeUS
+}
+
+// formatCursorTime renders a unix-microsecond cursor for a log line; "" means
+// no cursor.
+func formatCursorTime(timeUS int64) string {
+	if timeUS <= 0 {
+		return ""
+	}
+	return time.UnixMicro(timeUS).UTC().Format(time.RFC3339)
 }
 
 func (c *Consumer) buildURLV2() string {
@@ -79,11 +120,13 @@ func (c *Consumer) buildURLV2() string {
 	for _, kind := range c.cfg.ExtraKinds {
 		q.Add("kinds", kind)
 	}
-	// The v2 replay is inclusive of the requested seq and the post upsert is
-	// idempotent, so no rewind is needed: the read loop's seq dedup drops the
-	// one-frame overlap.
-	if seq := c.seq.Load(); seq > 0 {
-		q.Set("cursor", strconv.FormatInt(seq, 10))
+	// Always a timestamp: a seq belongs to the instance that issued it, and
+	// the hostname fronts several. The rewind replays the few seconds that
+	// were in flight when the socket dropped; the post upsert and the deletes
+	// are idempotent, so the overlap costs nothing but a little double
+	// counting.
+	if cursor := c.dialCursorV2(); cursor > 0 {
+		q.Set("cursor", strconv.FormatInt(cursor, 10))
 	}
 	if c.decoder != nil {
 		q.Set("zstdDictionary", strconv.FormatUint(uint64(c.dictID), 10))
@@ -132,10 +175,10 @@ func (c *Consumer) closeDecoder() {
 func (c *Consumer) handleDialRefusal(ctx context.Context, err error) {
 	switch {
 	case errors.Is(err, errCursorTooOld):
-		// The seq is below the server's retention floor and will not become
+		// The cursor is below the server's retention floor and will not become
 		// valid by retrying, so drop it and take the live tip.
 		slog.Warn("jetstream refused the cursor as too old, starting from live tip",
-			"seq", c.seq.Load(), "error", err)
+			"cursor_time", formatCursorTime(c.cursor.Load()), "error", err)
 		c.seq.Store(0)
 		c.cursor.Store(0)
 	case errors.Is(err, errUnknownZstdDictionary):
@@ -160,6 +203,23 @@ func (c *Consumer) handleDialRefusal(ctx context.Context, err error) {
 
 func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 	c.ensureDictionary(ctx)
+
+	// The dedup floor only ever describes the connection that taught it.
+	// Carrying a seq across a dial is what stalls ingest when the next
+	// instance numbers its events lower, so the floor starts at 0 every time
+	// and the replay overlap is absorbed by the idempotent writes downstream.
+	c.seq.Store(0)
+
+	dialCursor := c.dialCursorV2()
+	cursorKind := "live"
+	if dialCursor > 0 {
+		cursorKind = "timestamp"
+	}
+	slog.Info("jetstream v2 dial",
+		"cursor_kind", cursorKind,
+		"cursor_time", formatCursorTime(dialCursor),
+		"rewind", c.cfg.CursorRewind,
+	)
 
 	wsURL := c.buildURLV2()
 	slog.Info("connecting to jetstream", "url", wsURL, "protocol", ProtocolV2, "compressed", c.decoder != nil)
@@ -305,8 +365,10 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 			continue
 		}
 
-		// The server replays inclusively from the requested seq, so the
-		// reconnect overlap arrives again; drop anything already delivered.
+		// Within one connection seqs ascend, so a frame at or below the last
+		// one dispatched is a re-delivery. The reconnect overlap the timestamp
+		// cursor replays is not caught here -- the floor was reset at the dial
+		// -- it is absorbed by the idempotent upsert and delete downstream.
 		if event.Seq <= c.seq.Load() {
 			seqDrops++
 			if seqDrops < maxConsecutiveSeqDrops {
