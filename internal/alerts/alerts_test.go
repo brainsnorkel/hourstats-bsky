@@ -3,6 +3,7 @@ package alerts
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,8 +232,8 @@ func TestEvaluate_EventMessageCountsAndDetails(t *testing.T) {
 		t.Fatalf("conditions = %v, want one", names(conds))
 	}
 	want := "3 hydration_timeout event(s) since the previous snapshot: newest"
-	if conds[0].Message != want {
-		t.Errorf("message = %q, want %q", conds[0].Message, want)
+	if !strings.HasPrefix(conds[0].Message, want) || !strings.Contains(conds[0].Message, "Meaning:") {
+		t.Errorf("message = %q, want prefix %q plus a meaning", conds[0].Message, want)
 	}
 }
 

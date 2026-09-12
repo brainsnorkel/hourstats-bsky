@@ -66,7 +66,7 @@ func TestNotify_DiscordBody(t *testing.T) {
 		t.Errorf("payload = %v, want content and allowed_mentions only", payload)
 	}
 	content, _ := payload["content"].(string)
-	for _, want := range []string{"hourstats-staging", "warn", "stale_posts", "threshold 1"} {
+	for _, want := range []string{"hourstats-staging", "WARN", "stale_posts", "threshold 1"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("content = %q, want it to contain %q", content, want)
 		}
@@ -75,7 +75,7 @@ func TestNotify_DiscordBody(t *testing.T) {
 
 // TestNotify_InfoStaysOutOfTheChannel covers the severity split: info exists so
 // /stats/health can name a routine condition, not so the channel can carry it.
-func TestNotify_InfoStaysOutOfTheChannel(t *testing.T) {
+func TestNotify_InfoReachesTheChannelWithoutMention(t *testing.T) {
 	rec := &webhookRecorder{}
 	srv := httptest.NewServer(rec.handler())
 	defer srv.Close()
@@ -83,8 +83,8 @@ func TestNotify_InfoStaysOutOfTheChannel(t *testing.T) {
 	n := NewNotifier("staging", srv.URL, srv.Client())
 	n.Notify(context.Background(), []Condition{{Name: "denied_posts", Severity: SeverityInfo, Message: "1"}})
 
-	if posts := rec.posted(); len(posts) != 0 {
-		t.Errorf("posts = %v, want none", posts)
+	if posts := rec.posted(); len(posts) != 1 || strings.Contains(posts[0], "@here") || strings.Contains(posts[0], "action needed") {
+		t.Errorf("posts = %v, want exactly one routine post without a mention", posts)
 	}
 }
 
@@ -194,7 +194,7 @@ func TestDiscordPayloadMention(t *testing.T) {
 	c := Condition{Name: "stale_posts", Severity: SeverityWarn, Message: "m"}
 	got := discordPayload("<@123>", "staging", c)
 	content, _ := got["content"].(string)
-	if !strings.HasPrefix(content, "<@123> hourstats-staging warn: stale_posts") {
+	if !strings.HasPrefix(content, "<@123> **hourstats-staging WARN: stale_posts**") {
 		t.Fatalf("content = %q", content)
 	}
 	am, _ := got["allowed_mentions"].(map[string]any)
@@ -204,5 +204,40 @@ func TestDiscordPayloadMention(t *testing.T) {
 	}
 	if plain, _ := discordPayload("", "staging", c)["content"].(string); strings.HasPrefix(plain, " ") || strings.Contains(plain, "<@") {
 		t.Fatalf("empty mention altered content: %q", plain)
+	}
+}
+
+func TestNotifyMentionsOnlyActionable(t *testing.T) {
+	rec := &webhookRecorder{}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+	n := NewNotifier("staging", srv.URL, srv.Client())
+	n.SetMention("@here")
+	n.Notify(context.Background(), []Condition{
+		{Name: "stale_posts", Severity: SeverityWarn, Message: "routine"},
+		{Name: "rss_high", Severity: SeverityWarn, Actionable: true, Message: "act"},
+		{Name: "denied_posts", Severity: SeverityInfo, Message: "fyi"},
+	})
+	bodies := rec.posted()
+	if len(bodies) != 3 {
+		t.Fatalf("posts = %d, want 3 (info reaches Discord too)", len(bodies))
+	}
+	for _, b := range bodies {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(b), &payload); err != nil {
+			t.Fatal(err)
+		}
+		content, _ := payload["content"].(string)
+		mentioned := strings.HasPrefix(content, "@here ")
+		switch {
+		case strings.Contains(content, "rss_high"):
+			if !mentioned || !strings.Contains(content, "action needed") {
+				t.Errorf("actionable warn not mentioned: %q", content)
+			}
+		default:
+			if mentioned || strings.Contains(content, "action needed") {
+				t.Errorf("routine condition was mentioned: %q", content)
+			}
+		}
 	}
 }

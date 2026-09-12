@@ -69,12 +69,13 @@ func (n *Notifier) Notify(ctx context.Context, conds []Condition) {
 			continue
 		}
 		// The log is the sink that is always there, so it goes first and is
-		// never conditional on the webhook.
+		// never conditional on the webhook. Every severity reaches Discord;
+		// only actionable conditions and errors carry the mention.
 		if c.Severity == SeverityInfo {
 			slog.Info("alert", "name", c.Name, "severity", c.Severity, "message", c.Message)
-			continue
+		} else {
+			slog.Warn("alert", "name", c.Name, "severity", c.Severity, "actionable", c.Actionable, "message", c.Message)
 		}
-		slog.Warn("alert", "name", c.Name, "severity", c.Severity, "message", c.Message)
 		n.postDiscord(ctx, c)
 	}
 }
@@ -111,7 +112,11 @@ func (n *Notifier) postDiscord(ctx context.Context, c Condition) {
 		return
 	}
 
-	body, err := json.Marshal(discordPayload(n.mention, n.profile, c))
+	mention := ""
+	if c.Actionable || c.Severity == SeverityError {
+		mention = n.mention
+	}
+	body, err := json.Marshal(discordPayload(mention, n.profile, c))
 	if err != nil {
 		slog.Warn("alert webhook payload could not be encoded", "name", c.Name, "error", err)
 		return
@@ -156,5 +161,9 @@ func discordPayload(mention, profile string, c Condition) map[string]any {
 
 // discordMessage formats one condition for the channel.
 func discordMessage(profile string, c Condition) string {
-	return fmt.Sprintf("hourstats-%s %s: %s — %s", profile, c.Severity, c.Name, c.Message)
+	tag := strings.ToUpper(c.Severity)
+	if c.Actionable || c.Severity == SeverityError {
+		tag += ", action needed"
+	}
+	return fmt.Sprintf("**hourstats-%s %s: %s**\n%s", profile, tag, c.Name, c.Message)
 }
