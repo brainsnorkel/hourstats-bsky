@@ -234,6 +234,9 @@ fly ssh console -a "$STAGING_APP" -C "/bin/sh -c '
         echo \"No hourstats-prod.db found — volume may already be staging format\"
     fi
     rm -rf /data/backups /data/seed 2>/dev/null
+    # Heap profiles from prod memory-guard events contain post text; they have
+    # no value on staging and must not ride along with the snapshot.
+    rm -f /data/memguard-* 2>/dev/null
     ls -lh /data/
 '" || fail "Database rename failed"
 

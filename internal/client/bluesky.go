@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg" // registers the JPEG decoder for imageAspectRatio
@@ -47,6 +48,29 @@ type BlueskyClient struct {
 	client   *client.APIClient
 	handle   string
 	password string
+	// dryRun makes every write method return ErrDryRun before it touches the
+	// network. It is set once by the caller via SetDryRun; the client reads
+	// nothing from the environment itself, so tests and one-off tools can pick
+	// their own value.
+	dryRun bool
+}
+
+// ErrDryRun is returned by every write method while dry-run is on. It is a
+// sentinel so callers can tell "we chose not to post" apart from "posting
+// failed": errors.Is(err, client.ErrDryRun).
+var ErrDryRun = errors.New("dry run: write suppressed")
+
+// SetDryRun turns the client's write suppression on or off. Every method that
+// creates or updates a record — including the blob upload and the profile
+// update behind PinPost — refuses to call the API while it is on, so a missed
+// check at a call site cannot post to Bluesky by accident.
+func (c *BlueskyClient) SetDryRun(dryRun bool) {
+	c.dryRun = dryRun
+}
+
+// DryRun reports whether write suppression is on.
+func (c *BlueskyClient) DryRun() bool {
+	return c.dryRun
 }
 
 func New(handle, password string) *BlueskyClient {
@@ -329,6 +353,9 @@ func (c *BlueskyClient) GetTrendingPostsBatch(ctx context.Context, cursor string
 }
 
 func (c *BlueskyClient) PostTrendingSummary(posts []Post, overallSentiment string, analysisIntervalMinutes int, totalPosts int, netSentimentPercentage float64) (string, string, error) {
+	if c.dryRun {
+		return "", "", ErrDryRun
+	}
 	ctx := context.Background()
 
 	// Convert client posts to formatter posts
@@ -582,10 +609,16 @@ func (c *BlueskyClient) hasAdultContentLabel(labels []*atproto.LabelDefs_Label) 
 
 // PostText posts a simple text message to Bluesky
 func (c *BlueskyClient) PostText(ctx context.Context, text string) error {
+	if c.dryRun {
+		return ErrDryRun
+	}
 	return c.PostWithFacets(ctx, text, nil)
 }
 
 func (c *BlueskyClient) PostWithFacets(ctx context.Context, text string, facets []*bsky.RichtextFacet) error {
+	if c.dryRun {
+		return ErrDryRun
+	}
 	_, _, err := c.PostWithFacetsRef(ctx, text, facets)
 	return err
 }
@@ -593,6 +626,9 @@ func (c *BlueskyClient) PostWithFacets(ctx context.Context, text string, facets 
 // PostWithFacetsRef posts a standalone text post (facets may be nil) and
 // returns its URI and CID so replies can be threaded under it.
 func (c *BlueskyClient) PostWithFacetsRef(ctx context.Context, text string, facets []*bsky.RichtextFacet) (string, string, error) {
+	if c.dryRun {
+		return "", "", ErrDryRun
+	}
 	if c.client == nil {
 		return "", "", fmt.Errorf("client not authenticated")
 	}
@@ -648,6 +684,9 @@ func ClampAltText(alt string) string {
 
 // UploadImage uploads an image to Bluesky's blob service and returns the blob reference
 func (c *BlueskyClient) UploadImage(ctx context.Context, imageData []byte, altText string) (*bsky.EmbedImages_Image, error) {
+	if c.dryRun {
+		return nil, ErrDryRun
+	}
 	if c.client == nil {
 		return nil, fmt.Errorf("client not authenticated")
 	}
@@ -701,6 +740,9 @@ func imageAspectRatio(imageData []byte) *bsky.EmbedDefs_AspectRatio {
 // PostWithImage posts a text with an embedded image and returns the post URI and CID
 // Optional facets can be provided to make URLs or other text clickable
 func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageData []byte, altText string, facets ...[]*bsky.RichtextFacet) (string, string, error) {
+	if c.dryRun {
+		return "", "", ErrDryRun
+	}
 	if c.client == nil {
 		return "", "", fmt.Errorf("client not authenticated")
 	}
@@ -750,6 +792,9 @@ func (c *BlueskyClient) PostWithImage(ctx context.Context, text string, imageDat
 // parentURI/parentCID point to the immediate parent being replied to.
 // Returns the URI and CID of the newly created reply post.
 func (c *BlueskyClient) PostWithFacetsAsReply(ctx context.Context, text string, facets []*bsky.RichtextFacet, rootURI, rootCID, parentURI, parentCID string) (string, string, error) {
+	if c.dryRun {
+		return "", "", ErrDryRun
+	}
 	if c.client == nil {
 		return "", "", fmt.Errorf("client not authenticated")
 	}
@@ -793,6 +838,9 @@ func (c *BlueskyClient) PostWithFacetsAsReply(ctx context.Context, text string, 
 // For direct replies to the root post, root and parent will be the same.
 // Returns the URI and CID of the newly created reply post.
 func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, imageData []byte, altText string, rootURI, rootCID, parentURI, parentCID string) (string, string, error) {
+	if c.dryRun {
+		return "", "", ErrDryRun
+	}
 	if c.client == nil {
 		return "", "", fmt.Errorf("client not authenticated")
 	}
@@ -841,6 +889,9 @@ func (c *BlueskyClient) PostWithImageAsReply(ctx context.Context, text string, i
 }
 
 func (c *BlueskyClient) PostReplyWithQuote(ctx context.Context, text string, rootURI, rootCID, parentURI, parentCID, quoteURI, quoteCID string) (string, string, error) {
+	if c.dryRun {
+		return "", "", ErrDryRun
+	}
 	if c.client == nil {
 		return "", "", fmt.Errorf("client not authenticated")
 	}
@@ -882,8 +933,13 @@ func (c *BlueskyClient) PostReplyWithQuote(ctx context.Context, text string, roo
 	return resp.Uri, resp.Cid, nil
 }
 
-// PinPost pins a post to the account's profile
+// PinPost pins a post to the account's profile. The pin is a putRecord against
+// app.bsky.actor.profile, so dry-run stops it here rather than letting the
+// profile read run first.
 func (c *BlueskyClient) PinPost(ctx context.Context, postURI string, postCID string) error {
+	if c.dryRun {
+		return ErrDryRun
+	}
 	if c.client == nil {
 		return fmt.Errorf("client not authenticated")
 	}

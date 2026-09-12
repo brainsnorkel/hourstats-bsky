@@ -1,6 +1,51 @@
 package jetstream
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+const (
+	// maxDIDBytes bounds an event's DID. The AT Protocol caps a DID at 2048
+	// characters, but every method on the network is far shorter; 256 bytes
+	// admits did:plc and the did:web forms that actually appear while keeping a
+	// hostile value out of the tombstone set, the bucket map and the URIs built
+	// from it.
+	maxDIDBytes = 256
+
+	// maxRkeyBytes bounds a commit's record key. The lexicon caps an rkey at
+	// 512 characters.
+	maxRkeyBytes = 512
+)
+
+// validateEventIdentity rejects an event whose DID or record key is absent,
+// not a DID at all, or longer than the protocol allows. Both are concatenated
+// into AT URIs and used as map keys downstream, so an unbounded value is worth
+// refusing at the decoder rather than carrying. rkey is "" for events that are
+// not commits.
+func validateEventIdentity(did, rkey string) error {
+	switch {
+	case did == "":
+		return errors.New("jetstream: frame missing did")
+	case !strings.HasPrefix(did, "did:"):
+		return fmt.Errorf("jetstream: %q is not a did", boundDiag(did))
+	case len(did) > maxDIDBytes:
+		return fmt.Errorf("jetstream: did of %d bytes exceeds the %d-byte limit", len(did), maxDIDBytes)
+	case len(rkey) > maxRkeyBytes:
+		return fmt.Errorf("jetstream: rkey of %d bytes exceeds the %d-byte limit", len(rkey), maxRkeyBytes)
+	}
+	return nil
+}
+
+// rkeyOf is the event's record key, or "" when it carries no commit.
+func (e *Event) rkeyOf() string {
+	if e.Commit == nil {
+		return ""
+	}
+	return e.Commit.Rkey
+}
 
 // Event is one Jetstream event, normalised across both wire protocols so the
 // consumer's dispatch and the caller's handlers are protocol-agnostic.

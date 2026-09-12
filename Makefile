@@ -2,7 +2,7 @@
 
 .PHONY: build test test-unit clean deps fmt lint graph-lab graph-lab-sparkline graph-lab-yearly help \
 	build-hourstats build-stats build-realign deploy-prod deploy-staging deploy-all \
-	fly-status fly-logs-prod fly-logs-staging sync-staging
+	fly-status fly-logs-prod fly-logs-staging sync-staging vuln
 
 # Default build target — the Fly.io binary
 build: build-hourstats
@@ -21,8 +21,27 @@ build-realign:
 test-unit:
 	go test ./...
 
+# `test` also runs the vulnerability scan, but only when govulncheck is on
+# PATH — CI images and fresh clones must not fail for a missing optional tool.
 test:
 	go test ./...
+	@if command -v govulncheck >/dev/null 2>&1; then \
+		echo "govulncheck ./..."; \
+		govulncheck ./...; \
+	else \
+		echo "govulncheck not on PATH — skipping vulnerability scan"; \
+		echo "  install: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+	fi
+
+# Scan dependencies and reachable code for known vulnerabilities.
+# Install with: go install golang.org/x/vuln/cmd/govulncheck@latest
+vuln:
+	@command -v govulncheck >/dev/null 2>&1 || { \
+		echo "Error: govulncheck is not installed."; \
+		echo "Install it with: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+		exit 1; \
+	}
+	govulncheck ./...
 
 # Clean build artifacts
 clean:
@@ -86,7 +105,7 @@ help:
 	@echo "  build-hourstats    - Build Fly.io binary (cmd/hourstats)"
 	@echo "  build-stats        - Build stats CLI tool (cmd/hourstats-stats)"
 	@echo "  build-realign      - Build the sentiment realignment tool (cmd/realign)"
-	@echo "  test               - Run all tests"
+	@echo "  test               - Run all tests (plus govulncheck when installed)"
 	@echo "  test-unit          - Run unit tests"
 	@echo "  clean              - Clean build artifacts"
 	@echo "  deps               - Install and tidy dependencies"
@@ -95,6 +114,7 @@ help:
 	@echo "  graph-lab-yearly   - Generate only yearly chart experiments"
 	@echo "  fmt                - Format code"
 	@echo "  lint               - Lint code (requires golangci-lint)"
+	@echo "  vuln               - Scan for known vulnerabilities (requires govulncheck)"
 	@echo "  deploy-prod        - Deploy to hourstats-prod on Fly.io"
 	@echo "  deploy-staging     - Deploy to hourstats-staging on Fly.io"
 	@echo "  deploy-all         - Deploy to both prod and staging"

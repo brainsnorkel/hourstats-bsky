@@ -38,6 +38,10 @@ type StatsSnapshot struct {
 	AccountPurges           int       `json:"account_purges"`
 	TombstoneHits           int       `json:"tombstone_hits"`
 	StalePosts              int       `json:"stale_posts"`
+	OversizedPosts          int       `json:"oversized_posts"`
+	CappedPosts             int       `json:"capped_posts"`
+	FuturePosts             int       `json:"future_posts"`
+	DeniedPosts             int       `json:"denied_posts"`
 	HeapInuseBytes          int64     `json:"heap_inuse_bytes"`
 	HeapSysBytes            int64     `json:"heap_sys_bytes"`
 	SysBytes                int64     `json:"sys_bytes"`
@@ -234,8 +238,8 @@ func (s *Store) InsertStatsSnapshot(ctx context.Context, snap *StatsSnapshot) er
 			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
 			goroutine_count, cycle_duration_ms, trending_duration_ms, early_rejected_non_english,
 			rss_bytes, heap_released_bytes, stack_inuse_bytes, post_deletes, account_purges,
-			tombstone_hits, stale_posts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			tombstone_hits, stale_posts, oversized_posts, capped_posts, future_posts, denied_posts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		timeToStr(snap.SnapshotTime), snap.ActiveEndpoint, snap.EndpointRotations, snap.ReconnectCount,
 		snap.ConnectionUptimeSeconds, snap.EventsReceived, snap.PostsProcessed, snap.EventsSkipped,
 		snap.ConsumerErrors, snap.TotalFirehosePosts, snap.EnglishPostsStored, snap.RootPosts,
@@ -246,7 +250,8 @@ func (s *Store) InsertStatsSnapshot(ctx context.Context, snap *StatsSnapshot) er
 		snap.WriteChannelDepth, snap.WALSizeBytes, snap.GoroutineCount, snap.CycleDurationMs,
 		snap.TrendingDurationMs, snap.EarlyRejectedNonEnglish, snap.RSSBytes,
 		snap.HeapReleasedBytes, snap.StackInuseBytes, snap.PostDeletes, snap.AccountPurges,
-		snap.TombstoneHits, snap.StalePosts,
+		snap.TombstoneHits, snap.StalePosts, snap.OversizedPosts, snap.CappedPosts,
+		snap.FuturePosts, snap.DeniedPosts,
 	)
 	if err != nil {
 		return fmt.Errorf("insert stats snapshot: %w", err)
@@ -284,7 +289,7 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
 			goroutine_count, cycle_duration_ms, trending_duration_ms, early_rejected_non_english,
 			rss_bytes, heap_released_bytes, stack_inuse_bytes, post_deletes, account_purges,
-			tombstone_hits, stale_posts
+			tombstone_hits, stale_posts, oversized_posts, capped_posts, future_posts, denied_posts
 		 FROM stats_snapshots
 		 ORDER BY snapshot_time DESC
 		 LIMIT 1`,
@@ -300,6 +305,7 @@ func (s *Store) GetLatestSnapshot(ctx context.Context) (*StatsSnapshot, error) {
 		&snap.CycleDurationMs, &snap.TrendingDurationMs, &snap.EarlyRejectedNonEnglish,
 		&snap.RSSBytes, &snap.HeapReleasedBytes, &snap.StackInuseBytes,
 		&snap.PostDeletes, &snap.AccountPurges, &snap.TombstoneHits, &snap.StalePosts,
+		&snap.OversizedPosts, &snap.CappedPosts, &snap.FuturePosts, &snap.DeniedPosts,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -323,7 +329,7 @@ func (s *Store) GetSnapshotHistory(ctx context.Context, since time.Time, limit i
 			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
 			goroutine_count, cycle_duration_ms, trending_duration_ms, early_rejected_non_english,
 			rss_bytes, heap_released_bytes, stack_inuse_bytes, post_deletes, account_purges,
-			tombstone_hits, stale_posts
+			tombstone_hits, stale_posts, oversized_posts, capped_posts, future_posts, denied_posts
 		 FROM stats_snapshots
 		 WHERE snapshot_time >= ?
 		 ORDER BY snapshot_time DESC
@@ -351,6 +357,7 @@ func (s *Store) GetSnapshotHistory(ctx context.Context, since time.Time, limit i
 			&snap.CycleDurationMs, &snap.TrendingDurationMs, &snap.EarlyRejectedNonEnglish,
 			&snap.RSSBytes, &snap.HeapReleasedBytes, &snap.StackInuseBytes,
 			&snap.PostDeletes, &snap.AccountPurges, &snap.TombstoneHits, &snap.StalePosts,
+			&snap.OversizedPosts, &snap.CappedPosts, &snap.FuturePosts, &snap.DeniedPosts,
 		); err != nil {
 			return nil, fmt.Errorf("scan snapshot: %w", err)
 		}
@@ -372,7 +379,7 @@ func (s *Store) GetHealthHistory(ctx context.Context, since time.Time, limit int
 			gc_cpu_fraction, slow_flush_count, slow_flush_max_ms, write_channel_depth, wal_size_bytes,
 			goroutine_count, cycle_duration_ms, trending_duration_ms, early_rejected_non_english,
 			rss_bytes, heap_released_bytes, stack_inuse_bytes, post_deletes, account_purges,
-			tombstone_hits, stale_posts
+			tombstone_hits, stale_posts, oversized_posts, capped_posts, future_posts, denied_posts
 		 FROM stats_snapshots
 		 WHERE snapshot_time >= ?
 		 ORDER BY snapshot_time ASC
@@ -400,6 +407,7 @@ func (s *Store) GetHealthHistory(ctx context.Context, since time.Time, limit int
 			&snap.CycleDurationMs, &snap.TrendingDurationMs, &snap.EarlyRejectedNonEnglish,
 			&snap.RSSBytes, &snap.HeapReleasedBytes, &snap.StackInuseBytes,
 			&snap.PostDeletes, &snap.AccountPurges, &snap.TombstoneHits, &snap.StalePosts,
+			&snap.OversizedPosts, &snap.CappedPosts, &snap.FuturePosts, &snap.DeniedPosts,
 		); err != nil {
 			return nil, fmt.Errorf("scan health snapshot: %w", err)
 		}

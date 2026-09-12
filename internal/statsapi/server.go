@@ -3,14 +3,26 @@ package statsapi
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/sparkline"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
+)
+
+// Timeouts for both listeners. The API only ever serves small local queries,
+// so a slow client is a stuck goroutine rather than a real caller.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 15 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 60 * time.Second
+	maxHeaderBytes    = 64 << 10
 )
 
 // StatsStore defines the interface for accessing stats data.
@@ -32,14 +44,25 @@ type HealthChartConfig struct {
 }
 
 // Server provides an HTTP API for querying stats.
+//
+// It never binds a wildcard address. Two listeners share one handler:
+// loopback, which is what `fly ssh console -C "wget -qO- http://localhost:9111/..."`
+// reaches, and — when FLY_PRIVATE_IP is set — the machine's private 6PN
+// address, which is what other machines on the org network reach. The Fly
+// private IPv6 is not localhost, so neither listener covers the other.
 type Server struct {
 	store       StatsStore
 	port        int
-	server      *http.Server
+	server      *http.Server // loopback (or STATS_API_BIND when set)
+	privServer  *http.Server // Fly 6PN private address; nil off Fly
 	healthChart HealthChartConfig
 }
 
 // New creates a new stats API server.
+//
+// Bind addresses: STATS_API_BIND overrides everything with a single listener
+// (used by tests); otherwise loopback on port, plus [FLY_PRIVATE_IP]:port when
+// that variable is set.
 func New(store StatsStore, port int, healthCfg HealthChartConfig) *Server {
 	s := &Server{store: store, port: port, healthChart: healthCfg}
 	mux := http.NewServeMux()
@@ -51,28 +74,69 @@ func New(store StatsStore, port int, healthCfg HealthChartConfig) *Server {
 	mux.HandleFunc("GET /stats/health", s.handleHealth)
 	mux.HandleFunc("GET /stats/health/history", s.handleHealthHistory)
 	mux.HandleFunc("GET /stats/health/chart", s.handleHealthChart)
-	s.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
+	local, private := bindAddrs(port)
+	s.server = newHTTPServer(local, mux)
+	if private != "" {
+		s.privServer = newHTTPServer(private, mux)
 	}
 	return s
 }
 
+// bindAddrs returns the loopback (or overridden) address and, on Fly, the
+// private 6PN address to listen on as well.
+func bindAddrs(port int) (local, private string) {
+	if override := os.Getenv("STATS_API_BIND"); override != "" {
+		return override, ""
+	}
+	local = net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	if ip := os.Getenv("FLY_PRIVATE_IP"); ip != "" {
+		private = net.JoinHostPort(ip, strconv.Itoa(port))
+	}
+	return local, private
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
+}
+
 // Start begins serving HTTP requests in a background goroutine.
 func (s *Server) Start() error {
-	slog.Info("starting stats API server", "port", s.port)
-	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("stats API server error", "error", err)
-		}
-	}()
+	addrs := []string{s.server.Addr}
+	if s.privServer != nil {
+		addrs = append(addrs, s.privServer.Addr)
+	}
+	slog.Info("starting stats API server", "port", s.port, "addrs", addrs)
+
+	serve := func(srv *http.Server) {
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("stats API server error", "addr", srv.Addr, "error", err)
+			}
+		}()
+	}
+	serve(s.server)
+	if s.privServer != nil {
+		serve(s.privServer)
+	}
 	return nil
 }
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	slog.Info("shutting down stats API server")
-	return s.server.Shutdown(ctx)
+	err := s.server.Shutdown(ctx)
+	if s.privServer != nil {
+		err = errors.Join(err, s.privServer.Shutdown(ctx))
+	}
+	return err
 }
 
 // handleLatest returns the most recent stats snapshot.

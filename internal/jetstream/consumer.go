@@ -33,6 +33,13 @@ const (
 	// arrives at wire speed and overruns the downstream write buffer.
 	DefaultMaxCursorAge = 6 * time.Hour
 
+	// DefaultMaxPostFuture bounds how far a post record's createdAt may run
+	// ahead of the event's witness time before the create is treated as a
+	// forged or badly skewed timestamp rather than a live post. A few minutes
+	// of client clock skew is ordinary; hours are not, and a future createdAt
+	// would sit at the head of every window it is read into.
+	DefaultMaxPostFuture = 10 * time.Minute
+
 	// DefaultMaxPostAge bounds how far a post record's createdAt may lag the
 	// event's witness time before the create is treated as a repo backfill
 	// rather than a live post. Jetstream v2 delivers backfills through the live
@@ -165,9 +172,34 @@ type ConsumerConfig struct {
 	// negative value disables the check.
 	MaxPostAge time.Duration
 
-	// OnStale is called, instead of OnPost, for each post create the MaxPostAge
-	// guard drops, with how far the record lagged its witness time.
+	// MaxPostFuture drops a post create whose record createdAt runs more than
+	// this far ahead of the event's witness time. Zero selects
+	// DefaultMaxPostFuture; a negative value disables the check.
+	MaxPostFuture time.Duration
+
+	// OnStale is called, instead of OnPost, for each post create the age guards
+	// drop, with how far the record lagged its witness time (negative for a
+	// future-dated record).
 	OnStale func(event *Event, record *PostRecord, age time.Duration)
+
+	// MaxPostsPerDIDPerMinute caps how many post creates one repo may
+	// contribute per minute, with a burst of one minute's worth. 0 (the
+	// default) disables the cap.
+	MaxPostsPerDIDPerMinute int
+
+	// DenyDIDs is the operator denylist: creates from these repos are dropped
+	// before the language pre-filter. Their deletes and account events still
+	// apply, so a denied repo's already-buffered posts are still removed.
+	DenyDIDs []string
+
+	// LoadDenyList reads the denylist stored in the database. It is called at
+	// startup and every DenyListReload, so a DID can be added over `fly ssh`
+	// without a deploy; its result is unioned with DenyDIDs.
+	LoadDenyList func(ctx context.Context) ([]string, error)
+
+	// DenyListReload is how often LoadDenyList is re-read. Zero selects
+	// DefaultDenyListReload.
+	DenyListReload time.Duration
 
 	// StaleSamplePerHour turns on the stale-create diagnostic: up to this many
 	// sampled "stale create sample" lines an hour, plus an hourly summary of
@@ -207,6 +239,12 @@ func (c *ConsumerConfig) setDefaults() {
 	}
 	if c.MaxPostAge == 0 {
 		c.MaxPostAge = DefaultMaxPostAge
+	}
+	if c.MaxPostFuture == 0 {
+		c.MaxPostFuture = DefaultMaxPostFuture
+	}
+	if c.DenyListReload == 0 {
+		c.DenyListReload = DefaultDenyListReload
 	}
 	c.ExtraKinds = normalizeExtraKinds(c.ExtraKinds)
 }
@@ -251,6 +289,10 @@ type Consumer struct {
 	// diag is the stale-create diagnostic, nil unless StaleSamplePerHour > 0.
 	diag *staleDiag
 
+	// limiter is the per-DID create cap, nil unless
+	// MaxPostsPerDIDPerMinute > 0.
+	limiter *didLimiter
+
 	// Stale-frame cutoff, owned by the read loop: the RFC 3339 second prefix a
 	// rejected frame's createdAt must reach to count as live, recomputed at
 	// most once a second rather than per frame.
@@ -275,11 +317,23 @@ type Stats struct {
 	PostsDeleted            atomic.Int64
 	AccountsInactive        atomic.Int64
 
-	// PostsStale counts post creates dropped by the MaxPostAge guard: repo
-	// backfill delivered through the live tail. It counts both the creates
-	// dropped after parsing and the ones the language pre-filter had already
-	// rejected, which is why they no longer reach OnEarlyReject.
+	// PostsStale counts post creates dropped by the age guards: repo backfill
+	// delivered through the live tail, and (since the future guard) records
+	// dated ahead of their witness time. It counts both the creates dropped
+	// after parsing and the ones the language pre-filter had already rejected,
+	// which is why they no longer reach OnEarlyReject.
 	PostsStale atomic.Int64
+
+	// PostsFuture counts the subset of PostsStale dropped for being dated more
+	// than MaxPostFuture ahead of the event's witness time.
+	PostsFuture atomic.Int64
+
+	// PostsCapped counts post creates dropped by the per-DID rate cap.
+	PostsCapped atomic.Int64
+
+	// PostsDenied counts post creates dropped because their repo is on the
+	// operator denylist.
+	PostsDenied atomic.Int64
 
 	// BytesReceived counts bytes as they arrive on the wire (compressed, on a
 	// dictionary zstd connection); BytesDecompressed counts the JSON the
@@ -302,6 +356,9 @@ type StatsReport struct {
 	PostsDeleted            int64
 	AccountsInactive        int64
 	PostsStale              int64
+	PostsFuture             int64
+	PostsCapped             int64
+	PostsDenied             int64
 
 	Protocol          string
 	Compressed        bool
@@ -339,6 +396,7 @@ func NewConsumer(cfg ConsumerConfig) *Consumer {
 		}
 	}
 	c.diag = newStaleDiag(cfg.StaleSamplePerHour)
+	c.limiter = newDIDLimiter(cfg.MaxPostsPerDIDPerMinute)
 	return c
 }
 
@@ -354,9 +412,16 @@ func (c *Consumer) Run(ctx context.Context) error {
 	c.resumeFromStoredCursor(ctx)
 	defer c.closeDecoder()
 
+	// The denylist is published before the first dial, so the very first frame
+	// of a restart is already filtered.
+	c.refreshDenyList(ctx)
+
 	cursorCtx, cursorCancel := context.WithCancel(ctx)
 	defer cursorCancel()
 	go c.cursorPersistLoop(cursorCtx)
+	if c.cfg.LoadDenyList != nil {
+		go c.denyListReloadLoop(cursorCtx)
+	}
 	if len(c.cfg.ExtraCollections) > 0 || len(c.cfg.ExtraKinds) > 0 {
 		go c.extraVolumeLogLoop(cursorCtx)
 	}
@@ -492,6 +557,9 @@ func (c *Consumer) GetStatsReport() StatsReport {
 		PostsDeleted:            c.stats.PostsDeleted.Load(),
 		AccountsInactive:        c.stats.AccountsInactive.Load(),
 		PostsStale:              c.stats.PostsStale.Load(),
+		PostsFuture:             c.stats.PostsFuture.Load(),
+		PostsCapped:             c.stats.PostsCapped.Load(),
+		PostsDenied:             c.stats.PostsDenied.Load(),
 		Protocol:                c.cfg.Protocol,
 		Compressed:              c.compressed.Load(),
 		BytesReceived:           c.stats.BytesReceived.Load(),
@@ -680,6 +748,14 @@ func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 
 		c.stats.EventsReceived.Add(1)
 
+		// The operator denylist is applied before the language pre-filter, so a
+		// denied repo's creates are neither parsed nor counted under their
+		// language. Only creates are denied; its deletes still fall through.
+		if did := deniedCreateDID(message); did != "" {
+			c.countDeniedCreate(did)
+			continue
+		}
+
 		// Cheap bytes-level pre-filter: drop frames that are clearly feed.post
 		// creates with no English language tag, before paying for json.Unmarshal.
 		// Non-post events (identity, account, like, etc.) have no "langs" field
@@ -706,6 +782,14 @@ func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 			continue
 		}
 
+		// The same identity bounds the v2 decoder applies: an absent or
+		// oversized DID or rkey is a malformed frame, not an event.
+		if err := validateEventIdentity(event.DID, event.rkeyOf()); err != nil {
+			c.stats.Errors.Add(1)
+			slog.Debug("rejected event", "error", err)
+			continue
+		}
+
 		c.cursor.Store(event.TimeUS)
 		c.dispatch(&event)
 	}
@@ -717,7 +801,12 @@ func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 // connection — therefore surfaces as a read error within readTimeout instead
 // of hanging until the kernel keepalive. The returned func stops the pinger
 // and must be called before the connection is closed.
+//
+// It also bounds one message at v2ReadLimit on both protocols, so neither read
+// loop can be made to allocate an arbitrarily large frame; gorilla fails the
+// read past the limit, which surfaces as a reconnect.
 func startLiveness(ctx context.Context, conn *websocket.Conn) (func(), error) {
+	conn.SetReadLimit(v2ReadLimit)
 	conn.SetCloseHandler(func(code int, text string) error {
 		return nil
 	})
@@ -770,7 +859,14 @@ func startLiveness(ctx context.Context, conn *websocket.Conn) (func(), error) {
 func (c *Consumer) dispatch(event *Event) {
 	switch {
 	case event.IsPostCreate():
-		// handled below
+		// The per-DID cap is applied before anything else a create costs — the
+		// record parse, the language and firehose counting the caller does in
+		// OnPost — so one loud repo cannot spend the window's budget. Deletes
+		// and account events below are never capped: they only ever remove
+		// rows.
+		if !c.allowDIDRate(event) {
+			return
+		}
 	case event.IsPostDelete():
 		if c.cfg.OnDelete != nil {
 			c.cfg.OnDelete(event)
@@ -794,8 +890,11 @@ func (c *Consumer) dispatch(event *Event) {
 		return
 	}
 
-	if age, stale := c.postAge(event, record); stale {
+	if age, drop, future := c.postAge(event, record); drop {
 		c.stats.PostsStale.Add(1)
+		if future {
+			c.stats.PostsFuture.Add(1)
+		}
 		c.recordStale(event, record, age)
 		if c.cfg.OnStale != nil {
 			c.cfg.OnStale(event, record, age)
@@ -1000,20 +1099,27 @@ func parsePostCreatedAt(raw string) (time.Time, bool) {
 	return t, true
 }
 
-// postAge returns how far the record's createdAt lags the event's witness
-// time, and whether that exceeds MaxPostAge. An unparseable createdAt is kept,
-// as it always was. So is a future-dated one: its age is negative, which is
-// client clock skew rather than a backfill.
-func (c *Consumer) postAge(event *Event, record *PostRecord) (time.Duration, bool) {
-	if c.cfg.MaxPostAge <= 0 || event.TimeUS == 0 {
-		return 0, false
+// postAge returns how far the record's createdAt lags the event's witness time
+// (negative when the record is dated ahead of it), whether that is outside the
+// accepted window, and whether the breach is the future one. An unparseable
+// createdAt is kept, as it always was; so is a few minutes of client clock
+// skew either side.
+func (c *Consumer) postAge(event *Event, record *PostRecord) (age time.Duration, drop, future bool) {
+	if event.TimeUS == 0 || (c.cfg.MaxPostAge <= 0 && c.cfg.MaxPostFuture <= 0) {
+		return 0, false, false
 	}
 	created, ok := parsePostCreatedAt(record.CreatedAt)
 	if !ok {
-		return 0, false
+		return 0, false, false
 	}
-	age := time.UnixMicro(event.TimeUS).Sub(created)
-	return age, age > c.cfg.MaxPostAge
+	age = time.UnixMicro(event.TimeUS).Sub(created)
+	switch {
+	case c.cfg.MaxPostFuture > 0 && age < -c.cfg.MaxPostFuture:
+		return age, true, true
+	case c.cfg.MaxPostAge > 0 && age > c.cfg.MaxPostAge:
+		return age, true, false
+	}
+	return age, false, false
 }
 
 // rejectedFrameIsStale reports whether a frame the language pre-filter dropped

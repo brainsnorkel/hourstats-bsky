@@ -41,8 +41,11 @@ const (
 
 	// v2ReadLimit bounds one WebSocket message, and (as the decoder's memory
 	// limit) one decompressed frame, so a hostile frame cannot force an
-	// unbounded allocation.
-	v2ReadLimit = 32 << 20
+	// unbounded allocation. A commit frame carries one record, which the
+	// lexicon caps well below this; 2 MiB leaves generous headroom over the
+	// largest frame the network produces while keeping one frame's allocation
+	// small against the machine's memory.
+	v2ReadLimit = 2 << 20
 
 	// dictionaryFetchTimeout bounds the getZstdDictionary request.
 	dictionaryFetchTimeout = 10 * time.Second
@@ -221,8 +224,10 @@ func decodeV2Frame(data []byte) (*Event, *v2Info, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("jetstream: frame time %q: %w", boundDiag(p.Time), err)
 	}
-	if p.DID == "" {
-		return nil, nil, errors.New("jetstream: frame missing did")
+	// The identity fields are bounded here, before the DID and the rkey reach
+	// the URI builder, the tombstone set or the per-DID bucket map.
+	if err := validateEventIdentity(p.DID, p.Rkey); err != nil {
+		return nil, nil, err
 	}
 
 	event := &Event{DID: p.DID, Seq: p.Seq, TimeUS: ts.UnixMicro()}

@@ -216,25 +216,32 @@ func TestPostAge(t *testing.T) {
 	evt := &Event{TimeUS: witness.UnixMicro()}
 
 	tests := []struct {
-		name      string
-		createdAt string
-		wantStale bool
+		name       string
+		createdAt  string
+		wantDrop   bool
+		wantFuture bool
 	}{
-		{"live", "2026-09-11T11:59:00Z", false},
-		{"at the threshold", "2026-09-11T10:00:00Z", false},
-		{"just past the threshold", "2026-09-11T09:59:59Z", true},
-		{"backfill from 2024", "2024-03-01T08:00:00Z", true},
-		{"nanosecond precision", "2026-09-11T11:59:00.123456789Z", false},
-		{"numeric offset", "2026-09-11T13:59:00+02:00", false},
-		{"future clock skew", "2026-09-11T12:30:00Z", false},
-		{"unparseable", "yesterday", false},
-		{"empty", "", false},
+		{"live", "2026-09-11T11:59:00Z", false, false},
+		{"at the threshold", "2026-09-11T10:00:00Z", false, false},
+		{"just past the threshold", "2026-09-11T09:59:59Z", true, false},
+		{"backfill from 2024", "2024-03-01T08:00:00Z", true, false},
+		{"nanosecond precision", "2026-09-11T11:59:00.123456789Z", false, false},
+		{"numeric offset", "2026-09-11T13:59:00+02:00", false, false},
+		{"nine minutes ahead is clock skew", "2026-09-11T12:09:00Z", false, false},
+		{"at the future threshold", "2026-09-11T12:10:00Z", false, false},
+		{"eleven minutes ahead is dropped", "2026-09-11T12:11:00Z", true, true},
+		{"hours ahead is dropped", "2026-09-11T18:00:00Z", true, true},
+		{"unparseable", "yesterday", false, false},
+		{"empty", "", false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, stale := c.postAge(evt, &PostRecord{CreatedAt: tt.createdAt})
-			if stale != tt.wantStale {
-				t.Errorf("postAge(%q) stale = %v, want %v", tt.createdAt, stale, tt.wantStale)
+			_, drop, future := c.postAge(evt, &PostRecord{CreatedAt: tt.createdAt})
+			if drop != tt.wantDrop {
+				t.Errorf("postAge(%q) drop = %v, want %v", tt.createdAt, drop, tt.wantDrop)
+			}
+			if future != tt.wantFuture {
+				t.Errorf("postAge(%q) future = %v, want %v", tt.createdAt, future, tt.wantFuture)
 			}
 		})
 	}

@@ -62,8 +62,11 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, an
 	if extremes != nil {
 		footerTopicCap = footerTopicMaxRunes
 	}
+	var lines []topicLine
 	build := func() (string, []Facet) {
-		return buildPost(ranked, showExemplar, analysisHours, extremes, footerTopicCap)
+		text, facets, built := buildPost(ranked, showExemplar, analysisHours, extremes, footerTopicCap)
+		lines = built
+		return text, facets
 	}
 	overflows := func(text string) bool { return utf8.RuneCountInString(text) > maxGraphemes }
 
@@ -102,19 +105,20 @@ func FormatTrendingPost(ranked []IdentifiedTopic, previous []IdentifiedTopic, an
 	// rebuilt from the final text so no offset can point past the end.
 	if runes := []rune(text); len(runes) > maxGraphemes {
 		text = string(runes[:maxGraphemes])
-		facets = buildFacets(text, visibleTopics(ranked, showExemplar))
+		facets = buildFacets(text, visibleTopics(ranked, showExemplar), clampTopicLines(lines, len(text)))
 	}
 
 	return text, facets
 }
 
 // buildPost renders the topic list and, when asked for, the extremes footer,
-// returning the text with facets whose offsets are relative to it.
-func buildPost(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int, extremes *WeekExtremes, footerTopicCap int) (string, []Facet) {
-	text := buildTrendingText(ranked, showExemplar, analysisHours)
-	facets := buildFacets(text, visibleTopics(ranked, showExemplar))
+// returning the text with facets whose offsets are relative to it and the byte
+// span of each topic's line.
+func buildPost(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int, extremes *WeekExtremes, footerTopicCap int) (string, []Facet, []topicLine) {
+	text, lines := buildTrendingText(ranked, showExemplar, analysisHours)
+	facets := buildFacets(text, visibleTopics(ranked, showExemplar), lines)
 	if extremes == nil || footerTopicCap == footerDropped {
-		return text, facets
+		return text, facets, lines
 	}
 
 	// The footer is appended after the topic list and carries no facets, so
@@ -125,7 +129,7 @@ func buildPost(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int,
 	text = appendExtremeLine(text, extremes.High, footerTopicCap)
 	text += "\n"
 	text = appendExtremeLine(text, extremes.Low, footerTopicCap)
-	return text, facets
+	return text, facets, lines
 }
 
 // footerHeader introduces the two extreme lines; high comes first.
@@ -174,10 +178,21 @@ func visibleTopics(ranked []IdentifiedTopic, showExemplar []bool) []IdentifiedTo
 	return visible
 }
 
-func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int) string {
+// topicLine is the byte span of one topic's own line inside the rendered
+// text, recorded while the text is built. Facets are searched for inside that
+// span only: the label comes from the grouping model, so a label containing
+// "@evil.bsky.social" or a 🔍 must not be able to capture the link belonging
+// to another topic's line.
+type topicLine struct {
+	start int
+	end   int
+}
+
+func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHours int) (string, []topicLine) {
 	var b strings.Builder
 	b.WriteString("Trending topic samples:\n\n")
 
+	lines := make([]topicLine, 0, len(ranked))
 	for i, topic := range ranked {
 		line := fmt.Sprintf("%d. %s", topic.Rank, topic.Cluster.Label)
 		if showExemplar[i] {
@@ -187,27 +202,52 @@ func buildTrendingText(ranked []IdentifiedTopic, showExemplar []bool, analysisHo
 				line += fmt.Sprintf(" @%s", topic.ExemplarHandle)
 			}
 		}
+		start := b.Len()
 		b.WriteString(line)
+		lines = append(lines, topicLine{start: start, end: b.Len()})
 		b.WriteString("\n")
 	}
 
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(b.String(), "\n"), lines
 }
 
-func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
+// clampTopicLines clips line spans to a text that was cut short, dropping any
+// line that no longer starts inside it. Only the last-resort 300-rune cut
+// needs this; every other path rebuilds the text and its spans together.
+func clampTopicLines(lines []topicLine, n int) []topicLine {
+	out := make([]topicLine, 0, len(lines))
+	for _, l := range lines {
+		if l.start >= n {
+			break
+		}
+		if l.end > n {
+			l.end = n
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// buildFacets links each topic's exemplar handle or meme icon, searching only
+// within that topic's own line. lines[i] must describe ranked[i]; a topic with
+// no span left (its line was cut off) gets no facet.
+func buildFacets(text string, ranked []IdentifiedTopic, lines []topicLine) []Facet {
 	var facets []Facet
 
-	searchFrom := 0
-	for _, topic := range ranked {
+	for i, topic := range ranked {
+		if i >= len(lines) {
+			break
+		}
+		line := text[lines[i].start:lines[i].end]
+
 		if topic.Cluster.IsMeme {
 			const searchIcon = "🔍"
-			idx := strings.Index(text[searchFrom:], searchIcon)
+			idx := strings.Index(line, searchIcon)
 			if idx < 0 {
 				continue
 			}
-			byteStart := searchFrom + idx
-			byteEnd := byteStart + len([]byte(searchIcon))
-			searchFrom = byteEnd
+			byteStart := lines[i].start + idx
+			byteEnd := byteStart + len(searchIcon)
 
 			searchURL := "https://bsky.app/search?q=" + url.QueryEscape(memeSearchQuery(topic.Cluster.Keywords))
 			facets = append(facets, Facet{
@@ -222,13 +262,14 @@ func buildFacets(text string, ranked []IdentifiedTopic) []Facet {
 			continue
 		}
 		mention := "@" + topic.ExemplarHandle
-		idx := strings.Index(text[searchFrom:], mention)
+		// The mention is appended last, so the rightmost match is the one the
+		// renderer wrote; anything earlier on the line came out of the label.
+		idx := strings.LastIndex(line, mention)
 		if idx < 0 {
 			continue
 		}
-		byteStart := searchFrom + idx
-		byteEnd := byteStart + len([]byte(mention))
-		searchFrom = byteEnd
+		byteStart := lines[i].start + idx
+		byteEnd := byteStart + len(mention)
 
 		webURL := convertExemplarURI(topic.ExemplarURI)
 		facets = append(facets, Facet{

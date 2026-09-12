@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/christophergentle/hourstats-bsky/internal/jetstream"
 	"github.com/christophergentle/hourstats-bsky/internal/stats"
@@ -25,6 +26,17 @@ const (
 	// dropWarnWindow rate-limits the "write buffer full" warning. A cold-start
 	// backlog replay once produced one WARN line per dropped post (486k lines).
 	dropWarnWindow = 5 * time.Second
+
+	// defaultMaxPostRunes bounds a create's text before it is tokenised or
+	// stored. The lexicon caps a post at 300 graphemes, so anything an order of
+	// magnitude past that is a client bug or an attempt to make the tokeniser
+	// and the analyzer do unbounded work on one row.
+	defaultMaxPostRunes = 3000
+
+	// denyListKey is the key_value row holding the operator denylist as a comma
+	// list, re-read every few minutes so a DID can be added over `fly ssh`
+	// without a deploy.
+	denyListKey = "firehose_deny_dids"
 )
 
 // ---------------------------------------------------------------------------
@@ -127,6 +139,14 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 	// by default so production is unaffected.
 	staleSamplePerHour := envInt("JETSTREAM_STALE_SAMPLE_PER_HOUR", 0)
 	extraKinds := envList("JETSTREAM_EXTRA_KINDS")
+	// Intake clamps. A record dated ahead of its witness time is a forged or
+	// badly skewed clock, not a live post; the per-DID cap clips a single loud
+	// repo; the denylist is the operator's manual lever, unioned with the
+	// key_value row so it can be edited without a deploy.
+	maxPostRunes := envInt("FIREHOSE_MAX_POST_RUNES", defaultMaxPostRunes)
+	maxPostsPerDID := envInt("FIREHOSE_MAX_POSTS_PER_DID_PER_MINUTE", 60)
+	maxPostFutureMinutes := envInt("FIREHOSE_MAX_POST_FUTURE_MINUTES", 10)
+	denyDIDs := envList("FIREHOSE_DENY_DIDS")
 
 	cfg := jetstream.ConsumerConfig{
 		Protocol:           protocol,
@@ -149,6 +169,17 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		OnPost: func(evt *jetstream.Event, rec *jetstream.PostRecord) {
 			collector.IncrementFirehosePost()
 			collector.IncrementLanguage(postLang(rec.Langs))
+
+			// The text is measured once, before anything tokenises, scores or
+			// stores it: a record far past the lexicon's 300-grapheme cap would
+			// otherwise carry its whole length into the tokeniser and into
+			// post_buffer.
+			if textRunes, oversized := oversizedPost(rec.Text, maxPostRunes); oversized {
+				collector.IncrementOversizedPosts()
+				slog.Debug("dropped an oversized post",
+					"uri", evt.PostURI(), "text_runes", textRunes, "limit", maxPostRunes)
+				return
+			}
 
 			if strings.TrimSpace(rec.Text) == "" {
 				return
@@ -222,9 +253,18 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		LoadCursorV2: func(loadCtx context.Context) (int64, int64, error) {
 			return db.GetV2Cursor(loadCtx)
 		},
-		CursorRewind: time.Duration(envInt("JETSTREAM_CURSOR_REWIND_SECONDS", 5)) * time.Second,
-		MaxCursorAge: time.Duration(envInt("JETSTREAM_MAX_CURSOR_AGE_MINUTES", 360)) * time.Minute,
-		MaxPostAge:   time.Duration(maxPostAgeMinutes) * time.Minute,
+		// The stored denylist is the union's second half. A missing row reads as
+		// the empty list, exactly like an unset FIREHOSE_DENY_DIDS.
+		LoadDenyList: func(loadCtx context.Context) ([]string, error) {
+			raw, _ := db.GetKeyValue(loadCtx, denyListKey)
+			return splitList(raw), nil
+		},
+		CursorRewind:            time.Duration(envInt("JETSTREAM_CURSOR_REWIND_SECONDS", 5)) * time.Second,
+		MaxCursorAge:            time.Duration(envInt("JETSTREAM_MAX_CURSOR_AGE_MINUTES", 360)) * time.Minute,
+		MaxPostAge:              time.Duration(maxPostAgeMinutes) * time.Minute,
+		MaxPostFuture:           time.Duration(maxPostFutureMinutes) * time.Minute,
+		MaxPostsPerDIDPerMinute: maxPostsPerDID,
+		DenyDIDs:                denyDIDs,
 	}
 
 	// Left nil when disabled: the consumer still receives the frames but
@@ -289,6 +329,12 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		"extra_collections", extraCollections,
 		"extra_kinds", extraKinds,
 		"max_post_age_minutes", maxPostAgeMinutes,
+		"max_post_future_minutes", maxPostFutureMinutes,
+		"max_post_runes", maxPostRunes,
+		"max_posts_per_did_per_minute", maxPostsPerDID,
+		// The count only: the denylist names individual accounts and never
+		// reaches an Info line.
+		"deny_dids", len(denyDIDs),
 		"stale_sample_per_hour", staleSamplePerHour,
 	)
 
@@ -308,6 +354,15 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 		_ = collector.LogEvent(ctx, "consumer_restart", fmt.Sprintf("unexpected exit: %v", err))
 		slog.Error("jetstream consumer exited unexpectedly, restarting immediately", "error", err)
 	}
+}
+
+// oversizedPost reports whether a record's text is past the rune limit, and
+// returns the measured length so the caller does not count it a second time.
+// The limit is on runes, not bytes: the lexicon's own cap is on graphemes, and
+// a byte limit would refuse ordinary posts in scripts that encode wide.
+func oversizedPost(text string, maxRunes int) (int, bool) {
+	runes := utf8.RuneCountInString(text)
+	return runes, runes > maxRunes
 }
 
 // undeterminedLang is the bucket for posts with no usable language tag

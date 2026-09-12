@@ -310,6 +310,7 @@ func runDailyTopPostQuote(ctx context.Context, db *store.Store, handle, password
 	defer apiCancel()
 
 	bskyClient := client.New(handle, password)
+	bskyClient.SetDryRun(dryRun)
 	if err := bskyClient.Authenticate(); err != nil {
 		slog.Error("bluesky auth for daily quote failed", "error", err)
 		return

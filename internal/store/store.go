@@ -57,9 +57,12 @@ type RunState struct {
 	TopPosts                []Post
 	TopPostURI              string
 	TopPostCID              string
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
-	TTL                     int64
+	// WindowCapped records that ANALYSIS_MAX_WINDOW_POSTS bound this cycle's
+	// window read, so the run covers only the newest slice of the interval.
+	WindowCapped bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	TTL          int64
 }
 
 type SentimentDataPoint struct {
@@ -748,6 +751,16 @@ func (s *Store) migrate() error {
 
 		// Repo backfill delivered through the v2 live tail
 		`ALTER TABLE stats_snapshots ADD COLUMN stale_posts INTEGER NOT NULL DEFAULT 0`,
+
+		// Firehose intake clamps: oversized text, the per-DID rate cap,
+		// future-dated records and the operator denylist
+		`ALTER TABLE stats_snapshots ADD COLUMN oversized_posts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN capped_posts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN future_posts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE stats_snapshots ADD COLUMN denied_posts INTEGER NOT NULL DEFAULT 0`,
+
+		// Analysis window cap (hs-019.2) — keep new `runs` columns at the end.
+		`ALTER TABLE runs ADD COLUMN window_capped INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, stmt := range stmts {

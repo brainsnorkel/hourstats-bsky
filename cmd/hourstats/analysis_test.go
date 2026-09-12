@@ -180,3 +180,26 @@ func TestRecordScorerV2Cutover(t *testing.T) {
 		t.Errorf("%s = %q after a restart, want it unchanged", scorerV2Key, got)
 	}
 }
+
+func TestWindowCapDecision(t *testing.T) {
+	tests := []struct {
+		name      string
+		available int
+		limit     int
+		want      bool
+	}{
+		{"under the cap", 1000, 300000, false},
+		{"exactly at the cap", 300000, 300000, false},
+		{"over the cap", 300001, 300000, true},
+		{"cap disabled by zero", 5000000, 0, false},
+		{"cap disabled by a negative", 5000000, -1, false},
+		{"empty window", 0, 300000, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := windowCapDecision(tt.available, tt.limit); got != tt.want {
+				t.Errorf("windowCapDecision(%d, %d) = %v, want %v", tt.available, tt.limit, got, tt.want)
+			}
+		})
+	}
+}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
+	"github.com/christophergentle/hourstats-bsky/internal/denylist"
 )
 
 // Reasons a post is not featured, or not quoted. Exactly one is recorded per
@@ -32,6 +33,9 @@ const (
 	// ReasonQuoteControl: an app.bsky.feed.postgate forbids quoting. The post
 	// is still listed with a handle link; only the quote embed is dropped.
 	ReasonQuoteControl = "quote_control"
+	// ReasonDenied: the author is on the operator's denylist. Checked before
+	// anything that costs a network call.
+	ReasonDenied = "denied"
 )
 
 // labelReason formats the reason for a system moderation label, whose values
@@ -71,6 +75,23 @@ type FeatureGate struct {
 	// resolveTimeout is the ceiling on one Check's author lookups. It is a
 	// field rather than the bare constant so a test can shorten it.
 	resolveTimeout time.Duration
+	// denylist reports whether an author DID is one the operator has banned
+	// from every surface. It defaults to the process-wide denylist package and
+	// is a field so a test can substitute its own set; nil disables the check.
+	denylist func(did string) bool
+}
+
+// SetDenylist replaces the author denylist this gate consults. A listed
+// AuthorDID is refused before the visibility fan-out, so no PDS lookup is
+// spent on an author we were never going to feature. Passing nil removes the
+// check, which only a test should want.
+func (g *FeatureGate) SetDenylist(fn func(did string) bool) {
+	g.denylist = fn
+}
+
+// denied reports whether a DID is on the installed denylist.
+func (g *FeatureGate) denied(did string) bool {
+	return did != "" && g.denylist != nil && g.denylist(did)
 }
 
 // NewFeatureGate binds the gate to this authenticated client and a shared
@@ -78,7 +99,14 @@ type FeatureGate struct {
 // skipped: a gate that cannot read declarations would silently stop honouring
 // them.
 func (c *BlueskyClient) NewFeatureGate(v *VisibilityResolver) *FeatureGate {
-	g := &FeatureGate{client: c, resolveTimeout: visibilityResolveTimeout}
+	g := &FeatureGate{
+		client:         c,
+		resolveTimeout: visibilityResolveTimeout,
+		// The denylist is process-wide by design, so the gate reads it
+		// directly rather than waiting to be wired up: a gate built before
+		// the list was loaded still honours it.
+		denylist: denylist.Contains,
+	}
 	if v != nil {
 		g.visibility = v
 	} else {
@@ -150,6 +178,10 @@ func (g *FeatureGate) Check(ctx context.Context, surface string, uris []string) 
 		}
 		sysLabel, labelled := systemLabel(pv)
 		switch {
+		case g.denied(v.AuthorDID):
+			// First: the denylist is a standing operator decision, and it
+			// settles the post without a single further call.
+			v.OK, v.Quotable, v.Reason = false, false, ReasonDenied
 		case blockedEitherWay(pv):
 			v.OK, v.Quotable, v.Reason = false, false, ReasonBlocked
 		case g.adultLabelled(pv):

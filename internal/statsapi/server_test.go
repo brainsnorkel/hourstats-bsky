@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -372,5 +373,120 @@ func TestHealth_StoreError(t *testing.T) {
 	rr := doRequest(s, "GET", "/stats/health")
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
+
+// TestBindAddrs pins the listener layout: loopback always, the Fly private
+// address as a second listener, and never a wildcard bind.
+func TestBindAddrs(t *testing.T) {
+	t.Setenv("STATS_API_BIND", "")
+	t.Setenv("FLY_PRIVATE_IP", "")
+
+	local, private := bindAddrs(9111)
+	if local != "127.0.0.1:9111" {
+		t.Errorf("local = %q, want 127.0.0.1:9111", local)
+	}
+	if private != "" {
+		t.Errorf("private = %q, want empty off Fly", private)
+	}
+
+	t.Setenv("FLY_PRIVATE_IP", "fdaa:0:1234::3")
+	local, private = bindAddrs(9111)
+	if local != "127.0.0.1:9111" {
+		t.Errorf("local = %q, want loopback listener on Fly too", local)
+	}
+	if private != "[fdaa:0:1234::3]:9111" {
+		t.Errorf("private = %q, want bracketed IPv6", private)
+	}
+
+	t.Setenv("STATS_API_BIND", "127.0.0.1:0")
+	local, private = bindAddrs(9111)
+	if local != "127.0.0.1:0" {
+		t.Errorf("local = %q, STATS_API_BIND should win", local)
+	}
+	if private != "" {
+		t.Errorf("private = %q, STATS_API_BIND should be the only listener", private)
+	}
+}
+
+func TestNew_TimeoutsAndLoopbackBind(t *testing.T) {
+	t.Setenv("STATS_API_BIND", "")
+	t.Setenv("FLY_PRIVATE_IP", "fdaa:0:1234::3")
+
+	s := New(&mockStore{}, 9111, HealthChartConfig{})
+	if s.privServer == nil {
+		t.Fatal("privServer is nil with FLY_PRIVATE_IP set")
+	}
+	for _, srv := range []*http.Server{s.server, s.privServer} {
+		if srv.ReadHeaderTimeout != 5*time.Second {
+			t.Errorf("%s ReadHeaderTimeout = %v, want 5s", srv.Addr, srv.ReadHeaderTimeout)
+		}
+		if srv.ReadTimeout != 15*time.Second {
+			t.Errorf("%s ReadTimeout = %v, want 15s", srv.Addr, srv.ReadTimeout)
+		}
+		if srv.WriteTimeout != 30*time.Second {
+			t.Errorf("%s WriteTimeout = %v, want 30s", srv.Addr, srv.WriteTimeout)
+		}
+		if srv.IdleTimeout != 60*time.Second {
+			t.Errorf("%s IdleTimeout = %v, want 60s", srv.Addr, srv.IdleTimeout)
+		}
+		if srv.MaxHeaderBytes != 64<<10 {
+			t.Errorf("%s MaxHeaderBytes = %d, want %d", srv.Addr, srv.MaxHeaderBytes, 64<<10)
+		}
+	}
+}
+
+// TestStart_ServesOnLoopback starts the real listener and makes a request
+// through it, so a broken Addr is caught rather than only the handler wiring.
+func TestStart_ServesOnLoopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	t.Setenv("STATS_API_BIND", addr)
+	t.Setenv("FLY_PRIVATE_IP", "")
+
+	snap := &store.StatsSnapshot{ID: 1, EnglishPostsStored: 7}
+	s := New(&mockStore{latestSnap: snap}, 9111, HealthChartConfig{})
+	if s.server.Addr != addr {
+		t.Fatalf("Addr = %q, want %q", s.server.Addr, addr)
+	}
+	if s.privServer != nil {
+		t.Fatal("privServer should be nil when STATS_API_BIND is set")
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	})
+
+	var resp *http.Response
+	for i := 0; i < 50; i++ {
+		resp, err = http.Get("http://" + addr + "/stats/latest")
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("GET /stats/latest: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var got store.StatsSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.EnglishPostsStored != 7 {
+		t.Errorf("EnglishPostsStored = %d, want 7", got.EnglishPostsStored)
 	}
 }

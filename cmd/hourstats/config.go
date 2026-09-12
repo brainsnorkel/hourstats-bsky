@@ -25,7 +25,13 @@ func envBool(key string, fallback bool) bool {
 // envList reads a comma-separated list, trimming whitespace and dropping
 // empty entries. An unset or all-empty value returns nil.
 func envList(key string) []string {
-	raw := os.Getenv(key)
+	return splitList(os.Getenv(key))
+}
+
+// splitList parses a comma-separated list, trimming whitespace and dropping
+// empty entries. It is shared by envList and the lists read from key_value, so
+// a value hand-edited over `fly ssh` behaves like its environment equivalent.
+func splitList(raw string) []string {
 	if raw == "" {
 		return nil
 	}

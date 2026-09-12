@@ -157,6 +157,21 @@ func (s *Store) BackupToS3(ctx context.Context, cfg S3BackupConfig) (string, err
 	return fmt.Sprintf("s3://%s/%s", cfg.Bucket, key), nil
 }
 
+// attachSourceSQL builds the ATTACH statement for the read-only source
+// database. ATTACH takes no bind parameters, so the path is interpolated: a
+// single quote is doubled to keep it inside the literal, and the two
+// characters that would change the statement's meaning rather than just its
+// quoting are refused outright. A '?' would open a URI query string and let a
+// path carry its own pragmas (mode=rwc, vfs=...), and a NUL would truncate the
+// C string mid-statement.
+func attachSourceSQL(dbPath string) (string, error) {
+	if strings.ContainsAny(dbPath, "?\x00") {
+		return "", fmt.Errorf("refusing to attach source db: path contains '?' or NUL: %q", dbPath)
+	}
+	escaped := strings.ReplaceAll(dbPath, "'", "''")
+	return fmt.Sprintf(`ATTACH DATABASE 'file:%s?mode=ro' AS src`, escaped), nil
+}
+
 // backupEssentialTables creates a new SQLite DB at destPath containing only
 // the irreplaceable tables. Opens a separate connection to the source and
 // uses ATTACH to copy data — no VACUUM INTO, so the main DB's WAL writer
@@ -168,7 +183,10 @@ func (s *Store) backupEssentialTables(ctx context.Context, destPath string) erro
 	}
 	defer destDB.Close()
 
-	attachSQL := fmt.Sprintf(`ATTACH DATABASE 'file:%s?mode=ro' AS src`, s.dbPath)
+	attachSQL, err := attachSourceSQL(s.dbPath)
+	if err != nil {
+		return err
+	}
 	if _, err := destDB.ExecContext(ctx, attachSQL); err != nil {
 		return fmt.Errorf("attach source db: %w", err)
 	}

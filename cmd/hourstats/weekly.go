@@ -185,6 +185,7 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 	defer apiCancel()
 
 	bskyClient := client.New(handle, password)
+	bskyClient.SetDryRun(dryRun)
 	if err := bskyClient.Authenticate(); err != nil {
 		slog.Error("bluesky auth for weekly report failed", "error", err)
 		return

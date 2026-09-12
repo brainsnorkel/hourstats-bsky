@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -90,7 +91,46 @@ func (s *Store) GetPostsSince(ctx context.Context, since time.Time) ([]Post, err
 		return nil, fmt.Errorf("query posts: %w", err)
 	}
 	defer rows.Close()
+	return scanPosts(rows)
+}
 
+// GetPostsSinceLimit returns posts with created_at >= since, keeping only the
+// newest `limit` of them, plus the total number of rows the window holds so the
+// caller can tell whether the cap bound.
+//
+// A limit of 0 or less means no cap, and an uncapped read runs exactly the
+// query GetPostsSince runs.
+func (s *Store) GetPostsSinceLimit(ctx context.Context, since time.Time, limit int) ([]Post, int, error) {
+	available, err := s.GetPostCount(ctx, since)
+	if err != nil {
+		return nil, 0, err
+	}
+	if limit <= 0 || available <= limit {
+		posts, err := s.GetPostsSince(ctx, since)
+		return posts, available, err
+	}
+
+	// The newest rows are taken in DESC order, then re-sorted ASC so callers see
+	// the same ordering an uncapped read gives them.
+	const q = `SELECT uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, is_reply FROM (
+			SELECT uri, cid, text, author_did, author_handle, likes, reposts, replies, sentiment, engagement_score, created_at, is_reply
+			FROM post_buffer
+			WHERE created_at >= ?
+			ORDER BY created_at DESC LIMIT ?
+		) ORDER BY created_at ASC`
+
+	rows, err := s.readDB.QueryContext(ctx, q, timeToStr(since), limit)
+	if err != nil {
+		return nil, available, fmt.Errorf("query posts: %w", err)
+	}
+	defer rows.Close()
+	posts, err := scanPosts(rows)
+	return posts, available, err
+}
+
+// scanPosts reads post_buffer rows selected in the column order the two window
+// queries above share.
+func scanPosts(rows *sql.Rows) ([]Post, error) {
 	var posts []Post
 	for rows.Next() {
 		var p Post

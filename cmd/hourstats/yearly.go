@@ -51,6 +51,7 @@ func runYearlyPosting(ctx context.Context, db *store.Store, handle, password str
 	defer apiCancel()
 
 	bskyClient := client.New(handle, password)
+	bskyClient.SetDryRun(dryRun)
 	if err := bskyClient.Authenticate(); err != nil {
 		slog.Error("bluesky auth for yearly post failed", "error", err)
 		return

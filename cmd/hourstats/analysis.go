@@ -27,6 +27,18 @@ const minPostsRequired = 500
 // topPostCount is how many top-engagement posts are listed in the summary post.
 const topPostCount = 3
 
+// defaultMaxWindowPosts bounds how many posts one analysis window may load into
+// memory. A window read is the cycle's largest allocation, so an unusually long
+// interval or a firehose surge could otherwise size it past the machine. The
+// default clears prod's busiest hour with room to spare.
+const defaultMaxWindowPosts = 300000
+
+// windowCapDecision reports whether the window cap bound the read, i.e. the
+// window held more posts than the cap allowed. A limit of 0 or less is no cap.
+func windowCapDecision(available, limit int) bool {
+	return limit > 0 && available > limit
+}
+
 // topPostCandidates is how many are ranked and put to the feature gate, so a
 // rejected post is replaced by the next one down rather than shortening the
 // list. It stays inside the gate's per-call limit of 25 URIs.
@@ -281,7 +293,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 	cutoff := time.Now().UTC().Add(-time.Duration(analysisMinutes) * time.Minute)
 
-	posts, err := db.GetPostsSince(cycleCtx, cutoff)
+	maxWindowPosts := envInt("ANALYSIS_MAX_WINDOW_POSTS", defaultMaxWindowPosts)
+	posts, availableInWindow, err := db.GetPostsSinceLimit(cycleCtx, cutoff, maxWindowPosts)
 	if err != nil {
 		slog.Error("get posts failed", "error", err)
 		logGuardAbort("get_posts")
@@ -294,7 +307,22 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 
+	// A capped read holds the newest posts of the interval, not the interval, so
+	// the sample is not the one the summary claims to describe. The cycle takes
+	// the low-confidence path below: sentiment is recorded, nothing is posted.
+	windowCapped := windowCapDecision(availableInWindow, maxWindowPosts)
+	if windowCapped {
+		slog.Warn("analysis window capped",
+			"available", availableInWindow,
+			"cap", maxWindowPosts,
+			"run_id", runID,
+		)
+		_ = collector.LogEvent(ctx, "window_capped",
+			fmt.Sprintf("run_id=%s available=%d cap=%d", runID, availableInWindow, maxWindowPosts))
+	}
+
 	bskyClient := client.New(handle, password)
+	bskyClient.SetDryRun(dryRun)
 	if err := bskyClient.Authenticate(); err != nil {
 		slog.Error("bluesky auth failed", "error", err)
 		return
@@ -387,6 +415,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"posts", len(posts),
 			"min_required", minPostsRequired,
 		)
+	}
+
+	// Already logged and counted at the window read above.
+	if windowCapped {
+		lowConfidence = true
 	}
 
 	// If too much of the window never got hydrated, the surviving sample is not
@@ -493,6 +526,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		OverallSentiment:        overallSentiment,
 		NetSentimentPercentage:  netSentimentPct,
 		TopPosts:                topStorePosts,
+		WindowCapped:            windowCapped,
 		CreatedAt:               time.Now().UTC(),
 		UpdatedAt:               time.Now().UTC(),
 		TTL:                     time.Now().Add(7 * 24 * time.Hour).Unix(),

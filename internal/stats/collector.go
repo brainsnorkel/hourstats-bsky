@@ -72,6 +72,13 @@ type Collector struct {
 	// days to years old, and counting them would double the firehose totals.
 	stalePosts atomic.Int64
 
+	// oversizedPosts counts post creates dropped for carrying more text than
+	// FIREHOSE_MAX_POST_RUNES allows. The consumer has no opinion on a post's
+	// text, so this one is counted by the OnPost callback rather than measured
+	// on the wire; the rate cap, the future guard and the denylist are all
+	// enforced inside the consumer and arrive as wire deltas.
+	oversizedPosts atomic.Int64
+
 	// Health metric counters (hs-21g)
 	slowFlushCount atomic.Int64
 	slowFlushMaxMs atomic.Int64
@@ -91,6 +98,9 @@ type Collector struct {
 		postsDeleted      int64
 		accountsInactive  int64
 		postsStale        int64
+		postsFuture       int64
+		postsCapped       int64
+		postsDenied       int64
 		bytesReceived     int64
 		bytesDecompressed int64
 		byCollection      map[string]int64
@@ -282,6 +292,17 @@ func (c *Collector) SwapPostDeletes() int64 {
 	return c.postDeletes.Swap(0)
 }
 
+// IncrementOversizedPosts counts one post create dropped for oversized text.
+func (c *Collector) IncrementOversizedPosts() {
+	c.oversizedPosts.Add(1)
+}
+
+// SwapOversizedPosts returns the current oversized-post count and resets it to
+// zero.
+func (c *Collector) SwapOversizedPosts() int64 {
+	return c.oversizedPosts.Swap(0)
+}
+
 // IncrementStalePosts counts one post create dropped as repo backfill.
 func (c *Collector) IncrementStalePosts() {
 	c.stalePosts.Add(1)
@@ -338,6 +359,7 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	var uptimeSeconds int
 	var deltaEvents, deltaPosts, deltaSkipped, deltaReconnects, deltaErrors, deltaRotations, deltaEarlyRejected int64
 	var deltaPostsDeleted, deltaAccountsInactive, deltaPostsStale int64
+	var deltaPostsFuture, deltaPostsCapped, deltaPostsDenied int64
 	var deltaBytesReceived, deltaBytesDecompressed int64
 	var deltaByCollection map[string]int64
 
@@ -357,6 +379,9 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		deltaPostsDeleted = counterDelta(report.PostsDeleted, c.lastSeen.postsDeleted)
 		deltaAccountsInactive = counterDelta(report.AccountsInactive, c.lastSeen.accountsInactive)
 		deltaPostsStale = counterDelta(report.PostsStale, c.lastSeen.postsStale)
+		deltaPostsFuture = counterDelta(report.PostsFuture, c.lastSeen.postsFuture)
+		deltaPostsCapped = counterDelta(report.PostsCapped, c.lastSeen.postsCapped)
+		deltaPostsDenied = counterDelta(report.PostsDenied, c.lastSeen.postsDenied)
 		deltaBytesReceived = counterDelta(report.BytesReceived, c.lastSeen.bytesReceived)
 		deltaBytesDecompressed = counterDelta(report.BytesDecompressed, c.lastSeen.bytesDecompressed)
 		deltaByCollection = collectionDeltas(report.EventsByCollection, c.lastSeen.byCollection)
@@ -372,6 +397,9 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		c.lastSeen.postsDeleted = report.PostsDeleted
 		c.lastSeen.accountsInactive = report.AccountsInactive
 		c.lastSeen.postsStale = report.PostsStale
+		c.lastSeen.postsFuture = report.PostsFuture
+		c.lastSeen.postsCapped = report.PostsCapped
+		c.lastSeen.postsDenied = report.PostsDenied
 		c.lastSeen.bytesReceived = report.BytesReceived
 		c.lastSeen.bytesDecompressed = report.BytesDecompressed
 		c.lastSeen.byCollection = report.EventsByCollection
@@ -407,6 +435,10 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 	// The consumer also counts the backfill the language pre-filter rejected,
 	// which never reaches OnStale, so its wire count is the larger of the two.
 	stalePostDelta := max(c.stalePosts.Swap(0), deltaPostsStale)
+
+	// The intake clamps: the oversized count is the callback's, the other
+	// three are the consumer's own wire counts.
+	oversizedDelta := c.oversizedPosts.Swap(0)
 
 	// Read and reset slow flush counters
 	slowFlushCount := c.slowFlushCount.Swap(0)
@@ -494,6 +526,10 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		AccountPurges:           int(accountPurgeDelta),
 		TombstoneHits:           int(tombstoneHitDelta),
 		StalePosts:              int(stalePostDelta),
+		OversizedPosts:          int(oversizedDelta),
+		CappedPosts:             int(deltaPostsCapped),
+		FuturePosts:             int(deltaPostsFuture),
+		DeniedPosts:             int(deltaPostsDenied),
 		HeapInuseBytes:          int64(memStats.HeapInuse),
 		HeapSysBytes:            int64(memStats.HeapSys),
 		SysBytes:                int64(memStats.Sys),
@@ -533,6 +569,10 @@ func (c *Collector) TakeSnapshot(ctx context.Context) error {
 		"firehose_posts", firehoseDelta,
 		"early_rejected_non_english", deltaEarlyRejected,
 		"stale_posts", stalePostDelta,
+		"future_posts", deltaPostsFuture,
+		"oversized_posts", oversizedDelta,
+		"capped_posts", deltaPostsCapped,
+		"denied_posts", deltaPostsDenied,
 		"elapsed_minutes", math.Round(elapsedMinutes*10) / 10,
 		"posts_per_minute", postsPerMinute,
 		"protocol", report.Protocol,

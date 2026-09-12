@@ -28,6 +28,8 @@ swap_size_mb = 512
   # staging-only diagnostics for where the stale creates come from (off in prod)
   JETSTREAM_STALE_SAMPLE_PER_HOUR = "30"
   JETSTREAM_EXTRA_KINDS = "sync,identity"
+  # hs-019.1: the per-DID create cap, set explicitly to document the default
+  FIREHOSE_MAX_POSTS_PER_DID_PER_MINUTE = "60"
 
 [mounts]
   source = "data"

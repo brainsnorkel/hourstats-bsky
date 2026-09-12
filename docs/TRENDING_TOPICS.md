@@ -168,11 +168,11 @@ The trending post is published as a **reply to the sparkline** chart (threaded u
 ```
 Topics
 
-1. Bad Bunny @davidcorn.bsky.social
+1. Bad Bunny @alice.bsky.social
 2. Post a Banger 🔍
-3. Jeffrey Epstein @popcrave.com
-4. Discord @legendofnerd.bsky.social
-5. Super Bowl @mprnews.org
+3. Jeffrey Epstein @bob.bsky.social
+4. Discord @carol.bsky.social
+5. Super Bowl @dave.bsky.social
 
 #hstrend
 ```

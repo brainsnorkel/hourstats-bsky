@@ -16,9 +16,9 @@ import (
 // Wire samples straight from a Jetstream v1 subscription with
 // wantedCollections=app.bsky.feed.post.
 const (
-	createFrame  = `{"did":"did:plc:aaa","time_us":1725911162329308,"kind":"commit","commit":{"rev":"r1","operation":"create","collection":"app.bsky.feed.post","rkey":"3abc","record":{"$type":"app.bsky.feed.post","text":"hello","createdAt":"2026-09-11T10:00:00Z","langs":["en"]},"cid":"cid1"}}`
-	deleteFrame  = `{"did":"did:plc:bbb","time_us":1725911162329309,"kind":"commit","commit":{"rev":"r2","operation":"delete","collection":"app.bsky.feed.post","rkey":"3def"}}`
-	accountFrame = `{"did":"did:plc:ccc","time_us":1725911162329310,"kind":"account","account":{"active":false,"did":"did:plc:ccc","seq":1,"status":"deactivated","time":"2026-09-11T10:00:01Z"}}`
+	createFrame  = `{"did":"did:plc:aaa","time_us":1789120800000000,"kind":"commit","commit":{"rev":"r1","operation":"create","collection":"app.bsky.feed.post","rkey":"3abc","record":{"$type":"app.bsky.feed.post","text":"hello","createdAt":"2026-09-11T10:00:00Z","langs":["en"]},"cid":"cid1"}}`
+	deleteFrame  = `{"did":"did:plc:bbb","time_us":1789120800000001,"kind":"commit","commit":{"rev":"r2","operation":"delete","collection":"app.bsky.feed.post","rkey":"3def"}}`
+	accountFrame = `{"did":"did:plc:ccc","time_us":1789120800000002,"kind":"account","account":{"active":false,"did":"did:plc:ccc","seq":1,"status":"deactivated","time":"2026-09-11T10:00:01Z"}}`
 )
 
 func TestEvent_IsPostDelete(t *testing.T) {

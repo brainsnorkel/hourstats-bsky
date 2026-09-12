@@ -13,16 +13,20 @@ func (s *Store) CreateRun(ctx context.Context, run RunState) error {
 	now := nowUTC()
 	topPostsJSON := marshalJSON(run.TopPosts)
 	ttl := time.Now().UTC().Add(48 * time.Hour).Unix()
+	windowCapped := 0
+	if run.WindowCapped {
+		windowCapped = 1
+	}
 
 	_, err := s.writeDB.ExecContext(ctx,
 		`INSERT INTO runs (run_id, status, analysis_interval_minutes, cutoff_time, total_posts_retrieved,
 			overall_sentiment, net_sentiment_percentage, top_posts, top_post_uri, top_post_cid,
-			created_at, updated_at, ttl)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			window_capped, created_at, updated_at, ttl)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.RunID, run.Status, run.AnalysisIntervalMinutes, timeToStr(run.CutoffTime),
 		run.TotalPostsRetrieved, run.OverallSentiment, run.NetSentimentPercentage,
 		topPostsJSON, run.TopPostURI, run.TopPostCID,
-		now, now, ttl,
+		windowCapped, now, now, ttl,
 	)
 	if err != nil {
 		return fmt.Errorf("create run: %w", err)
@@ -57,19 +61,20 @@ func (s *Store) GetRun(ctx context.Context, runID string) (*RunState, error) {
 		createdStr   string
 		updatedStr   string
 		topPostsJSON string
+		windowCapped int
 	)
 
 	err := s.readDB.QueryRowContext(ctx,
 		`SELECT run_id, status, analysis_interval_minutes, cutoff_time, total_posts_retrieved,
 			overall_sentiment, net_sentiment_percentage, top_posts, top_post_uri, top_post_cid,
-			created_at, updated_at, ttl
+			window_capped, created_at, updated_at, ttl
 		 FROM runs WHERE run_id = ?`,
 		runID,
 	).Scan(
 		&run.RunID, &run.Status, &run.AnalysisIntervalMinutes, &cutoffStr,
 		&run.TotalPostsRetrieved, &run.OverallSentiment, &run.NetSentimentPercentage,
 		&topPostsJSON, &run.TopPostURI, &run.TopPostCID,
-		&createdStr, &updatedStr, &run.TTL,
+		&windowCapped, &createdStr, &updatedStr, &run.TTL,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("run not found: %s", runID)
@@ -82,12 +87,15 @@ func (s *Store) GetRun(ctx context.Context, runID string) (*RunState, error) {
 	run.CreatedAt = strToTime(createdStr)
 	run.UpdatedAt = strToTime(updatedStr)
 	run.TopPosts = unmarshalPosts(topPostsJSON)
+	run.WindowCapped = windowCapped != 0
 
 	return &run, nil
 }
 
 // GetLatestCompletedRun returns the most recent run with status='complete'.
-// Returns nil, nil if no completed runs exist.
+// Returns nil, nil if no completed runs exist. window_capped is not read here:
+// a capped window takes the low-confidence path, so such a run is never
+// status='complete'.
 func (s *Store) GetLatestCompletedRun(ctx context.Context) (*RunState, error) {
 	var (
 		run          RunState

@@ -248,7 +248,8 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 		conn.Close()
 		return fmt.Errorf("jetstream: server selected unoffered subprotocol %q", echoed)
 	}
-	conn.SetReadLimit(v2ReadLimit)
+	// The read limit is set by startLiveness below, so both protocols inherit
+	// the same bound.
 
 	c.mu.Lock()
 	c.conn = conn
@@ -323,6 +324,15 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 		// by its payload $type and dropped without being decoded.
 		if kind := c.matchExtraKind(message); kind != "" {
 			c.countExtraKind(kind, len(message))
+			continue
+		}
+
+		// The operator denylist, applied before the language pre-filter so a
+		// denied repo's creates are neither parsed nor counted under their
+		// language. Only creates are denied; its deletes still fall through and
+		// still remove what it already had in the buffer.
+		if did := deniedCreateDID(message); did != "" {
+			c.countDeniedCreate(did)
 			continue
 		}
 

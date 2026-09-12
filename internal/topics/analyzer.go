@@ -152,7 +152,9 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 		// co-occurrence grouping before giving up; only suppress the post if
 		// even that yields nothing. This is strictly better than re-posting a
 		// stale snapshot or publishing raw underscore terms.
-		clusters = AlgorithmicGroup(rows, terms)
+		// The offline labels are built from firehose tokens, so they get the
+		// same output validation the model's labels do (hs-ws2.3).
+		clusters = validateClusters(AlgorithmicGroup(rows, terms))
 		if len(clusters) == 0 {
 			return "", fmt.Errorf("%w: grouping failed and offline fallback empty: %w", ErrTopicsUnavailable, err)
 		}
