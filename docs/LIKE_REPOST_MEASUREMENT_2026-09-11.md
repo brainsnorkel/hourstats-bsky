@@ -25,9 +25,22 @@ Likes and reposts together are about 6.6× the post event rate by count and roug
 
 Count-only cost of the two extra collections plus v2 decompression: about +2.5 percentage points of one shared vCPU at idle and +70 KB/s inbound. Memory is unchanged (the drop is the smaller post-restart buffer, not the transport).
 
+## Peak-hour re-read (2026-09-11 15:00–21:00 UTC, idle windows between cycles)
+
+| Sample (UTC) | Staging CPU busy, % of 1 vCPU (posts + likes + reposts count-only + diagnostics) | Prod CPU busy per vCPU (posts only) | Staging net in | Prod net in |
+|---|---|---|---|---|
+| 15:20 | 5.4% | 1.6% | 183 KB/s | 78 KB/s |
+| 16:20 | 5.7% | 1.6% | 187 KB/s | 64 KB/s |
+| 17:20 | 11.0% | 1.6% | 611 KB/s | 82 KB/s |
+| 18:20 | 6.2% | 2.2% | 258 KB/s | 158 KB/s |
+| 19:20 | 5.2% | 1.4% | 160 KB/s | 58 KB/s |
+| 20:20 | 5.7% | 1.4% | 162 KB/s | 59 KB/s |
+
+At the US daytime peak the count-only like/repost stream costs about 4 percentage points of one shared vCPU and 100–130 KB/s inbound; the 17:20 sample coincides with an upstream re-delivery burst (611 KB/s) and is not representative. Prod's figure is per vCPU on a shared-cpu-2x.
+
 ## Recommendation
 
-Go. Even if parsing the like/repost subject URI and incrementing an in-memory counter costs three times the count-only figure, local engagement counting stays under 10% of one vCPU at this hour. Two caveats before hs-0k9 starts:
+Go. Even if parsing the like/repost subject URI and incrementing an in-memory counter costs three times the count-only figure, local engagement counting stays around 12% of one vCPU at the daytime peak and under 10% off-peak. Two caveats before hs-0k9 starts:
 
 1. This is a quiet hour. Re-read the same three Prometheus queries after the US daytime peak (14:00–21:00 UTC) on 2026-09-11; the like rate there is typically 2–3× higher.
 2. The subject URI of a like is inside the record, so the counting design must extract it with a bounded byte scan (as the collection match does today), not a full JSON decode, to keep the cost near the measured figure.
