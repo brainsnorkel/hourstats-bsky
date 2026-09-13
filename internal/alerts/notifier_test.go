@@ -79,7 +79,7 @@ func TestNotify_DiscordBody(t *testing.T) {
 
 // TestNotify_InfoStaysOutOfTheChannel covers the severity split: info exists so
 // /stats/health can name a routine condition, not so the channel can carry it.
-func TestNotify_InfoReachesTheChannelWithoutMention(t *testing.T) {
+func TestNotify_InfoStaysOutOfTheChannel(t *testing.T) {
 	rec := &webhookRecorder{}
 	srv := httptest.NewServer(rec.handler())
 	defer srv.Close()
@@ -87,8 +87,8 @@ func TestNotify_InfoReachesTheChannelWithoutMention(t *testing.T) {
 	n := NewNotifier("staging", srv.URL, srv.Client())
 	n.Notify(context.Background(), []Condition{{Name: "denied_posts", Severity: SeverityInfo, Message: "1"}})
 
-	if posts := rec.posted(); len(posts) != 1 || strings.Contains(posts[0], "@here") || strings.Contains(posts[0], "action needed") {
-		t.Errorf("posts = %v, want exactly one routine post without a mention", posts)
+	if posts := rec.posted(); len(posts) != 0 {
+		t.Errorf("posts = %v, want none: info is log-only", posts)
 	}
 }
 
@@ -223,8 +223,8 @@ func TestNotifyMentionsOnlyActionable(t *testing.T) {
 		{Name: "denied_posts", Severity: SeverityInfo, Message: "fyi"},
 	})
 	bodies := rec.posted()
-	if len(bodies) != 3 {
-		t.Fatalf("posts = %d, want 3 (info reaches Discord too)", len(bodies))
+	if len(bodies) != 2 {
+		t.Fatalf("posts = %d, want 2 (info stays out of Discord)", len(bodies))
 	}
 	for _, b := range bodies {
 		var payload map[string]any

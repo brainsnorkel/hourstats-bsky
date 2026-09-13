@@ -130,13 +130,15 @@ func (n *Notifier) Notify(ctx context.Context, conds []Condition) {
 			continue
 		}
 		// The log is the sink that is always there, so it goes first and is
-		// never conditional on the webhook. Every severity reaches Discord;
-		// only actionable conditions and errors carry the mention.
+		// never conditional on the webhook. Info stays in the log and on
+		// /stats/health; warnings and errors reach Discord, and only
+		// actionable conditions and errors carry the mention.
 		if c.Severity == SeverityInfo {
 			slog.Info("alert", "name", c.Name, "severity", c.Severity, "message", logMessage(c))
-		} else {
-			slog.Warn("alert", "name", c.Name, "severity", c.Severity, "actionable", c.Actionable, "message", logMessage(c))
+			logAccounts(c)
+			continue
 		}
+		slog.Warn("alert", "name", c.Name, "severity", c.Severity, "actionable", c.Actionable, "message", logMessage(c))
 		logAccounts(c)
 		n.postDiscord(ctx, c)
 	}
