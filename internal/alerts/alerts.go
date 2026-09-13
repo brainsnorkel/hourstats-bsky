@@ -209,6 +209,7 @@ type ConsumerReport struct {
 // today. Listing it costs nothing and means the condition exists the day a
 // hook does.
 var alertingEvents = map[string]string{
+	"cycle_failed":             SeverityError,
 	"memory_guard_trip":        SeverityError,
 	"memory_guard_warn":        SeverityWarn,
 	"window_capped":            SeverityWarn,
@@ -221,6 +222,7 @@ var alertingEvents = map[string]string{
 // actionableEvents are the events where a person should look now rather
 // than at the next routine check: an hour was lost or is about to be.
 var actionableEvents = map[string]bool{
+	"cycle_failed":      true,
 	"memory_guard_trip": true,
 	"window_capped":     true,
 	"consumer_restart":  true,
@@ -228,6 +230,7 @@ var actionableEvents = map[string]bool{
 
 // eventMeaning explains each event type for the person reading the alert.
 var eventMeaning = map[string]string{
+	"cycle_failed":             "Meaning: the hourly cycle stopped before it could record a run, so that hour has no summary, no sentiment row and a gap in the sparkline. The stage and error are on the event. Normal is never. Check: bsky.social login (stage authenticate) or the database (stage get_posts); the next hour runs regardless.",
 	"memory_guard_trip":        "Meaning: memory crossed the trip line (70% of the machine) and the running cycle was cancelled, so that hour published nothing and its sentiment is marked low confidence. A heap profile was written to /data. Normal is never. Check: window size, stale/capped floods, and the profile.",
 	"memory_guard_warn":        "Meaning: memory crossed the warn line (55% of the machine); the cycle continued and a heap profile was written. Normal is never. Check: whether the next snapshot's RSS came back down.",
 	"window_capped":            "Meaning: more posts were in the hour's window than ANALYSIS_MAX_WINDOW_POSTS allows, so the hour was marked low confidence and nothing was posted. Normal is never (the cap is ~3x the busiest hour). Check: whether it was a flood the per-account cap should have caught.",
@@ -240,6 +243,7 @@ var eventMeaning = map[string]string{
 // eventOrder fixes the order alerting events are reported in, so a set of
 // conditions is stable across evaluations and across map iterations.
 var eventOrder = []string{
+	"cycle_failed",
 	"memory_guard_trip",
 	"memory_guard_warn",
 	"window_capped",

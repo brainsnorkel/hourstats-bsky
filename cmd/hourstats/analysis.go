@@ -298,6 +298,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	if err != nil {
 		slog.Error("get posts failed", "error", err)
 		logGuardAbort("get_posts")
+		_ = collector.LogEvent(context.WithoutCancel(ctx), "cycle_failed", fmt.Sprintf("run_id=%s stage=get_posts error=%v", runID, err))
 		return
 	}
 	slog.Info("posts in window", "count", len(posts), "cutoff", cutoff.Format(time.RFC3339))
@@ -323,8 +324,21 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 	bskyClient := client.New(handle, password)
 	bskyClient.SetDryRun(dryRun)
-	if err := bskyClient.Authenticate(); err != nil {
-		slog.Error("bluesky auth failed", "error", err)
+	// One retry: a single slow or refused createSession has cost a whole hour
+	// before (prod, 2026-09-12 20:55, no run row, no event), and the cycle has
+	// nothing else to do until it is authenticated.
+	authErr := bskyClient.Authenticate()
+	if authErr != nil {
+		slog.Warn("bluesky auth failed, retrying once", "error", authErr)
+		select {
+		case <-time.After(10 * time.Second):
+		case <-cycleCtx.Done():
+		}
+		authErr = bskyClient.Authenticate()
+	}
+	if authErr != nil {
+		slog.Error("bluesky auth failed", "error", authErr)
+		_ = collector.LogEvent(context.WithoutCancel(ctx), "cycle_failed", fmt.Sprintf("run_id=%s stage=authenticate error=%v", runID, authErr))
 		return
 	}
 	if guardTripped.Load() {
