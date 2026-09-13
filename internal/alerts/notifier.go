@@ -240,7 +240,9 @@ func discordMessage(profile string, c Condition, names map[string]string) string
 		message = strings.ReplaceAll(message, did, handle)
 	}
 	if len(c.Accounts) > 0 && c.Accounts[0].DID != "" {
-		message += "\n" + profileURLPrefix + c.Accounts[0].DID
+		// Angle brackets stop Discord unfurling the profile into a card, which
+		// would render the flooding account's own content in the channel.
+		message += "\n<" + profileURLPrefix + c.Accounts[0].DID + ">"
 	}
 	return fmt.Sprintf("**hourstats-%s %s: %s**\n%s", profile, tag, c.Name, message)
 }

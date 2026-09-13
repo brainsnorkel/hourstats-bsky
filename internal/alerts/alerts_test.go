@@ -78,8 +78,14 @@ func TestEvaluate_Conditions(t *testing.T) {
 			wantNames: nil,
 		},
 		{
-			name:         "capped posts over the threshold",
-			latest:       &store.StatsSnapshot{CappedPosts: defaultCappedPostsPerSnapshot + 1},
+			name:         "capped posts over the threshold but small next to English stored",
+			latest:       &store.StatsSnapshot{CappedPosts: defaultCappedPostsPerSnapshot + 1, EnglishPostsStored: 45000},
+			wantNames:    []string{"capped_posts"},
+			wantSeverity: SeverityInfo,
+		},
+		{
+			name:         "capped posts at a quarter of English stored are a warning",
+			latest:       &store.StatsSnapshot{CappedPosts: 12000, EnglishPostsStored: 45000},
 			wantNames:    []string{"capped_posts"},
 			wantSeverity: SeverityWarn,
 		},
@@ -95,14 +101,26 @@ func TestEvaluate_Conditions(t *testing.T) {
 			wantSeverity: SeverityInfo,
 		},
 		{
-			name:         "denied posts past the warn threshold",
-			latest:       &store.StatsSnapshot{DeniedPosts: defaultDeniedPostsWarn + 1},
+			name:         "denied posts past the threshold but under three times the firehose",
+			latest:       &store.StatsSnapshot{DeniedPosts: defaultDeniedPostsWarn + 1, TotalFirehosePosts: 100000},
+			wantNames:    []string{"denied_posts"},
+			wantSeverity: SeverityInfo,
+		},
+		{
+			name:         "denied posts over three times the firehose are a warning",
+			latest:       &store.StatsSnapshot{DeniedPosts: defaultDeniedPostsWarn + 1, TotalFirehosePosts: 50000},
 			wantNames:    []string{"denied_posts"},
 			wantSeverity: SeverityWarn,
 		},
 		{
-			name:         "stale posts over the threshold",
-			latest:       &store.StatsSnapshot{StalePosts: defaultStalePostsPerSnapshot + 1},
+			name:         "stale posts over the threshold but under three times the firehose",
+			latest:       &store.StatsSnapshot{StalePosts: defaultStalePostsPerSnapshot + 1, TotalFirehosePosts: 150000},
+			wantNames:    []string{"stale_posts"},
+			wantSeverity: SeverityInfo,
+		},
+		{
+			name:         "stale posts over three times the firehose are a warning",
+			latest:       &store.StatsSnapshot{StalePosts: defaultStalePostsPerSnapshot + 1, TotalFirehosePosts: 50000},
 			wantNames:    []string{"stale_posts"},
 			wantSeverity: SeverityWarn,
 		},
@@ -232,7 +250,7 @@ func TestEvaluate_EventMessageCountsAndDetails(t *testing.T) {
 		t.Fatalf("conditions = %v, want one", names(conds))
 	}
 	want := "3 hydration_timeout event(s) since the previous snapshot: newest"
-	if !strings.HasPrefix(conds[0].Message, want) || !strings.Contains(conds[0].Message, "Meaning:") {
+	if !strings.HasPrefix(conds[0].Message, want) || len(conds[0].Message) <= len(want) {
 		t.Errorf("message = %q, want prefix %q plus a meaning", conds[0].Message, want)
 	}
 }
@@ -439,6 +457,9 @@ func TestEvaluate_NamesTopAccounts(t *testing.T) {
 		StalePosts:   defaultStalePostsPerSnapshot + 1,
 		CappedPosts:  defaultCappedPostsPerSnapshot + 1,
 		DeniedPosts:  defaultDeniedPostsWarn + 1,
+		// Small live figures so all three floods rate a warning here.
+		EnglishPostsStored: 1000,
+		TotalFirehosePosts: 1000,
 	}
 
 	conds := Evaluate(latest, nil, nil, report, testThresholds())
@@ -452,7 +473,7 @@ func TestEvaluate_NamesTopAccounts(t *testing.T) {
 	if !ok {
 		t.Fatalf("conditions = %v, want stale_posts", names(conds))
 	}
-	wantSuffix := "Top accounts this half hour: did:plc:importer 1200 posts (~40.0/min); did:plc:second 15 posts (~0.5/min)"
+	wantSuffix := "Top: did:plc:importer 1200 (~40/min); did:plc:second 15 (~0/min)"
 	if !strings.HasSuffix(stale.Message, wantSuffix) {
 		t.Errorf("stale message = %q, want it to end with %q", stale.Message, wantSuffix)
 	}
@@ -461,11 +482,11 @@ func TestEvaluate_NamesTopAccounts(t *testing.T) {
 	}
 
 	capped := byName["capped_posts"]
-	if !strings.HasSuffix(capped.Message, "Top accounts this half hour: did:plc:loud 6000 posts (~200.0/min)") {
+	if !strings.HasSuffix(capped.Message, "Top: did:plc:loud 6000 (~200/min)") {
 		t.Errorf("capped message = %q", capped.Message)
 	}
 	denied := byName["denied_posts"]
-	if !strings.HasSuffix(denied.Message, "Top accounts this half hour: did:plc:blocked 300000 posts (~10000.0/min)") {
+	if !strings.HasSuffix(denied.Message, "Top: did:plc:blocked 300000 (~10000/min)") {
 		t.Errorf("denied message = %q", denied.Message)
 	}
 	if denied.Severity != SeverityWarn {
@@ -517,11 +538,29 @@ func TestOffenderWindowMinutes(t *testing.T) {
 // over the snapshot cadence, so 900 posts reads as 30/min rather than +Inf.
 func TestAccountsTextFallbackRate(t *testing.T) {
 	got := accountsText([]DIDCount{{DID: "did:plc:a", Count: 900}}, 0)
-	want := "Top accounts this half hour: did:plc:a 900 posts (~30.0/min)"
+	want := "Top: did:plc:a 900 (~30/min)"
 	if got != want {
 		t.Errorf("accountsText = %q, want %q", got, want)
 	}
 	if accountsText(nil, 30) != "" {
 		t.Error("accountsText with no accounts should be empty")
+	}
+}
+
+func TestFloodSeverity(t *testing.T) {
+	cases := []struct {
+		dropped, live, pct int64
+		want               string
+	}{
+		{6636, 45000, 25, SeverityInfo},    // the bske.social farm: routine
+		{12000, 45000, 25, SeverityWarn},   // over a quarter of English stored
+		{120000, 50000, 300, SeverityInfo}, // the import loop: 2.4x firehose
+		{200000, 50000, 300, SeverityWarn}, // 4x firehose
+		{5, 0, 25, SeverityInfo},           // no live figure: never warn
+	}
+	for _, c := range cases {
+		if got := floodSeverity(c.dropped, c.live, c.pct); got != c.want {
+			t.Errorf("floodSeverity(%d,%d,%d) = %s, want %s", c.dropped, c.live, c.pct, got, c.want)
+		}
 	}
 }

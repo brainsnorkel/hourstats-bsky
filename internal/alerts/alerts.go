@@ -230,14 +230,14 @@ var actionableEvents = map[string]bool{
 
 // eventMeaning explains each event type for the person reading the alert.
 var eventMeaning = map[string]string{
-	"cycle_failed":             "Meaning: the hourly cycle stopped before it could record a run, so that hour has no summary, no sentiment row and a gap in the sparkline. The stage and error are on the event. Normal is never. Check: bsky.social login (stage authenticate) or the database (stage get_posts); the next hour runs regardless.",
-	"memory_guard_trip":        "Meaning: memory crossed the trip line (70% of the machine) and the running cycle was cancelled, so that hour published nothing and its sentiment is marked low confidence. A heap profile was written to /data. Normal is never. Check: window size, stale/capped floods, and the profile.",
-	"memory_guard_warn":        "Meaning: memory crossed the warn line (55% of the machine); the cycle continued and a heap profile was written. Normal is never. Check: whether the next snapshot's RSS came back down.",
-	"window_capped":            "Meaning: more posts were in the hour's window than ANALYSIS_MAX_WINDOW_POSTS allows, so the hour was marked low confidence and nothing was posted. Normal is never (the cap is ~3x the busiest hour). Check: whether it was a flood the per-account cap should have caught.",
-	"hydration_timeout":        "Meaning: engagement hydration did not finish inside its budget; posts left unhydrated were excluded and, above the allowed share, the hour was marked low confidence. Check: public.api.bsky.app errors and rate limiting in the hydrator log lines.",
-	"consumer_restart":         "Meaning: the firehose consumer exited outside its own reconnect loop and was restarted; ingest paused briefly. Normal is never. Check: the error on the consumer_restart event and the lines before it.",
-	"feature_gate_unavailable": "Meaning: the privacy gate could not reach Bluesky twice in a row, so the summary went out with no top posts and no exemplars for that hour by design. Check: Bluesky API status and auth.",
-	"seq_floor_reset":          "Meaning: Jetstream delivered 10,000 frames in a row that looked already-seen, which happens when a reconnect lands on a different Jetstream instance; the dedup floor was reset and ingest continued. Check: whether counts for the half hour look duplicated.",
+	"cycle_failed":             "The hour's cycle stopped before recording a run: no summary, no sentiment point. Stage and error are on the event. The next hour runs regardless.",
+	"memory_guard_trip":        "Memory crossed 70% of the machine; the cycle was cancelled and the hour published nothing. Heap profile written to /data.",
+	"memory_guard_warn":        "Memory crossed 55% of the machine; the cycle continued and a heap profile was written. Check the next snapshot's RSS.",
+	"window_capped":            "The hour had more posts than ANALYSIS_MAX_WINDOW_POSTS; marked low confidence, nothing posted. The cap is ~3x the busiest hour, so this was a flood.",
+	"hydration_timeout":        "Engagement hydration ran out of time; unhydrated posts were excluded. Check public.api.bsky.app errors in the hydrator lines.",
+	"consumer_restart":         "The firehose consumer exited outside its reconnect loop and was restarted. See the error on the event.",
+	"feature_gate_unavailable": "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
+	"seq_floor_reset":          "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
 }
 
 // eventOrder fixes the order alerting events are reported in, so a set of
@@ -276,10 +276,10 @@ func offenderWindowMinutes(since time.Time, latest *store.StatsSnapshot) float64
 // accountsPrefix introduces the per-account breakdown. It is the last thing in
 // a flood condition's message, so the notifier can rewrite the DIDs after it
 // as handles without disturbing the prose before it.
-const accountsPrefix = "Top accounts this half hour: "
+const accountsPrefix = "Top: "
 
 // accountsText names the busiest accounts behind a drop counter, as
-// "Top accounts this half hour: <did> <n> posts (~<rate>/min); ...". It
+// "Top: <did> <n> (~<rate>/min); ...". It
 // returns "" when there is no breakdown to report.
 func accountsText(accounts []DIDCount, minutes float64) string {
 	if len(accounts) == 0 {
@@ -290,7 +290,7 @@ func accountsText(accounts []DIDCount, minutes float64) string {
 	}
 	entries := make([]string, 0, len(accounts))
 	for _, a := range accounts {
-		entries = append(entries, fmt.Sprintf("%s %d posts (~%.1f/min)",
+		entries = append(entries, fmt.Sprintf("%s %d (~%.0f/min)",
 			a.DID, a.Count, float64(a.Count)/minutes))
 	}
 	return accountsPrefix + strings.Join(entries, "; ")
@@ -299,16 +299,31 @@ func accountsText(accounts []DIDCount, minutes float64) string {
 // floodCondition builds one of the three drop-counter conditions, naming the
 // accounts behind it when the consumer reported any. The DIDs go in the
 // message because the channel this reaches is the operator's own.
-func floodCondition(name, message string, accounts []DIDCount, minutes float64) Condition {
+func floodCondition(name, severity, message string, accounts []DIDCount, minutes float64) Condition {
 	if text := accountsText(accounts, minutes); text != "" {
 		message += " " + text
 	}
 	return Condition{
 		Name:     name,
-		Severity: SeverityWarn,
+		Severity: severity,
 		Message:  message,
 		Accounts: accounts,
 	}
+}
+
+// floodSeverity decides whether a clamp's volume is information (the clamp
+// doing its job) or a warning (the flood is large enough to distort the
+// hour's counts or load the machine). dropped is the clamp's count; live is
+// the live figure it is compared with; ratioPct is the share of live above
+// which it warns.
+func floodSeverity(dropped, live int64, ratioPct int64) string {
+	if live <= 0 {
+		return SeverityInfo
+	}
+	if dropped*100 > live*ratioPct {
+		return SeverityWarn
+	}
+	return SeverityInfo
 }
 
 // prevInt reads one counter from the previous snapshot, or 0 when absent.
@@ -350,15 +365,20 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 				Name:       "dropped_posts",
 				Actionable: true,
 				Severity:   SeverityError,
-				Message: fmt.Sprintf("%d posts were thrown away this half hour after %d in the previous one because the SQLite write buffer stayed full. Meaning: the firehose is arriving faster than the database can absorb it, so this hour's counts and sentiment are missing posts. Normal is 0. Check: slow write flush warnings, WAL size, and whether a cycle or purge is holding the write connection.",
+				Message: fmt.Sprintf("Write buffer overflowed: %d posts lost this half hour, %d the half hour before (normal 0). Ingest is outrunning SQLite; this hour's counts and sentiment are incomplete. Check slow-flush warnings and WAL size.",
 					latest.DroppedPosts, previous.DroppedPosts),
 			})
 		}
 
 		if latest.CappedPosts > cfg.CappedPostsPerSnapshot {
+			// The cap absorbing a spam farm is routine. It is a warning only
+			// when the capped volume is a quarter or more of the English posts
+			// actually stored, because then the hour's counts are being
+			// shaped by the flood rather than merely protected from it.
 			conds = append(conds, floodCondition("capped_posts",
-				fmt.Sprintf("%d posts were dropped this half hour by the per-account rate cap (%s). Meaning: some accounts posted faster than the cap allows, which is what a spam or import flood looks like; their excess never reached the buffer or the counts. Normal on prod is a few hundred. Check: the 'capped posts hourly summary' log line for the accounts, and whether the firehose total looks inflated.",
-					latest.CappedPosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.CappedPosts }), int64(cfg.CappedPostsPerSnapshot))),
+				floodSeverity(int64(latest.CappedPosts), int64(latest.EnglishPostsStored), 25),
+				fmt.Sprintf("Per-account cap dropped %d posts this half hour (%s) against %d English posts stored. Accounts posting faster than 60/min; excess never counted. Warns only above a quarter of English stored.",
+					latest.CappedPosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.CappedPosts }), int64(cfg.CappedPostsPerSnapshot)), latest.EnglishPostsStored),
 				report.Offenders.Capped, offenderMinutes))
 		}
 
@@ -367,21 +387,23 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 		// than it was written for.
 		if latest.DeniedPosts > cfg.DeniedPostsWarn {
 			conds = append(conds, floodCondition("denied_posts",
-				fmt.Sprintf("%d posts from denylisted accounts were dropped this half hour (%s). Meaning: the operator denylist is matching far more than it was written for; either a listed account is flooding or the list has grown. Check: key_value firehose_deny_dids and FIREHOSE_DENY_DIDS, and the stale/capped counters for the same accounts.",
-					latest.DeniedPosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.DeniedPosts }), int64(cfg.DeniedPostsWarn))),
+				floodSeverity(int64(latest.DeniedPosts), int64(latest.TotalFirehosePosts), 300),
+				fmt.Sprintf("Denylist dropped %d posts this half hour (%s) against a live firehose of %d. A listed account is flooding hard; warns only above three times the firehose. Check firehose_deny_dids.",
+					latest.DeniedPosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.DeniedPosts }), int64(cfg.DeniedPostsWarn)), latest.TotalFirehosePosts),
 				report.Offenders.Denied, offenderMinutes))
 		} else if latest.DeniedPosts > 0 {
 			conds = append(conds, Condition{
 				Name:     "denied_posts",
 				Severity: SeverityInfo,
-				Message:  fmt.Sprintf("%d posts from denylisted accounts were dropped this half hour. Meaning: the denylist is doing its job; nothing to do.", latest.DeniedPosts),
+				Message:  fmt.Sprintf("Denylist dropped %d posts this half hour. Working as intended.", latest.DeniedPosts),
 			})
 		}
 
 		if latest.StalePosts > cfg.StalePostsPerSnapshot {
 			conds = append(conds, floodCondition("stale_posts",
-				fmt.Sprintf("%d posts were dropped this half hour because their createdAt was more than the allowed age before (or ahead of) the time Jetstream delivered them (%s). Meaning: accounts are importing or replaying old posts, or Jetstream re-delivered history; none of it entered the analysis window. Normal on prod is 60k to 250k per half hour from a few importing accounts. Check: the 'stale create hourly summary' line if diagnostics are on, and whether English counts also jumped (that would mean a live flood, not backfill).",
-					latest.StalePosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.StalePosts }), int64(cfg.StalePostsPerSnapshot))),
+				floodSeverity(int64(latest.StalePosts), int64(latest.TotalFirehosePosts), 300),
+				fmt.Sprintf("Age filter dropped %d backdated or future-dated posts this half hour (%s) against a live firehose of %d. Imports, replays or Jetstream re-delivery; none entered the window. Normal 60k to 250k; warns only above three times the firehose. If English counts also jumped it was a live flood.",
+					latest.StalePosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.StalePosts }), int64(cfg.StalePostsPerSnapshot)), latest.TotalFirehosePosts),
 				report.Offenders.Stale, offenderMinutes))
 		}
 
@@ -390,7 +412,7 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 				Name:       "oversized_posts",
 				Actionable: true,
 				Severity:   SeverityWarn,
-				Message: fmt.Sprintf("%d posts were dropped this half hour for exceeding the text length cap (%s). Meaning: a PDS is emitting posts far larger than the app allows, which is either broken software or an attempt to exhaust memory. Normal is 0. Check: memory and cycle time on the same snapshot.",
+				Message: fmt.Sprintf("Text-length cap dropped %d posts this half hour (%s; normal 0). A PDS is emitting abnormally large posts, broken or hostile. Check memory and cycle time on this snapshot.",
 					latest.OversizedPosts, versus(previous != nil, prevInt(previous, func(p *store.StatsSnapshot) int { return p.OversizedPosts }), int64(cfg.OversizedPosts))),
 			})
 		}
@@ -403,7 +425,7 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 				Name:       "cycle_duration",
 				Actionable: true,
 				Severity:   SeverityWarn,
-				Message: fmt.Sprintf("the hourly analysis cycle took %ds against a threshold of %ds; typical is 250s at 40k posts and 650s at 105k. Meaning: hydration, Gemini or the database is slow, or the window is unusually large. If it passes 900s it can overlap the next hour, which is then skipped. Check: 'hydration complete' timings, Gemini errors, and posts_considered on this snapshot (%d).",
+				Message: fmt.Sprintf("Analysis cycle took %ds (threshold %ds; typical 250s at 40k posts, 650s at 105k) on %d posts. Over 900s it collides with the next hour, which is then skipped. Check hydration timings and Gemini errors.",
 					latest.CycleDurationMs/1000, cfg.CycleSeconds, latest.PostsConsidered),
 			})
 		}
@@ -414,7 +436,7 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 				conds = append(conds, Condition{
 					Name:     "rss_high",
 					Severity: SeverityWarn,
-					Message: fmt.Sprintf("the process is using %dMB of memory, %d%% of the machine's %dMB (threshold %d%%); typical is 200 to 370MB between and during cycles. Meaning: the memory guard warns at 55%% and cancels the cycle at 70%%, so this is the last stop before an hour is lost. Check: cycle_memory_peak events and whether a cycle is running with an unusually large window.",
+					Message: fmt.Sprintf("Memory at %dMB, %d%% of the machine's %dMB (threshold %d%%; typical 200 to 370MB). The guard warns at 55%% and cancels the cycle at 70%%. Check cycle_memory_peak events and the window size.",
 						latest.RSSBytes/(1024*1024), latest.RSSBytes*100/totalBytes,
 						cfg.TotalMemoryMB, cfg.RSSPct),
 				})
@@ -427,7 +449,7 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 			Name:       "consumer_reconnects",
 			Actionable: true,
 			Severity:   SeverityWarn,
-			Message: fmt.Sprintf("the firehose connection reconnected %d times in the last hour (source: %s; threshold %d, normal 0). Meaning: Jetstream or the network is unstable; each reconnect resumes by timestamp so little is lost, but frequent churn means gaps. Check: 'connection lost' and 'rotating jetstream endpoint' log lines.",
+			Message: fmt.Sprintf("Firehose reconnected %d times in the last hour (%s; threshold %d, normal 0). Each resume is by timestamp so little is lost, but churn means gaps. Check 'connection lost' log lines.",
 				n, source, cfg.ReconnectsPerHour),
 		})
 	}

@@ -288,7 +288,7 @@ func testFloodCondition() Condition {
 		{DID: "did:plc:knownaccount0000000000", Count: 1200},
 		{DID: "did:plc:unknownaccount00000000", Count: 15},
 	}
-	return floodCondition("stale_posts", "300001 posts were dropped this half hour.", accounts, 30)
+	return floodCondition("stale_posts", SeverityWarn, "300001 posts were dropped this half hour.", accounts, 30)
 }
 
 // TestNotify_DiscordNamesAccounts: the channel is the operator's own, so the
@@ -317,16 +317,16 @@ func TestNotify_DiscordNamesAccounts(t *testing.T) {
 	if err := json.Unmarshal([]byte(bodies[0]), &payload); err != nil {
 		t.Fatalf("payload: %v", err)
 	}
-	if !strings.Contains(payload.Content, "loud.bsky.social 1200 posts (~40.0/min)") {
+	if !strings.Contains(payload.Content, "loud.bsky.social 1200 (~40/min)") {
 		t.Errorf("content does not name the resolved handle: %q", payload.Content)
 	}
 	if strings.Contains(payload.Content, "did:plc:knownaccount0000000000 1200") {
 		t.Errorf("content still names the resolved DID: %q", payload.Content)
 	}
-	if !strings.Contains(payload.Content, "did:plc:unknownaccount00000000 15 posts (~0.5/min)") {
+	if !strings.Contains(payload.Content, "did:plc:unknownaccount00000000 15 (~0/min)") {
 		t.Errorf("content lost the unresolvable account: %q", payload.Content)
 	}
-	if !strings.HasSuffix(payload.Content, "\nhttps://bsky.app/profile/did:plc:knownaccount0000000000") {
+	if !strings.HasSuffix(payload.Content, "\n<https://bsky.app/profile/did:plc:knownaccount0000000000>") {
 		t.Errorf("content does not end with the top account's profile link: %q", payload.Content)
 	}
 }
