@@ -324,3 +324,22 @@ func TestFormatTrendingPost_ExtremesFooterUsesUTC(t *testing.T) {
 		t.Errorf("low line not rendered in UTC: %q", text)
 	}
 }
+
+// TestFormatTrendingPost_ExtremesFooterEmptyTopic is the hs-9uj case: an hour
+// whose grouping failed records no top topic, and its extreme renders as the
+// bare value and time, with no colon.
+func TestFormatTrendingPost_ExtremesFooterEmptyTopic(t *testing.T) {
+	extremes := sampleExtremes()
+	extremes.High.Topic = ""
+	extremes.Low.Topic = ""
+
+	text, _ := FormatTrendingPost(twoTopics(), nil, 2, extremes)
+	footer := footerOf(t, text)
+	want := footerHeader + "\n+29.0% Fri 23:00\n-8.0% Sat 06:00"
+	if footer != want {
+		t.Errorf("footer = %q, want %q", footer, want)
+	}
+	if strings.Contains(footer, ": ") {
+		t.Errorf("footer %q carries a label separator with no topic", footer)
+	}
+}

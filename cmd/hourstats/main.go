@@ -66,8 +66,10 @@ func main() {
 
 	trendingEnabled := envBool("TRENDING_ENABLED", false)
 	geminiAPIKey := os.Getenv("GOOGLE_AI_API_KEY")
-	geminiModel := envOr("GEMINI_MODEL", "gemini-2.5-pro")
-	geminiFallbackModel := envOr("GROUP_FALLBACK_MODEL", "gemini-2.5-flash")
+	geminiModel := envOr("GEMINI_MODEL", "gemini-3.8-flash")
+	geminiFallbackModel := envOr("GROUP_FALLBACK_MODEL", "gemini-2.5-pro")
+	topicsOfflineFallback := envBool("TOPICS_OFFLINE_FALLBACK", false)
+	groupingTotalTimeout := time.Duration(envInt("GROUPING_TOTAL_TIMEOUT_SECONDS", int(topics.DefaultGroupingTotalTimeout/time.Second))) * time.Second
 
 	healthChartHours := envInt("HEALTH_CHART_HOURS", 6)
 	healthChartMemoryLimitMB := envInt("HEALTH_CHART_MEMORY_LIMIT_MB", 512)
@@ -241,7 +243,15 @@ func main() {
 			_ = collector.LogEvent(context.Background(), "exemplar_dropped",
 				fmt.Sprintf("topic=%q candidates=%d", topic, candidates))
 		})
-		slog.Info("trending topics enabled (runs with sentiment cycle)", "model", geminiModel, "fallback_model", geminiFallbackModel)
+		topicAnalyzer.SetOfflineFallback(topicsOfflineFallback)
+		topicAnalyzer.SetGroupingTotalTimeout(groupingTotalTimeout)
+		// Detached so a grouping failure is still recorded when the memory
+		// guard has cancelled the cycle's context.
+		topicAnalyzer.SetEventLogger(func(ctx context.Context, eventType, details string) {
+			_ = collector.LogEvent(context.WithoutCancel(ctx), eventType, details)
+		})
+		slog.Info("trending topics enabled (runs with sentiment cycle)", "model", geminiModel, "fallback_model", geminiFallbackModel,
+			"offline_fallback", topicsOfflineFallback, "grouping_total_timeout", groupingTotalTimeout.String())
 	}
 
 	var s3Cfg *store.S3BackupConfig

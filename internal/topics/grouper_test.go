@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -736,5 +737,148 @@ func TestGroupAndLabel_DropsUnknownKeywords(t *testing.T) {
 	}
 	if strings.Join(clusters[0].Synonyms, ",") != "politics" {
 		t.Errorf("synonyms = %v, want lowercased", clusters[0].Synonyms)
+	}
+}
+
+// withoutHeadlines stops GroupAndLabel reaching Google News, so timing tests
+// measure only the grouping calls.
+func withoutHeadlines(t *testing.T) {
+	t.Helper()
+	saved := headlineFeeds
+	headlineFeeds = nil
+	t.Cleanup(func() { headlineFeeds = saved })
+}
+
+func TestGroupAndLabel_AttemptClassification(t *testing.T) {
+	withoutHeadlines(t)
+	okBody, _ := json.Marshal([]TopicCluster{{Label: "Weather", Description: "d", Keywords: []string{"rain"}, Justification: "j"}})
+	tests := []struct {
+		name         string
+		status       int
+		body         string
+		wantClass    string
+		wantFinish   string
+		wantThoughts int
+		wantOutput   int
+	}{
+		{name: "429", status: http.StatusTooManyRequests, body: "quota", wantClass: AttemptStatus429},
+		{name: "503", status: http.StatusServiceUnavailable, body: "overloaded", wantClass: AttemptStatus5xx},
+		{name: "400", status: http.StatusBadRequest, body: "bad", wantClass: AttemptStatusOther},
+		{name: "empty candidates", status: http.StatusOK, body: `{"candidates":[]}`, wantClass: AttemptEmpty},
+		{
+			name:   "max tokens with only thoughts",
+			status: http.StatusOK,
+			body: `{"candidates":[{"content":{"parts":[{"text":"thinking","thought":true}]},"finishReason":"MAX_TOKENS"}],` +
+				`"usageMetadata":{"thoughtsTokenCount":1024,"candidatesTokenCount":0}}`,
+			wantClass: AttemptEmpty, wantFinish: "MAX_TOKENS", wantThoughts: 1024,
+		},
+		{name: "max tokens with no parts", status: http.StatusOK, body: `{"candidates":[{"content":{},"finishReason":"MAX_TOKENS"}]}`, wantClass: AttemptEmpty, wantFinish: "MAX_TOKENS"},
+		{name: "unparseable envelope", status: http.StatusOK, body: "<html>", wantClass: AttemptParse},
+		{name: "unparseable clusters", status: http.StatusOK, body: `{"candidates":[{"content":{"parts":[{"text":"[{\"label\":"}]},"finishReason":"STOP"}]}`, wantClass: AttemptParse, wantFinish: "STOP"},
+		{
+			name:   "ok",
+			status: http.StatusOK,
+			body: fmt.Sprintf(`{"candidates":[{"content":{"parts":[{"text":%q}]},"finishReason":"STOP"}],"usageMetadata":{"thoughtsTokenCount":300,"candidatesTokenCount":42}}`,
+				string(okBody)),
+			wantClass: AttemptOK, wantFinish: "STOP", wantThoughts: 300, wantOutput: 42,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			g := NewGrouperWithEndpoint("test-key", srv.URL+"/models/gemini-test:generateContent")
+			_, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "rain", Score: 5}})
+			if (err == nil) != (tt.wantClass == AttemptOK) {
+				t.Fatalf("err = %v, want error only for a failing class", err)
+			}
+			attempts := g.LastAttempts()
+			if len(attempts) != 1 {
+				t.Fatalf("attempts = %+v, want one", attempts)
+			}
+			a := attempts[0]
+			if a.Class != tt.wantClass || a.Status != tt.status || a.FinishReason != tt.wantFinish ||
+				a.ThoughtsTokens != tt.wantThoughts || a.OutputTokens != tt.wantOutput ||
+				a.Model != "gemini-test" || a.Tier != "primary" {
+				t.Errorf("attempt = %+v, want class %s status %d finish %q thoughts %d output %d model gemini-test",
+					a, tt.wantClass, tt.status, tt.wantFinish, tt.wantThoughts, tt.wantOutput)
+			}
+		})
+	}
+}
+
+func TestGroupAndLabel_AttemptTimeout(t *testing.T) {
+	withoutHeadlines(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	g.httpClient.Timeout = 100 * time.Millisecond
+	if _, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "rain", Score: 5}}); err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	attempts := g.LastAttempts()
+	if len(attempts) != 1 || attempts[0].Class != AttemptTimeout || attempts[0].Status != 0 {
+		t.Fatalf("attempts = %+v, want one timeout with no status", attempts)
+	}
+	if attempts[0].ElapsedMs < 100 {
+		t.Errorf("elapsed = %dms, want at least the client timeout", attempts[0].ElapsedMs)
+	}
+}
+
+// TestGroupAndLabel_FallbackSkippedWithoutTime pins the total deadline: a
+// fallback that could not finish inside the cycle's topic wait is not tried.
+func TestGroupAndLabel_FallbackSkippedWithoutTime(t *testing.T) {
+	withoutHeadlines(t)
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer primary.Close()
+	fallbackHit := false
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackHit = true
+	}))
+	defer fallback.Close()
+
+	g := NewGrouperWithEndpoints("test-key", primary.URL, fallback.URL)
+	g.SetTotalTimeout(2 * time.Second)
+	if _, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "rain", Score: 5}}); err == nil {
+		t.Fatal("expected an error when the fallback is skipped")
+	}
+	if fallbackHit {
+		t.Error("fallback was called with under minFallbackTime left")
+	}
+	attempts := g.LastAttempts()
+	if len(attempts) != 2 || attempts[0].Class != AttemptStatus5xx || attempts[1].Class != AttemptNoTime || attempts[1].Tier != "fallback" {
+		t.Fatalf("attempts = %+v, want status_5xx then a no_time fallback", attempts)
+	}
+}
+
+func TestFormatGroupingAttempts(t *testing.T) {
+	got := FormatGroupingAttempts([]GroupingAttempt{
+		{Tier: "primary", Model: "gemini-2.5-pro", Class: AttemptTimeout, ElapsedMs: 45012},
+		{Tier: "fallback", Model: "gemini-2.5-flash", Class: AttemptStatus5xx, ElapsedMs: 812},
+	})
+	want := "attempts=2 primary=gemini-2.5-pro:timeout:45012ms fallback=gemini-2.5-flash:status_5xx:812ms"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got := FormatGroupingAttempts(nil); got != "attempts=0" {
+		t.Errorf("no attempts = %q", got)
+	}
+}
+
+func TestModelFromEndpoint(t *testing.T) {
+	if got := modelFromEndpoint(groupingEndpoint("gemini-2.5-pro")); got != "gemini-2.5-pro" {
+		t.Errorf("got %q", got)
 	}
 }

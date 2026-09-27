@@ -209,6 +209,19 @@ func TestEvaluate_Conditions(t *testing.T) {
 			wantSeverity: SeverityWarn,
 		},
 		{
+			name:         "a Gemini grouping failure is a warning",
+			latest:       &store.StatsSnapshot{},
+			events:       []store.StatsEvent{{EventType: "grouping_failed", Details: "attempts=2 primary=gemini-2.5-pro:timeout:45001ms fallback=gemini-2.5-flash:no_time:0ms"}},
+			wantNames:    []string{"grouping_failed"},
+			wantSeverity: SeverityWarn,
+		},
+		{
+			name:      "a grouping fallback-model success is not an alert",
+			latest:    &store.StatsSnapshot{},
+			events:    []store.StatsEvent{{EventType: "grouping_fallback_model"}},
+			wantNames: nil,
+		},
+		{
 			name:      "events that are not alerting events are ignored",
 			latest:    &store.StatsSnapshot{},
 			events:    []store.StatsEvent{{EventType: "app_start"}, {EventType: "wal_pressure_checkpoint"}},

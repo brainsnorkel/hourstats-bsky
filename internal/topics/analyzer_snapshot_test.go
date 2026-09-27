@@ -125,10 +125,10 @@ func TestRunAnalysisCycle_NoTermsIsError(t *testing.T) {
 	}
 }
 
-// TestRunAnalysisCycle_OfflineFallbackStillProducesSnapshot guards the other
-// side of the same boundary: Gemini being down is not, on its own, a reason to
-// suppress. The offline co-occurrence fallback must still yield a snapshot the
-// caller can publish as current.
+// TestRunAnalysisCycle_OfflineFallbackStillProducesSnapshot guards the opt-in
+// TOPICS_OFFLINE_FALLBACK path: with it on, Gemini being down is not, on its
+// own, a reason to suppress. The offline co-occurrence fallback must still
+// yield a snapshot the caller can publish as current.
 func TestRunAnalysisCycle_OfflineFallbackStillProducesSnapshot(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -142,6 +142,8 @@ func TestRunAnalysisCycle_OfflineFallbackStillProducesSnapshot(t *testing.T) {
 		grouper:  NewGrouperWithEndpoint("test-key", srv.URL),
 		tracker:  NewTracker(ms),
 		hydrator: NewExemplarHydrator(ms),
+		// TOPICS_OFFLINE_FALLBACK=true: the pre-2026-09-28 behaviour.
+		offlineFallback: true,
 	}
 
 	snapshotTime, err := a.RunAnalysisCycle(context.Background())
@@ -156,5 +158,84 @@ func TestRunAnalysisCycle_OfflineFallbackStillProducesSnapshot(t *testing.T) {
 	}
 	if got := ms.insertedSnapshots[0].SnapshotTime; got != snapshotTime {
 		t.Errorf("returned snapshot time = %q, want the inserted one %q", snapshotTime, got)
+	}
+}
+
+type recordedEvent struct{ eventType, details string }
+
+// TestRunAnalysisCycle_GroupingFailureSuppressesByDefault is hs-9uj: with the
+// offline fallback off (the default), a grouping failure writes no snapshot,
+// so no trending reply and no top topic, and records grouping_failed.
+func TestRunAnalysisCycle_GroupingFailureSuppressesByDefault(t *testing.T) {
+	fail := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	primary := httptest.NewServer(fail)
+	defer primary.Close()
+	fallback := httptest.NewServer(fail)
+	defer fallback.Close()
+
+	tokens := buildTestTokens()
+	ms := &mockAnalyzerStore{tokens: tokens, tokenCount: int64(len(tokens))}
+	a := &Analyzer{
+		store:    ms,
+		grouper:  NewGrouperWithEndpoints("test-key", primary.URL, fallback.URL),
+		tracker:  NewTracker(ms),
+		hydrator: NewExemplarHydrator(ms),
+	}
+	var events []recordedEvent
+	a.SetEventLogger(func(_ context.Context, eventType, details string) {
+		events = append(events, recordedEvent{eventType, details})
+	})
+
+	snapshotTime, err := a.RunAnalysisCycle(context.Background())
+	if !errors.Is(err, ErrTopicsUnavailable) {
+		t.Fatalf("err = %v, want ErrTopicsUnavailable", err)
+	}
+	if snapshotTime != "" || len(ms.insertedSnapshots) != 0 {
+		t.Errorf("snapshot time = %q, inserted = %d, want no snapshot", snapshotTime, len(ms.insertedSnapshots))
+	}
+	if len(events) != 1 || events[0].eventType != "grouping_failed" {
+		t.Fatalf("events = %+v, want one grouping_failed", events)
+	}
+	d := events[0].details
+	if !strings.HasPrefix(d, "attempts=2 primary=") || !strings.Contains(d, ":status_5xx:") || !strings.Contains(d, " fallback=") {
+		t.Errorf("details = %q, want both attempts classed status_5xx", d)
+	}
+}
+
+// TestRunAnalysisCycle_FallbackModelSuccessIsRecorded covers the
+// grouping_fallback_model event: the hour was served, but by the second tier.
+func TestRunAnalysisCycle_FallbackModelSuccessIsRecorded(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer primary.Close()
+	fallback := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "US Election", Description: "d", Keywords: []string{"trump", "election"}, Justification: "j"},
+	}))
+	defer fallback.Close()
+
+	tokens := buildTestTokens()
+	ms := &mockAnalyzerStore{tokens: tokens, tokenCount: int64(len(tokens))}
+	a := &Analyzer{
+		store:    ms,
+		grouper:  NewGrouperWithEndpoints("test-key", primary.URL, fallback.URL),
+		tracker:  NewTracker(ms),
+		hydrator: NewExemplarHydrator(ms),
+	}
+	var events []recordedEvent
+	a.SetEventLogger(func(_ context.Context, eventType, details string) {
+		events = append(events, recordedEvent{eventType, details})
+	})
+
+	if _, err := a.RunAnalysisCycle(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 || events[0].eventType != "grouping_fallback_model" {
+		t.Fatalf("events = %+v, want one grouping_fallback_model", events)
+	}
+	if d := events[0].details; !strings.Contains(d, ":status_429:") || !strings.Contains(d, ":ok:") || strings.Contains(d, "US Election") {
+		t.Errorf("details = %q, want a 429 primary, an ok fallback and no label", d)
 	}
 }

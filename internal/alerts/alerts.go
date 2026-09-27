@@ -217,6 +217,7 @@ var alertingEvents = map[string]string{
 	"consumer_restart":         SeverityWarn,
 	"feature_gate_unavailable": SeverityWarn,
 	"seq_floor_reset":          SeverityWarn,
+	"grouping_failed":          SeverityWarn,
 }
 
 // actionableEvents are the events where a person should look now rather
@@ -238,6 +239,7 @@ var eventMeaning = map[string]string{
 	"consumer_restart":         "The firehose consumer exited outside its reconnect loop and was restarted. See the error on the event.",
 	"feature_gate_unavailable": "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
 	"seq_floor_reset":          "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
+	"grouping_failed":          "Gemini grouping failed for the hour, so the trending reply was skipped and the sparkline footer shows no topic. The attempts are on the event. Two or more in a window means Gemini is slow or down.",
 }
 
 // eventOrder fixes the order alerting events are reported in, so a set of
@@ -251,6 +253,7 @@ var eventOrder = []string{
 	"consumer_restart",
 	"feature_gate_unavailable",
 	"seq_floor_reset",
+	"grouping_failed",
 }
 
 // defaultOffenderWindowMinutes is the window the per-account rates are

@@ -44,7 +44,18 @@ type Analyzer struct {
 	// within a cycle, hence the mutex.
 	mu      sync.Mutex
 	docFreq *DocFreqStats
+
+	// offlineFallback publishes AlgorithmicGroup's co-occurrence labels when
+	// every Gemini tier fails. Off by default: its bigram labels ("Trump -
+	// Says") read worse than no topic at all.
+	offlineFallback bool
+	// logEvent, when set, records grouping_failed and grouping_fallback_model
+	// stats events.
+	logEvent EventLogger
 }
+
+// EventLogger records a stats event. cmd wires it to stats.Collector.LogEvent.
+type EventLogger func(ctx context.Context, eventType, details string)
 
 func NewAnalyzer(s AnalyzerStore, geminiAPIKey, geminiModel, geminiFallbackModel string) *Analyzer {
 	grouper := NewGrouper(geminiAPIKey, geminiModel, geminiFallbackModel)
@@ -79,6 +90,30 @@ func (a *Analyzer) SetExemplarDroppedHandler(fn func(topic string, candidates in
 // pass before it can be published or sent to Gemini for validation.
 func (a *Analyzer) SetExemplarGate(g ExemplarGate) {
 	a.hydrator.SetGate(g)
+}
+
+// SetEventLogger registers the hook grouping failures and fallback-model
+// successes are recorded through.
+func (a *Analyzer) SetEventLogger(fn EventLogger) {
+	a.logEvent = fn
+}
+
+// SetOfflineFallback enables the co-occurrence fallback (TOPICS_OFFLINE_FALLBACK)
+// for hours when every Gemini tier fails.
+func (a *Analyzer) SetOfflineFallback(enabled bool) {
+	a.offlineFallback = enabled
+}
+
+// SetGroupingTotalTimeout bounds one grouping call, primary and fallback
+// model together (GROUPING_TOTAL_TIMEOUT_SECONDS).
+func (a *Analyzer) SetGroupingTotalTimeout(d time.Duration) {
+	a.grouper.SetTotalTimeout(d)
+}
+
+func (a *Analyzer) recordEvent(ctx context.Context, eventType, details string) {
+	if a.logEvent != nil {
+		a.logEvent(ctx, eventType, details)
+	}
 }
 
 func (a *Analyzer) setDocFreq(df *DocFreqStats) {
@@ -147,11 +182,21 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 	slog.Info("topics: TF-IDF computed", "terms", len(terms), "elapsed", fmt.Sprintf("%.1fs", time.Since(start).Seconds()))
 
 	clusters, err := a.grouper.GroupAndLabel(ctx, terms)
+	attempts := a.grouper.LastAttempts()
 	if err != nil {
-		// Every Gemini tier (primary -> fallback model) failed. Try offline
-		// co-occurrence grouping before giving up; only suppress the post if
-		// even that yields nothing. This is strictly better than re-posting a
-		// stale snapshot or publishing raw underscore terms.
+		a.recordEvent(ctx, "grouping_failed", FormatGroupingAttempts(attempts))
+	} else if len(attempts) > 1 {
+		a.recordEvent(ctx, "grouping_fallback_model", FormatGroupingAttempts(attempts))
+	}
+	if err != nil && !a.offlineFallback {
+		// Every Gemini tier failed. No snapshot, so no trending reply and no
+		// top topic on the sentiment row: the week footer shows the bare
+		// value, which beats a co-occurrence bigram like "Trump - Says".
+		return "", fmt.Errorf("%w: grouping failed: %w", ErrTopicsUnavailable, err)
+	}
+	if err != nil {
+		// TOPICS_OFFLINE_FALLBACK: try offline co-occurrence grouping before
+		// giving up; only suppress the post if even that yields nothing.
 		// The offline labels are built from firehose tokens, so they get the
 		// same output validation the model's labels do (hs-ws2.3).
 		clusters = validateClusters(AlgorithmicGroup(rows, terms))
