@@ -185,3 +185,17 @@ The stored history was moved onto the new scale by `cmd/realign`; the shift it
 actually applied is in `key_value` under `sentiment_realign_shift`. Every value
 quoted in this document is on the old (stock) scale unless stated otherwise.
 See [SENTIMENT_REALIGNMENT_PLAN.md](SENTIMENT_REALIGNMENT_PLAN.md).
+
+## 2026-09-28 update: 22 mood words
+
+The tiers and thresholds above are unchanged, but the word list inside them
+went from 100 words to 22 (bead hs-ghv). Words that are not moods were removed,
+and each tier now holds few enough words that a word's span exceeds the hourly
+noise: on the realigned series the median hour-to-hour move is 0.30 points
+(p90 0.78), against 0.06–0.08 points per word in the old middle tiers, so the
+word changed in nearly every hour. With 3–4 words per middle tier the spans
+are 0.42 (tiers 3 and 5), 0.44 (tier 4) and 0.75 (tier 6) points, which change
+the word in roughly half of hours. The new word-to-range table is
+`analysis/sentiment_mood_words.csv` (local, not in git); the retired list is
+in [MOOD_WORDS_RETIRED_2026-09-28.md](MOOD_WORDS_RETIRED_2026-09-28.md).
+Tier shares in section 4 still apply; the word frequencies do not.

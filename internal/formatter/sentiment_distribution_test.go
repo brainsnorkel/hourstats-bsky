@@ -24,8 +24,8 @@ import (
 //	HS_HOURLY_CSV=... HS_SHIFT=1.77 \
 //	  go test ./internal/formatter -run TestMoodWordDistribution -v
 //
-// It fails if the vocabulary collapses the way the Jan 2026 tiers did on
-// hourly data (one word carrying 8.5% of posts, 23 words never used).
+// It fails if the vocabulary collapses: more than 4 of the 22 words never
+// used, or one word carrying more than a quarter of cycles.
 func TestMoodWordDistribution(t *testing.T) {
 	path := os.Getenv("HS_HOURLY_CSV")
 	if path == "" {
@@ -97,9 +97,13 @@ func TestMoodWordDistribution(t *testing.T) {
 		}
 		t.Logf("%-14s %5d %5.1f%%", e.word, e.n, 100*float64(e.n)/float64(total))
 	}
-	t.Logf("distinct words used: %d/100", used)
+	t.Logf("distinct words used: %d/%d", used, len(calibratedWords))
 
-	const minDistinct, maxTopShare = 80, 0.05
+	// 22 words since 2026-09-28: tier 1 (2 words) and the top of tier 7
+	// (jubilant, euphoric) have never been reached by an hourly cycle, and a
+	// typical-tier word spans ~0.44 points around a median hour, so it can
+	// carry a fifth of cycles by design.
+	minDistinct, maxTopShare := len(calibratedWords)-4, 0.25
 	if used < minDistinct {
 		t.Errorf("only %d distinct words used; want at least %d", used, minDistinct)
 	}

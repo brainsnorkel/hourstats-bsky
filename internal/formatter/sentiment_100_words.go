@@ -1,5 +1,10 @@
 package formatter
 
+// The mood hashtag is one of 22 words (calibratedWords) spread over seven
+// percentile tiers; since the 2026-09-28 review the list holds only mood words
+// and each word spans at least the typical hour-to-hour move of the series.
+// The tiers, thresholds and interpolation below predate that change.
+//
 // Sentiment thresholds: the September 2026 percentile boundaries of per-cycle
 // net sentiment from prod sentiment_history (hourly-cycle era, Mar–Sep 2026,
 // 4,446 cycles), shifted up by the stock→emoji-aware realignment of
@@ -36,13 +41,13 @@ const (
 
 // Tier word ranges (start index, end index) - indices are inclusive
 var tierRanges = map[int][2]int{
-	1: {0, 4},   // Extreme Negative: 5 words (indices 0-4)
-	2: {5, 19},  // Unusually Low: 15 words (indices 5-19)
-	3: {20, 34}, // Below Average: 15 words (indices 20-34)
-	4: {35, 64}, // Typical: 30 words (indices 35-64)
-	5: {65, 79}, // Above Average: 15 words (indices 65-79)
-	6: {80, 94}, // Unusually High: 15 words (indices 80-94)
-	7: {95, 99}, // Extreme Positive: 5 words (indices 95-99)
+	1: {0, 1},   // Extreme Negative: 2 words (indices 0-1)
+	2: {2, 5},   // Unusually Low: 4 words (indices 2-5)
+	3: {6, 8},   // Below Average: 3 words (indices 6-8)
+	4: {9, 12},  // Typical: 4 words (indices 9-12)
+	5: {13, 15}, // Above Average: 3 words (indices 13-15)
+	6: {16, 18}, // Unusually High: 3 words (indices 16-18)
+	7: {19, 21}, // Extreme Positive: 3 words (indices 19-21)
 }
 
 // Tier sentiment boundaries (min, max) for interpolation within tier.
@@ -61,8 +66,10 @@ var tierBounds = map[int][2]float64{
 	7: {16.75, 21.75}, // Extreme Positive: clamp at 21.75 for interpolation
 }
 
-// getMoodWord100 maps sentiment percentage to one of 100 descriptive words
-// using a tier-based system calibrated to actual Bluesky sentiment distribution
+// getMoodWord100 maps a sentiment percentage to one of the 22 mood words in
+// calibratedWords using the seven percentile tiers above. The name predates
+// the 2026-09-28 reduction from 100 words and is kept because callers and
+// docs refer to it.
 func getMoodWord100(netSentiment float64) string {
 	// Determine which tier the sentiment falls into
 	tier := determineTier(netSentiment)
@@ -132,138 +139,64 @@ func determineTier(sentiment float64) int {
 	}
 }
 
-// calibratedWords contains 100 words calibrated to actual Bluesky sentiment range.
-// Words are posted as a hashtag: "Bluesky is #___ +12.4% sentiment".
-// Within every tier the words are ordered by rising sentiment: the most
-// intense negative word sits at the bottom of the negative tiers and the
-// most intense positive word at the top of the positive tiers, so the words
+// calibratedWords contains the 22 mood words, reduced from 100 in the
+// 2026-09-28 review. Words are posted as a hashtag:
+// "Bluesky is #___ +12.4% sentiment".
+//
+// Two things changed. Words that do not describe a mood (curious, witty,
+// ironic, creative, engaged, ...) were removed, so every hashtag reads as how
+// the network feels. And each word's span was sized to the hour-to-hour noise
+// of the realigned series (median |Δ| 0.30 points, p90 0.78): the old middle
+// tiers gave each word 0.06–0.08 points, so nearly every hour changed the word
+// on noise alone, while spans of about 0.42–0.44 points in tiers 3–5 change it
+// in roughly half of hours. The seven tiers, their thresholds and the
+// interpolation are unchanged. The retired list is in
+// docs/MOOD_WORDS_RETIRED_2026-09-28.md; the word-to-range table is
+// analysis/sentiment_mood_words.csv.
+//
+// Within every tier the words are ordered by rising sentiment, so the words
 // either side of a tier boundary are close neighbours in mood.
 var calibratedWords = []string{
-	// Tier 1: Extreme Negative (< 0%) - 5 words
-	// Vibe: Actively hostile, toxic, or distressed. Never seen from a
-	// full-size hourly cycle; last observed Dec 2025 in the 30-min era.
-	"hostile",   // 0
-	"angry",     // 1
-	"dreadful",  // 2
-	"grim",      // 3
-	"miserable", // 4
+	// Tier 1: Extreme Negative (< 0%) - 2 words, 5.0 points each over the
+	// -10..0 clamp. Never seen from a full-size hourly cycle; last observed
+	// Dec 2025 in the 30-min era.
+	"miserable", // 0
+	"gloomy",    // 1
 
-	// Tier 2: Unusually Low (0% to < 10.25%) - 15 words
-	// Vibe: Distinctly downbeat. About 1 hour in 20; the top of the tier
-	// (~10%) is only mildly below normal, so the mildest words sit there.
-	"despondent",  // 5
-	"glum",        // 6
-	"sullen",      // 7
-	"somber",      // 8
-	"melancholy",  // 9
-	"pessimistic", // 10
-	"cynical",     // 11
-	"anxious",     // 12
-	"agitated",    // 13
-	"irritable",   // 14
-	"tense",       // 15
-	"uneasy",      // 16
-	"restless",    // 17
-	"weary",       // 18
-	"subdued",     // 19
+	// Tier 2: Unusually Low (0% to < 10.25%) - 4 words, 1.25 points each
+	// over the 5.25..10.25 clamp; anything below 5.25 reads as "dejected".
+	// About 1 hour in 20.
+	"dejected", // 2
+	"glum",     // 3
+	"downcast", // 4
+	"subdued",  // 5
 
-	// Tier 3: Below Average (10.25% to < 11.5%) - 15 words
-	// Vibe: Lacking energy, muted, slightly downbeat. The "meh" zone.
-	"flat",       // 20
-	"downbeat",   // 21
-	"tired",      // 22
-	"sluggish",   // 23
-	"solemn",     // 24
-	"wary",       // 25
-	"skeptical",  // 26
-	"cautious",   // 27
-	"uncertain",  // 28
-	"ambivalent", // 29
-	"distracted", // 30
-	"reserved",   // 31
-	"pensive",    // 32
-	"quiet",      // 33
-	"reflective", // 34
+	// Tier 3: Below Average (10.25% to < 11.5%) - 3 words, ~0.42 points each.
+	"flat",  // 6
+	"muted", // 7
+	"quiet", // 8
 
-	// Tier 4: Typical (11.5% to < 13.25%) - 30 words
-	// Vibe: The everyday hum of the network. Normal baseline mood.
-	// Sub-group: Calm & Centered
-	"calm",     // 35
-	"chill",    // 36
-	"mellow",   // 37
-	"relaxed",  // 38
-	"content",  // 39
-	"peaceful", // 40
-	"grounded", // 41
-	"steady",   // 42
-	// Sub-group: Curious & Thoughtful
-	"curious",       // 43
-	"inquisitive",   // 44
-	"thoughtful",    // 45
-	"introspective", // 46
-	"speculative",   // 47
-	"sentimental",   // 48
-	"nostalgic",     // 49
-	// Sub-group: Expressive & Social
-	"playful",     // 50
-	"mischievous", // 51
-	"cheeky",      // 52
-	"ironic",      // 53
-	"witty",       // 54
-	"candid",      // 55
-	"sincere",     // 56
-	"earnest",     // 57
-	// Sub-group: Engaged & Balanced
-	"easygoing", // 58
-	"sociable",  // 59
-	"engaged",   // 60
-	"connected", // 61
-	"alert",     // 62
-	"balanced",  // 63
-	"settled",   // 64
+	// Tier 4: Typical (11.5% to < 13.25%) - 4 words, ~0.44 points each.
+	// The everyday hum of the network.
+	"calm",    // 9
+	"relaxed", // 10
+	"content", // 11
+	"warm",    // 12
 
-	// Tier 5: Above Average (13.25% to < 14.5%) - 15 words
-	// Vibe: Genuinely positive and constructive. A good hour online.
-	"happy",      // 65
-	"cheerful",   // 66
-	"upbeat",     // 67
-	"positive",   // 68
-	"optimistic", // 69
-	"hopeful",    // 70
-	"encouraged", // 71
-	"pleased",    // 72
-	"amused",     // 73
-	"friendly",   // 74
-	"warm",       // 75
-	"welcoming",  // 76
-	"lively",     // 77
-	"supportive", // 78
-	"bright",     // 79
+	// Tier 5: Above Average (13.25% to < 14.5%) - 3 words, ~0.42 points each.
+	"cheerful", // 13
+	"upbeat",   // 14
+	"hopeful",  // 15
 
-	// Tier 6: Unusually High (14.5% to < 16.75%) - 15 words
-	// Vibe: High-energy positivity, creativity, and excitement.
-	"excited",      // 80
-	"vibrant",      // 81
-	"energetic",    // 82
-	"enthusiastic", // 83
-	"inspired",     // 84
-	"creative",     // 85
-	"joyful",       // 86
-	"delighted",    // 87
-	"thrilled",     // 88
-	"invigorated",  // 89
-	"passionate",   // 90
-	"spirited",     // 91
-	"exuberant",    // 92
-	"buoyant",      // 93
-	"buzzing",      // 94
+	// Tier 6: Unusually High (14.5% to < 16.75%) - 3 words, 0.75 points each.
+	"happy",     // 16
+	"delighted", // 17
+	"joyful",    // 18
 
-	// Tier 7: Extreme Positive (>= 16.75%) - 5 words
-	// Vibe: Peak collective experience. Holidays, milestones, and the
-	// best hour or two of an exceptional day.
-	"celebratory", // 95
-	"jubilant",    // 96
-	"elated",      // 97
-	"ecstatic",    // 98
-	"euphoric",    // 99
+	// Tier 7: Extreme Positive (>= 16.75%) - 3 words, ~1.67 points each over
+	// the 16.75..21.75 clamp. Holidays, milestones, the best hour of an
+	// exceptional day.
+	"elated",   // 19
+	"jubilant", // 20
+	"euphoric", // 21
 }

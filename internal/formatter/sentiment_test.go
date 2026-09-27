@@ -1,6 +1,9 @@
 package formatter
 
 import (
+	"encoding/csv"
+	"os"
+	"strconv"
 	"testing"
 )
 
@@ -45,28 +48,28 @@ func TestGetMoodWord100_TierBoundaries(t *testing.T) {
 		expectedTier int
 		expectedWord string
 	}{
-		// Tier 1: Extreme Negative (< 0%) - words 0-4
-		{name: "tier 1 clamp", sentiment: -10.0, expectedTier: 1, expectedWord: "hostile"},
-		{name: "tier 1 top", sentiment: -0.01, expectedTier: 1, expectedWord: "miserable"},
-		// Tier 2: Unusually Low (0% to < 10.25%) - words 5-19
-		{name: "tier 2 start", sentiment: 0.0, expectedTier: 2, expectedWord: "despondent"},
-		{name: "tier 2 clamp", sentiment: 5.25, expectedTier: 2, expectedWord: "despondent"},
-		{name: "tier 2 lowest full-size cycle", sentiment: 5.45, expectedTier: 2, expectedWord: "despondent"},
+		// Tier 1: Extreme Negative (< 0%) - words 0-1
+		{name: "tier 1 clamp", sentiment: -10.0, expectedTier: 1, expectedWord: "miserable"},
+		{name: "tier 1 top", sentiment: -0.01, expectedTier: 1, expectedWord: "gloomy"},
+		// Tier 2: Unusually Low (0% to < 10.25%) - words 2-5
+		{name: "tier 2 start", sentiment: 0.0, expectedTier: 2, expectedWord: "dejected"},
+		{name: "tier 2 clamp", sentiment: 5.25, expectedTier: 2, expectedWord: "dejected"},
+		{name: "tier 2 lowest full-size cycle", sentiment: 5.45, expectedTier: 2, expectedWord: "dejected"},
 		{name: "tier 2 top", sentiment: 10.24, expectedTier: 2, expectedWord: "subdued"},
-		// Tier 3: Below Average (10.25% to < 11.5%) - words 20-34
+		// Tier 3: Below Average (10.25% to < 11.5%) - words 6-8
 		{name: "tier 3 start", sentiment: 10.25, expectedTier: 3, expectedWord: "flat"},
-		{name: "tier 3 top", sentiment: 11.49, expectedTier: 3, expectedWord: "reflective"},
-		// Tier 4: Typical (11.5% to < 13.25%) - words 35-64
+		{name: "tier 3 top", sentiment: 11.49, expectedTier: 3, expectedWord: "quiet"},
+		// Tier 4: Typical (11.5% to < 13.25%) - words 9-12
 		{name: "tier 4 start", sentiment: 11.5, expectedTier: 4, expectedWord: "calm"},
-		{name: "tier 4 top", sentiment: 13.24, expectedTier: 4, expectedWord: "settled"},
-		// Tier 5: Above Average (13.25% to < 14.5%) - words 65-79
-		{name: "tier 5 start", sentiment: 13.25, expectedTier: 5, expectedWord: "happy"},
-		{name: "tier 5 top", sentiment: 14.49, expectedTier: 5, expectedWord: "bright"},
-		// Tier 6: Unusually High (14.5% to < 16.75%) - words 80-94
-		{name: "tier 6 start", sentiment: 14.5, expectedTier: 6, expectedWord: "excited"},
-		{name: "tier 6 top", sentiment: 16.74, expectedTier: 6, expectedWord: "buzzing"},
-		// Tier 7: Extreme Positive (>= 16.75%) - words 95-99
-		{name: "tier 7 start", sentiment: 16.75, expectedTier: 7, expectedWord: "celebratory"},
+		{name: "tier 4 top", sentiment: 13.24, expectedTier: 4, expectedWord: "warm"},
+		// Tier 5: Above Average (13.25% to < 14.5%) - words 13-15
+		{name: "tier 5 start", sentiment: 13.25, expectedTier: 5, expectedWord: "cheerful"},
+		{name: "tier 5 top", sentiment: 14.49, expectedTier: 5, expectedWord: "hopeful"},
+		// Tier 6: Unusually High (14.5% to < 16.75%) - words 16-18
+		{name: "tier 6 start", sentiment: 14.5, expectedTier: 6, expectedWord: "happy"},
+		{name: "tier 6 top", sentiment: 16.74, expectedTier: 6, expectedWord: "joyful"},
+		// Tier 7: Extreme Positive (>= 16.75%) - words 19-21
+		{name: "tier 7 start", sentiment: 16.75, expectedTier: 7, expectedWord: "elated"},
 		{name: "tier 7 clamp", sentiment: 30.0, expectedTier: 7, expectedWord: "euphoric"},
 	}
 
@@ -198,8 +201,8 @@ func TestGetMoodWord100_HistoricalValues(t *testing.T) {
 }
 
 func TestCalibratedWordsLength(t *testing.T) {
-	if len(calibratedWords) != 100 {
-		t.Errorf("calibratedWords has %d words, expected 100", len(calibratedWords))
+	if len(calibratedWords) != 22 {
+		t.Errorf("calibratedWords has %d words, expected 22", len(calibratedWords))
 	}
 	seen := make(map[string]bool, len(calibratedWords))
 	for _, w := range calibratedWords {
@@ -212,13 +215,13 @@ func TestCalibratedWordsLength(t *testing.T) {
 
 func TestTierWordCounts(t *testing.T) {
 	expectedCounts := map[int]int{
-		1: 5,  // Extreme Negative
-		2: 15, // Unusually Low
-		3: 15, // Below Average
-		4: 30, // Typical
-		5: 15, // Above Average
-		6: 15, // Unusually High
-		7: 5,  // Extreme Positive
+		1: 2, // Extreme Negative
+		2: 4, // Unusually Low
+		3: 3, // Below Average
+		4: 4, // Typical
+		5: 3, // Above Average
+		6: 3, // Unusually High
+		7: 3, // Extreme Positive
 	}
 
 	for tier, expected := range expectedCounts {
@@ -258,5 +261,83 @@ func TestTierBoundsMatchThresholds(t *testing.T) {
 	}
 	if tierBounds[7][1] != 21.75 {
 		t.Errorf("tier 7 upper clamp = %v, expected 21.75", tierBounds[7][1])
+	}
+}
+
+// TestTierSpansAboveHourlyNoise pins the point of the 2026-09-28 reduction:
+// in the percentile-fitted middle tiers every word must span at least 0.40
+// points, above the median hour-to-hour move of 0.30, so the word does not
+// change on noise alone.
+func TestTierSpansAboveHourlyNoise(t *testing.T) {
+	for tier := 3; tier <= 6; tier++ {
+		b, r := tierBounds[tier], tierRanges[tier]
+		span := (b[1] - b[0]) / float64(r[1]-r[0]+1)
+		if span < 0.40 {
+			t.Errorf("tier %d word span = %.3f points, want >= 0.40", tier, span)
+		}
+	}
+}
+
+// TestMoodWordsMatchProposedCSV checks the mapping against the word-to-range
+// table analysis/sentiment_mood_words_proposed.csv (index, tier, tier_name,
+// word, sentiment_min_pct, sentiment_max_pct, span_pct). analysis/ is not in
+// git, so the test skips when the file is absent.
+//
+// The table's bounds are the exact slot boundaries rounded to the nearest
+// 0.01, so where a boundary rounds down (11.0833 -> 11.08, 12.8125 -> 12.81,
+// 14.0833 -> 14.08, 20.0833 -> 20.08) the printed min still returns the word
+// below. The min is therefore probed half a hundredth inside the row.
+func TestMoodWordsMatchProposedCSV(t *testing.T) {
+	f, err := os.Open("../../analysis/sentiment_mood_words_proposed.csv")
+	if os.IsNotExist(err) {
+		t.Skip("analysis/sentiment_mood_words_proposed.csv not present")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	recs, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs)-1 != len(calibratedWords) {
+		t.Fatalf("CSV has %d rows, calibratedWords has %d words", len(recs)-1, len(calibratedWords))
+	}
+	for _, r := range recs[1:] {
+		idx, word, minS, maxS := r[0], r[3], r[4], r[5]
+		t.Run(idx+"_"+word, func(t *testing.T) {
+			i, err := strconv.Atoi(idx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calibratedWords[i] != word {
+				t.Errorf("calibratedWords[%d] = %q, CSV says %q", i, calibratedWords[i], word)
+			}
+			lo, hi := -50.0, 50.0
+			if minS != "open" {
+				if lo, err = strconv.ParseFloat(minS, 64); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if maxS != "open" {
+				if hi, err = strconv.ParseFloat(maxS, 64); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The CSV carries the code's exact 0.01-step boundaries, so the
+			// minimum itself must already select the word.
+			probeLo := lo
+			if got := getMoodWord100(probeLo); got != word {
+				t.Errorf("getMoodWord100(%.3f) = %q, want %q (row min %s)", probeLo, got, word, minS)
+			}
+			if got := getMoodWord100(hi); got != word {
+				t.Errorf("getMoodWord100(%.2f) = %q, want %q (row max %s)", hi, got, word, maxS)
+			}
+			if minS != "open" && minS != "0.00" {
+				if got := getMoodWord100(lo - 0.01); got == word {
+					t.Errorf("getMoodWord100(%.2f) = %q, want the word below %q", lo-0.01, got, word)
+				}
+			}
+		})
 	}
 }
