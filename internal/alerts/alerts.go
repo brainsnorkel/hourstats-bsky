@@ -218,6 +218,7 @@ var alertingEvents = map[string]string{
 	"feature_gate_unavailable": SeverityWarn,
 	"seq_floor_reset":          SeverityWarn,
 	"grouping_failed":          SeverityWarn,
+	"stall_detected":           SeverityError,
 }
 
 // actionableEvents are the events where a person should look now rather
@@ -227,6 +228,7 @@ var actionableEvents = map[string]bool{
 	"memory_guard_trip": true,
 	"window_capped":     true,
 	"consumer_restart":  true,
+	"stall_detected":    true,
 }
 
 // eventMeaning explains each event type for the person reading the alert.
@@ -240,6 +242,7 @@ var eventMeaning = map[string]string{
 	"feature_gate_unavailable": "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
 	"seq_floor_reset":          "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
 	"grouping_failed":          "Gemini grouping failed for the hour, so the trending reply was skipped and the sparkline footer shows no topic. The attempts are on the event. Two or more in a window means Gemini is slow or down.",
+	"stall_detected":           "No posts have reached the bot for over five minutes. connected=false with reconnects means Jetstream itself is unreachable or refusing us; connected=true means a silent connection that has now been dropped. The hour's counts and sentiment will be short. Check the event's last_error and bsky.network status; JETSTREAM_LEGACY=true falls back to the v1 hosts.",
 }
 
 // eventOrder fixes the order alerting events are reported in, so a set of
@@ -254,6 +257,7 @@ var eventOrder = []string{
 	"feature_gate_unavailable",
 	"seq_floor_reset",
 	"grouping_failed",
+	"stall_detected",
 }
 
 // defaultOffenderWindowMinutes is the window the per-account rates are

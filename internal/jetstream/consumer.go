@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -333,6 +334,8 @@ type Consumer struct {
 	endpointRotations atomic.Int64 // count of endpoint rotations
 	dropTimes         []time.Time  // timestamps of recent drops
 	connectedAt       time.Time    // when current connection was established (protected by mu)
+	lastErr           error        // why the last connection attempt or session ended; nil once connected (protected by mu)
+	lastErrAt         time.Time    // when lastErr was recorded (protected by mu)
 }
 
 // Stats tracks consumer metrics.
@@ -490,6 +493,13 @@ func (c *Consumer) Run(ctx context.Context) error {
 		// refetched. Both then fall through to the normal backoff.
 		c.handleDialRefusal(ctx, err)
 
+		if err != nil {
+			c.mu.Lock()
+			c.lastErr = err
+			c.lastErrAt = time.Now()
+			c.mu.Unlock()
+		}
+
 		c.stats.Reconnects.Add(1)
 		now := time.Now()
 
@@ -517,7 +527,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 		rotated := false
 		if len(c.dropTimes) >= rotateAfterDrops && len(c.cfg.Endpoints) > 1 {
 			prev := c.ActiveEndpoint()
+			// Written under mu because ConnectionState reads it from the
+			// stall detector's goroutine.
+			c.mu.Lock()
 			c.endpointIdx = (c.endpointIdx + 1) % len(c.cfg.Endpoints)
+			c.mu.Unlock()
 			c.endpointRotations.Add(1)
 			c.dropTimes = nil // reset counter for new endpoint
 			backoff = initialBackoff
@@ -738,6 +752,62 @@ func jitterBackoff(d time.Duration) time.Duration {
 	return time.Duration(float64(d) * factor)
 }
 
+// ConnectionState is the consumer's connection as the stall detector sees it:
+// whether a WebSocket is open right now, and why the last attempt failed.
+type ConnectionState struct {
+	Connected    bool
+	Endpoint     string
+	Protocol     string
+	Reconnects   int64
+	LastError    string // "" when the current connection is healthy or none has failed
+	LastErrorAt  time.Time
+	LastErrorAge time.Duration
+}
+
+// maxLastErrorRunes bounds ConnectionState.LastError, which is written to
+// stats_events.
+const maxLastErrorRunes = 200
+
+// ConnectionState reports the current connection and the last failure. It is
+// safe to call from any goroutine.
+func (c *Consumer) ConnectionState() ConnectionState {
+	c.mu.Lock()
+	st := ConnectionState{
+		Connected:  c.conn != nil,
+		Endpoint:   c.cfg.Endpoints[c.endpointIdx],
+		Protocol:   c.cfg.Protocol,
+		Reconnects: c.stats.Reconnects.Load(),
+	}
+	if c.lastErr != nil {
+		st.LastError = sanitizeConnError(c.lastErr.Error())
+		st.LastErrorAt = c.lastErrAt
+		st.LastErrorAge = time.Since(c.lastErrAt)
+	}
+	c.mu.Unlock()
+	return st
+}
+
+// sanitizeConnError drops any URL query string (a dial URL carries the
+// cursor) and bounds the message to maxLastErrorRunes.
+func sanitizeConnError(msg string) string {
+	for {
+		i := strings.IndexByte(msg, '?')
+		if i < 0 {
+			break
+		}
+		end := strings.IndexAny(msg[i:], " \t\n\"'")
+		if end < 0 {
+			msg = msg[:i]
+			break
+		}
+		msg = msg[:i] + msg[i+end:]
+	}
+	if r := []rune(msg); len(r) > maxLastErrorRunes {
+		msg = string(r[:maxLastErrorRunes])
+	}
+	return msg
+}
+
 // ForceReconnect closes the active WebSocket connection, which unblocks the
 // read loop and hands control to the normal reconnect/backoff path. It is safe
 // to call from any goroutine and reports whether a connection was closed.
@@ -787,6 +857,7 @@ func (c *Consumer) connectAndConsumeV1(ctx context.Context) error {
 
 	c.mu.Lock()
 	c.conn = conn
+	c.lastErr = nil
 	c.mu.Unlock()
 
 	defer func() {

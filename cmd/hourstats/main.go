@@ -287,6 +287,9 @@ func main() {
 
 	stallCheckTicker := time.NewTicker(5 * time.Minute)
 	defer stallCheckTicker.Stop()
+	// stallPrevReconnects is the consumer's reconnect count at the previous
+	// stall check, so a stall event can say how hard it is trying.
+	stallPrevReconnects := collector.ReconnectCount()
 
 	walCheckpointTicker := time.NewTicker(5 * time.Minute)
 	defer walCheckpointTicker.Stop()
@@ -440,21 +443,51 @@ func main() {
 			})
 
 		case <-stallCheckTicker.C:
+			reconnects := collector.ReconnectCount()
+			reconnectsSinceLast := reconnects - stallPrevReconnects
+			if reconnectsSinceLast < 0 {
+				// A restarted consumer starts its count again from zero.
+				reconnectsSinceLast = reconnects
+			}
+			stallPrevReconnects = reconnects
+
 			lastPost := collector.LastPostReceived()
 			if !lastPost.IsZero() {
 				sinceLastPost := time.Since(lastPost)
 				if sinceLastPost > stallThreshold {
+					// Read the state before forcing: afterwards the closed
+					// connection would read as connected=false. forced=false
+					// with connected=false means the consumer was already in
+					// its dial/backoff loop, not that the detector failed.
+					state, _ := activeConsumer.state()
 					// Logging alone left a black-holed connection in place;
 					// drop it so the consumer's reconnect path takes over.
 					forced := activeConsumer.forceReconnect()
-					slog.Warn("jetstream stall detected: no posts received recently",
+					msg := "jetstream stall detected: no posts received recently"
+					switch {
+					case !state.Connected && reconnectsSinceLast > 0:
+						msg = "jetstream stall: consumer is reconnecting and the stream is not coming back"
+					case state.Connected && forced:
+						msg = "jetstream stall: forced a reconnect of a silent connection"
+					}
+					lastErr, lastErrAge := "none", "-"
+					if state.LastError != "" {
+						lastErr = state.LastError
+						lastErrAge = state.LastErrorAge.Truncate(time.Second).String()
+					}
+					slog.Warn(msg,
 						"last_post_age", sinceLastPost.Round(time.Second),
-						"firehose_total", collector.GetFirehoseCount(),
+						"connected", state.Connected,
 						"forced_reconnect", forced,
+						"reconnects_since_last_check", reconnectsSinceLast,
+						"endpoint", endpointHost(state.Endpoint),
+						"protocol", state.Protocol,
+						"last_error", lastErr,
+						"last_error_age", lastErrAge,
+						"firehose_total", collector.GetFirehoseCount(),
 					)
 					_ = collector.LogEvent(ctx, "stall_detected",
-						fmt.Sprintf("last_post_age=%s forced_reconnect=%t",
-							sinceLastPost.Truncate(time.Second), forced))
+						stallEventDetails(sinceLastPost, state, forced, reconnectsSinceLast))
 				}
 			}
 

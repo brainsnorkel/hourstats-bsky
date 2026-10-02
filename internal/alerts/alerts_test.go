@@ -268,6 +268,37 @@ func TestEvaluate_EventMessageCountsAndDetails(t *testing.T) {
 	}
 }
 
+// TestEvaluate_StallDetectedIsActionableError: a firehose stall loses the
+// hour's counts, so it pages as an error.
+func TestEvaluate_StallDetectedIsActionableError(t *testing.T) {
+	found := false
+	for _, name := range eventOrder {
+		if name == "stall_detected" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("stall_detected missing from eventOrder")
+	}
+	events := []store.StatsEvent{
+		{EventType: "stall_detected", Details: `last_post_age=10m0s connected=false forced_reconnect=false reconnects_since_last_check=7 endpoint=jetstream1.us-east.bsky.network protocol=v2 last_error="dial: websocket: bad handshake" last_error_age=3s`},
+		{EventType: "stall_detected", Details: "older"},
+	}
+	conds := Evaluate(&store.StatsSnapshot{}, nil, events, ConsumerReport{}, testThresholds())
+	if len(conds) != 1 || conds[0].Name != "stall_detected" {
+		t.Fatalf("conditions = %v, want [stall_detected]", names(conds))
+	}
+	if conds[0].Severity != SeverityError {
+		t.Errorf("severity = %q, want %q", conds[0].Severity, SeverityError)
+	}
+	if !conds[0].Actionable {
+		t.Error("stall_detected is not actionable")
+	}
+	if want := "2 stall_detected event(s)"; !strings.HasPrefix(conds[0].Message, want) {
+		t.Errorf("message = %q, want prefix %q", conds[0].Message, want)
+	}
+}
+
 // TestEvaluate_RSSDisabledWithoutAMachineSize covers the case where nothing in
 // the environment describes the machine: a percentage of an unknown total is
 // not a threshold, so the condition must not fire.

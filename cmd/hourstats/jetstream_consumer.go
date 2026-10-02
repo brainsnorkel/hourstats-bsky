@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,46 @@ func (h *consumerHandle) forceReconnect() bool {
 		return false
 	}
 	return c.ForceReconnect()
+}
+
+// state reports the active consumer's connection state; ok is false when no
+// consumer is running.
+func (h *consumerHandle) state() (jetstream.ConnectionState, bool) {
+	h.mu.Lock()
+	c := h.c
+	h.mu.Unlock()
+	if c == nil {
+		return jetstream.ConnectionState{}, false
+	}
+	return c.ConnectionState(), true
+}
+
+// stallEventDetails formats the stall_detected event: how long the firehose
+// has been silent and what the consumer was doing about it. forced=false with
+// connected=false means the consumer was already in its dial/backoff loop,
+// not that the detector failed.
+func stallEventDetails(lastPostAge time.Duration, st jetstream.ConnectionState, forced bool, reconnectsSinceLast int64) string {
+	lastErr, lastErrAge := "none", "-"
+	if st.LastError != "" {
+		lastErr = st.LastError
+		lastErrAge = st.LastErrorAge.Truncate(time.Second).String()
+	}
+	protocol := st.Protocol
+	if protocol == "" {
+		protocol = "-"
+	}
+	return fmt.Sprintf("last_post_age=%s connected=%t forced_reconnect=%t reconnects_since_last_check=%d endpoint=%s protocol=%s last_error=%q last_error_age=%s",
+		lastPostAge.Truncate(time.Second), st.Connected, forced, reconnectsSinceLast,
+		endpointHost(st.Endpoint), protocol, lastErr, lastErrAge)
+}
+
+// endpointHost reduces an endpoint URL to its host, "-" when there is none.
+func endpointHost(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return "-"
+	}
+	return u.Host
 }
 
 // dropLimiter collapses a burst of dropped posts into one warning per window,

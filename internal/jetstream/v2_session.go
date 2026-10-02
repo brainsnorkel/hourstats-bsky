@@ -254,6 +254,7 @@ func (c *Consumer) connectAndConsumeV2(ctx context.Context) error {
 
 	c.mu.Lock()
 	c.conn = conn
+	c.lastErr = nil
 	c.mu.Unlock()
 
 	defer func() {
