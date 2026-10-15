@@ -19,7 +19,7 @@ import (
 
 const (
 	geminiBaseURL      = "https://generativelanguage.googleapis.com/v1beta/models/"
-	DefaultGeminiModel = "gemini-2.5-pro"
+	DefaultGeminiModel = "gemini-3.8-flash"
 	maxDailyCalls      = 150
 
 	// groupingCallTimeout bounds one Gemini HTTP call. A realistic grouping

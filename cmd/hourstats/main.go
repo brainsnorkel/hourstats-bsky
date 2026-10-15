@@ -67,7 +67,7 @@ func main() {
 	trendingEnabled := envBool("TRENDING_ENABLED", false)
 	geminiAPIKey := os.Getenv("GOOGLE_AI_API_KEY")
 	geminiModel := envOr("GEMINI_MODEL", "gemini-3.8-flash")
-	geminiFallbackModel := envOr("GROUP_FALLBACK_MODEL", "gemini-2.5-pro")
+	geminiFallbackModel := envOr("GROUP_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 	topicsOfflineFallback := envBool("TOPICS_OFFLINE_FALLBACK", false)
 	groupingTotalTimeout := time.Duration(envInt("GROUPING_TOTAL_TIMEOUT_SECONDS", int(topics.DefaultGroupingTotalTimeout/time.Second))) * time.Second
 
