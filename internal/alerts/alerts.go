@@ -219,10 +219,18 @@ var alertingEvents = map[string]string{
 	"seq_floor_reset":          SeverityWarn,
 	"grouping_failed":          SeverityWarn,
 	"stall_detected":           SeverityError,
+	// hydration_ceiling_projected is written at the start of a cycle whose
+	// window is larger than hydration can cover; posting_skipped at its end
+	// when the hour published nothing. Alerts evaluate after each 30-minute
+	// snapshot, so either lands up to ~35 minutes after the cycle started.
+	"hydration_ceiling_projected": SeverityWarn,
+	"posting_skipped":             SeverityWarn,
 }
 
 // actionableEvents are the events where a person should look now rather
 // than at the next routine check: an hour was lost or is about to be.
+// posting_skipped is not listed: whether it pages depends on its reason, see
+// postingSkippedActionable.
 var actionableEvents = map[string]bool{
 	"cycle_failed":      true,
 	"memory_guard_trip": true,
@@ -233,16 +241,18 @@ var actionableEvents = map[string]bool{
 
 // eventMeaning explains each event type for the person reading the alert.
 var eventMeaning = map[string]string{
-	"cycle_failed":             "The hour's cycle stopped before recording a run: no summary, no sentiment point. Stage and error are on the event. The next hour runs regardless.",
-	"memory_guard_trip":        "Memory crossed 70% of the machine; the cycle was cancelled and the hour published nothing. Heap profile written to /data.",
-	"memory_guard_warn":        "Memory crossed 55% of the machine; the cycle continued and a heap profile was written. Check the next snapshot's RSS.",
-	"window_capped":            "The hour had more posts than ANALYSIS_MAX_WINDOW_POSTS; marked low confidence, nothing posted. Busy live hours can now exceed the cap, so this is not necessarily a flood.",
-	"hydration_timeout":        "Engagement hydration hit HYDRATION_TIMEOUT_MINUTES; posts it never reached are still scored, ranking uses the hydrated ones, and only attempted posts lost past HYDRATION_MAX_ERROR_PCT stop posting. rate_limited=0 on the event means the bot's own HYDRATION_RATE_PER_MINUTE limiter was the ceiling (rate x 25 x minutes), not the appview; otherwise check public.api.bsky.app errors in the hydrator lines.",
-	"consumer_restart":         "The firehose consumer exited outside its reconnect loop and was restarted. See the error on the event.",
-	"feature_gate_unavailable": "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
-	"seq_floor_reset":          "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
-	"grouping_failed":          "Gemini grouping failed for the hour, so the trending reply was skipped and the sparkline footer shows no topic. The attempts are on the event. Two or more in a window means Gemini is slow or down.",
-	"stall_detected":           "No posts have reached the bot for over five minutes. connected=false with reconnects means Jetstream itself is unreachable or refusing us; connected=true means a silent connection that has now been dropped. The hour's counts and sentiment will be short. Check the event's last_error and bsky.network status; JETSTREAM_LEGACY=true falls back to the v1 hosts.",
+	"cycle_failed":                "The hour's cycle stopped before recording a run: no summary, no sentiment point. Stage and error are on the event. The next hour runs regardless.",
+	"memory_guard_trip":           "Memory crossed 70% of the machine; the cycle was cancelled and the hour published nothing. Heap profile written to /data.",
+	"memory_guard_warn":           "Memory crossed 55% of the machine; the cycle continued and a heap profile was written. Check the next snapshot's RSS.",
+	"window_capped":               "The hour had more posts than ANALYSIS_MAX_WINDOW_POSTS; marked low confidence, nothing posted. Busy live hours can now exceed the cap, so this is not necessarily a flood.",
+	"hydration_timeout":           "Engagement hydration hit HYDRATION_TIMEOUT_MINUTES; posts it never reached are still scored, ranking uses the hydrated ones, and only attempted posts lost past HYDRATION_MAX_ERROR_PCT stop posting. rate_limited=0 on the event means the bot's own HYDRATION_RATE_PER_MINUTE limiter was the ceiling (rate x 25 x minutes), not the appview; otherwise check public.api.bsky.app errors in the hydrator lines.",
+	"consumer_restart":            "The firehose consumer exited outside its reconnect loop and was restarted. See the error on the event.",
+	"feature_gate_unavailable":    "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
+	"seq_floor_reset":             "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
+	"grouping_failed":             "Gemini grouping failed for the hour, so the trending reply was skipped and the sparkline footer shows no topic. The attempts are on the event. Two or more in a window means Gemini is slow or down.",
+	"hydration_ceiling_projected": "The window is larger than hydration can cover in HYDRATION_TIMEOUT_MINUTES; the cycle will run out of budget about 25 minutes from now. Raise the timeout if the interval allows.",
+	"posting_skipped":             "The hour's cycle finished but published nothing: no summary, sparkline or trending reply. reason= on the event says why; window_posts vs hydrated vs ceiling_posts shows whether hydration ran out of budget (raise HYDRATION_TIMEOUT_MINUTES) or the hour was too small or flooded. Evaluated after each 30-minute snapshot, so this lands up to ~35 minutes after the cycle started.",
+	"stall_detected":              "No posts have reached the bot for over five minutes. connected=false with reconnects means Jetstream itself is unreachable or refusing us; connected=true means a silent connection that has now been dropped. The hour's counts and sentiment will be short. Check the event's last_error and bsky.network status; JETSTREAM_LEGACY=true falls back to the v1 hosts.",
 }
 
 // eventOrder fixes the order alerting events are reported in, so a set of
@@ -252,7 +262,9 @@ var eventOrder = []string{
 	"memory_guard_trip",
 	"memory_guard_warn",
 	"window_capped",
+	"hydration_ceiling_projected",
 	"hydration_timeout",
+	"posting_skipped",
 	"consumer_restart",
 	"feature_gate_unavailable",
 	"seq_floor_reset",
@@ -462,7 +474,62 @@ func Evaluate(latest, previous *store.StatsSnapshot, events []store.StatsEvent, 
 	}
 
 	conds = append(conds, eventConditions(events)...)
+
+	// The snapshot flag covers every path that skips publication, including
+	// any that writes no posting_skipped event, so it is the fallback: when
+	// the event is in the window its condition (which carries the reason)
+	// already stands for the hour. AnalysisRan is reset after every snapshot
+	// while PostingSkipped is not, hence both. DRY_RUN does not set the flag:
+	// it is the cycle's lowConfidence, and a dry run suppresses posting in
+	// the client, not through lowConfidence.
+	if latest != nil && latest.AnalysisRan == 1 && latest.PostingSkipped == 1 && !hasEvent(events, "posting_skipped") {
+		conds = append(conds, Condition{
+			Name: "posting_skipped",
+			// window_capped and memory_guard_trip already page for the skip
+			// they cause.
+			Actionable: !hasEvent(events, "window_capped") && !hasEvent(events, "memory_guard_trip"),
+			Severity:   SeverityWarn,
+			Message: fmt.Sprintf("The analysis cycle on this snapshot published nothing: %d posts considered, %d hydrated, and no posting_skipped event says why. %s",
+				latest.PostsConsidered, latest.PostsHydrated, eventMeaning["posting_skipped"]),
+		})
+	}
 	return conds
+}
+
+// hasEvent reports whether an event of eventType is among events.
+func hasEvent(events []store.StatsEvent, eventType string) bool {
+	for _, e := range events {
+		if e.EventType == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+// detailValue returns the value of key in a space-separated key=value details
+// string, or "" when key is absent.
+func detailValue(details, key string) string {
+	for _, field := range strings.Fields(details) {
+		if v, ok := strings.CutPrefix(field, key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// postingSkippedActionable decides whether a skipped publication pages. A
+// hydration shortfall pages: only a person can raise the budget. A low post
+// count pages unless a stall_detected event in the same window already has.
+// window_capped and memory_guard reasons do not, since their own events page
+// for the same hour and a second mention would be noise.
+func postingSkippedActionable(details string, events []store.StatsEvent) bool {
+	switch detailValue(details, "reason") {
+	case "hydration_shortfall":
+		return true
+	case "low_post_count":
+		return !hasEvent(events, "stall_detected")
+	}
+	return false
 }
 
 // reconnects returns the reconnect count for roughly the last hour and names
@@ -490,11 +557,16 @@ func eventConditions(events []store.StatsEvent) []Condition {
 	}
 	counts := make(map[string]int, len(alertingEvents))
 	latest := make(map[string]string, len(alertingEvents))
+	actionable := make(map[string]bool, len(alertingEvents))
 	for _, e := range events {
 		if _, ok := alertingEvents[e.EventType]; !ok {
 			continue
 		}
 		counts[e.EventType]++
+		// Any one of the window's skips with a paging reason pages.
+		if e.EventType == "posting_skipped" && postingSkippedActionable(e.Details, events) {
+			actionable[e.EventType] = true
+		}
 		// GetEvents returns newest first, so the first one seen for a type is
 		// the one whose details are worth carrying.
 		if _, ok := latest[e.EventType]; !ok {
@@ -517,7 +589,7 @@ func eventConditions(events []store.StatsEvent) []Condition {
 		}
 		conds = append(conds, Condition{
 			Name:       eventType,
-			Actionable: actionableEvents[eventType],
+			Actionable: actionableEvents[eventType] || actionable[eventType],
 			Severity:   alertingEvents[eventType],
 			Message:    msg,
 		})

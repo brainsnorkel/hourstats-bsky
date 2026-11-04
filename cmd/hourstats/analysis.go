@@ -39,6 +39,24 @@ func windowCapDecision(available, limit int) bool {
 	return limit > 0 && available > limit
 }
 
+// postingSkipReason names why a cycle published nothing, for the
+// posting_skipped event. The order is precedence: a memory guard trip or a
+// capped window already explains the hour (and pages on its own event), a
+// window too small to stand for the hour comes next, and anything else on the
+// low-confidence path is hydration leaving too much of the window unhydrated.
+func postingSkipReason(guardTripped, windowCapped bool, posts int) string {
+	switch {
+	case guardTripped:
+		return "memory_guard"
+	case windowCapped:
+		return "window_capped"
+	case posts < minPostsRequired:
+		return "low_post_count"
+	default:
+		return "hydration_shortfall"
+	}
+}
+
 // topPostCandidates is how many are ranked and put to the feature gate, so a
 // rejected post is replaced by the next one down rather than shortening the
 // list. It stays inside the gate's per-call limit of 25 URIs.
@@ -309,6 +327,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 			"ceiling_posts", budget.CeilingPosts,
 			"projected_unhydrated_pct", fmt.Sprintf("%.1f", 100*float64(len(posts)-budget.CeilingPosts)/float64(len(posts))),
 		)
+		// Written at cycle start so the next snapshot's alert reaches the
+		// operator before the hydration timeout does.
+		_ = collector.LogEvent(ctx, "hydration_ceiling_projected",
+			fmt.Sprintf("run_id=%s window_posts=%d ceiling_posts=%d projected_unhydrated_pct=%.1f",
+				runID, len(posts), budget.CeilingPosts, 100*float64(len(posts)-budget.CeilingPosts)/float64(len(posts))))
 	}
 
 	if len(posts) == 0 {
@@ -490,6 +513,23 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		)
 	}
 
+	// One posting_skipped event for every hour that publishes nothing, so the
+	// alert path can say why and page on the reasons nothing else pages on.
+	// It is written before RecordAnalysis sets the snapshot's skip flag, so no
+	// snapshot carries the flag without the event that explains it.
+	skipLogged := false
+	logPostingSkipped := func() {
+		skipLogged = true
+		_ = collector.LogEvent(context.WithoutCancel(ctx), "posting_skipped",
+			fmt.Sprintf("run_id=%s reason=%s window_posts=%d hydrated=%d never_attempted=%d attempted_lost_pct=%.1f ceiling_posts=%d rate_limited=%d",
+				runID, postingSkipReason(guardTripped.Load(), windowCapped, len(posts)),
+				pop.WindowPosts, pop.Hydrated, pop.NeverAttempted, pop.AttemptedLostPct,
+				budget.CeilingPosts, result.RateLimited))
+	}
+	if lowConfidence {
+		logPostingSkipped()
+	}
+
 	collector.RecordAnalysis(len(posts), result.Hydrated, result.Errors, overallSentiment, lowConfidence)
 
 	// Rank among the hydrated posts only. They are the first pop.Hydrated of
@@ -601,6 +641,11 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		} else {
 			slog.Info("language counts stored", "run_id", runID, "languages", len(langs))
 		}
+	}
+
+	// A guard trip after RecordAnalysis still publishes nothing.
+	if guardTripped.Load() && !skipLogged {
+		logPostingSkipped()
 	}
 
 	if guardTripped.Load() {

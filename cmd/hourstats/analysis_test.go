@@ -11,6 +11,25 @@ import (
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
+func TestPostingSkipReason(t *testing.T) {
+	tests := []struct {
+		name          string
+		guard, capped bool
+		posts         int
+		want          string
+	}{
+		{"guard beats everything", true, true, 10, "memory_guard"},
+		{"capped beats low count", false, true, 10, "window_capped"},
+		{"low count", false, false, minPostsRequired - 1, "low_post_count"},
+		{"otherwise hydration", false, false, 145543, "hydration_shortfall"},
+	}
+	for _, tt := range tests {
+		if got := postingSkipReason(tt.guard, tt.capped, tt.posts); got != tt.want {
+			t.Errorf("%s: postingSkipReason = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestAwaitTopicOutcome(t *testing.T) {
 	ctx := context.Background()
 	ch := make(chan topicAnalysisOutcome, 1)

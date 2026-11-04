@@ -299,6 +299,108 @@ func TestEvaluate_StallDetectedIsActionableError(t *testing.T) {
 	}
 }
 
+func conditionNamed(conds []Condition, name string) (Condition, bool) {
+	for _, c := range conds {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return Condition{}, false
+}
+
+// TestEvaluate_PostingSkippedActionability: a skipped hour pages only when
+// nothing else in the window already has.
+func TestEvaluate_PostingSkippedActionability(t *testing.T) {
+	skip := func(reason string) store.StatsEvent {
+		return store.StatsEvent{EventType: "posting_skipped", Details: "run_id=run-20261104-035500 reason=" + reason +
+			" window_posts=193985 hydrated=145543 attempted_lost_pct=25.0 ceiling_posts=150000 rate_limited=0"}
+	}
+	tests := []struct {
+		name   string
+		events []store.StatsEvent
+		want   bool
+	}{
+		{"hydration shortfall pages", []store.StatsEvent{skip("hydration_shortfall")}, true},
+		{"window capped does not double-page", []store.StatsEvent{skip("window_capped"), {EventType: "window_capped"}}, false},
+		{"memory guard does not double-page", []store.StatsEvent{skip("memory_guard"), {EventType: "memory_guard_trip"}}, false},
+		{"low post count pages alone", []store.StatsEvent{skip("low_post_count")}, true},
+		{"low post count with a stall does not", []store.StatsEvent{skip("low_post_count"), {EventType: "stall_detected"}}, false},
+		{"any paging skip in the window pages", []store.StatsEvent{skip("window_capped"), skip("hydration_shortfall")}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conds := Evaluate(&store.StatsSnapshot{AnalysisRan: 1, PostingSkipped: 1}, nil, tt.events, ConsumerReport{}, testThresholds())
+			n := 0
+			for _, c := range conds {
+				if c.Name == "posting_skipped" {
+					n++
+				}
+			}
+			if n != 1 {
+				t.Fatalf("posting_skipped conditions = %d, want 1 (event replaces the snapshot fallback): %v", n, names(conds))
+			}
+			c, _ := conditionNamed(conds, "posting_skipped")
+			if c.Severity != SeverityWarn {
+				t.Errorf("severity = %q, want warn", c.Severity)
+			}
+			if c.Actionable != tt.want {
+				t.Errorf("actionable = %v, want %v", c.Actionable, tt.want)
+			}
+			if !strings.Contains(c.Message, "reason=") {
+				t.Errorf("message %q does not carry the event details", c.Message)
+			}
+		})
+	}
+}
+
+// TestEvaluate_PostingSkippedSnapshotFallback: the snapshot flag raises the
+// condition only on a snapshot that saw a cycle which skipped posting.
+func TestEvaluate_PostingSkippedSnapshotFallback(t *testing.T) {
+	tests := []struct {
+		name   string
+		snap   store.StatsSnapshot
+		events []store.StatsEvent
+		fires  bool
+		action bool
+	}{
+		{"ran and skipped", store.StatsSnapshot{AnalysisRan: 1, PostingSkipped: 1}, nil, true, true},
+		{"skipped flag left over from an earlier cycle", store.StatsSnapshot{AnalysisRan: 0, PostingSkipped: 1}, nil, false, false},
+		{"ran and posted", store.StatsSnapshot{AnalysisRan: 1, PostingSkipped: 0}, nil, false, false},
+		{"capped window already pages", store.StatsSnapshot{AnalysisRan: 1, PostingSkipped: 1}, []store.StatsEvent{{EventType: "window_capped"}}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			snap := tt.snap
+			conds := Evaluate(&snap, nil, tt.events, ConsumerReport{}, testThresholds())
+			c, ok := conditionNamed(conds, "posting_skipped")
+			if ok != tt.fires {
+				t.Fatalf("posting_skipped fired = %v, want %v: %v", ok, tt.fires, names(conds))
+			}
+			if ok && c.Actionable != tt.action {
+				t.Errorf("actionable = %v, want %v", c.Actionable, tt.action)
+			}
+		})
+	}
+}
+
+// TestEvaluate_HydrationCeilingProjected: the early warning is a warn that
+// does not page; it exists to be read before the timeout.
+func TestEvaluate_HydrationCeilingProjected(t *testing.T) {
+	events := []store.StatsEvent{{EventType: "hydration_ceiling_projected",
+		Details: "run_id=run-20261104-035500 window_posts=193985 ceiling_posts=150000 projected_attempted_lost_pct=22.7"}}
+	conds := Evaluate(&store.StatsSnapshot{}, nil, events, ConsumerReport{}, testThresholds())
+	c, ok := conditionNamed(conds, "hydration_ceiling_projected")
+	if !ok || len(conds) != 1 {
+		t.Fatalf("conditions = %v, want [hydration_ceiling_projected]", names(conds))
+	}
+	if c.Severity != SeverityWarn || c.Actionable {
+		t.Errorf("severity = %q actionable = %v, want warn and not actionable", c.Severity, c.Actionable)
+	}
+	if Status(conds) != StatusWarn {
+		t.Errorf("status = %q, want warn", Status(conds))
+	}
+}
+
 // TestEvaluate_RSSDisabledWithoutAMachineSize covers the case where nothing in
 // the environment describes the machine: a percentage of an unknown total is
 // not a threshold, so the condition must not fire.
