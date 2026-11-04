@@ -387,7 +387,7 @@ func TestEvaluate_PostingSkippedSnapshotFallback(t *testing.T) {
 // does not page; it exists to be read before the timeout.
 func TestEvaluate_HydrationCeilingProjected(t *testing.T) {
 	events := []store.StatsEvent{{EventType: "hydration_ceiling_projected",
-		Details: "run_id=run-20261104-035500 window_posts=193985 ceiling_posts=150000 projected_attempted_lost_pct=22.7"}}
+		Details: "run_id=run-20261104-035500 window_posts=193985 ceiling_posts=150000 projected_unhydrated_pct=22.7"}}
 	conds := Evaluate(&store.StatsSnapshot{}, nil, events, ConsumerReport{}, testThresholds())
 	c, ok := conditionNamed(conds, "hydration_ceiling_projected")
 	if !ok || len(conds) != 1 {
