@@ -60,9 +60,15 @@ type RunState struct {
 	// WindowCapped records that ANALYSIS_MAX_WINDOW_POSTS bound this cycle's
 	// window read, so the run covers only the newest slice of the interval.
 	WindowCapped bool
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	TTL          int64
+	// WindowPosts is every post the window read returned; HydratedPosts is
+	// how many of them hydration reached. TotalPostsRetrieved is the analysed
+	// population, which also counts posts the hydration deadline never
+	// reached (hs-thk.4). Both are 0 on rows written before the columns.
+	WindowPosts   int
+	HydratedPosts int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	TTL           int64
 }
 
 type SentimentDataPoint struct {
@@ -71,10 +77,16 @@ type SentimentDataPoint struct {
 	AverageCompoundScore float64
 	NetSentimentPercent  float64
 	SentimentCategory    string
-	TotalPosts           int
-	TotalFirehosePosts   int
-	RootSentimentPct     float64
-	ReplySentimentPct    float64
+	// TotalPosts is the analysed population: the window minus posts that
+	// hydration attempted and lost. WindowPosts is the whole window read and
+	// HydratedPosts what hydration reached; both are 0 on rows written before
+	// the columns existed (hs-thk.4).
+	TotalPosts         int
+	WindowPosts        int
+	HydratedPosts      int
+	TotalFirehosePosts int
+	RootSentimentPct   float64
+	ReplySentimentPct  float64
 	// TopTopic is the rank-1 trending topic label for the cycle, set once
 	// topic analysis completes. Empty when trending is disabled or failed.
 	TopTopic string
@@ -761,6 +773,14 @@ func (s *Store) migrate() error {
 
 		// Analysis window cap (hs-019.2) — keep new `runs` columns at the end.
 		`ALTER TABLE runs ADD COLUMN window_capped INTEGER NOT NULL DEFAULT 0`,
+
+		// Window population (hs-thk.4): total_posts / total_posts_retrieved is
+		// the analysed population, these are the window read and what
+		// hydration reached.
+		`ALTER TABLE runs ADD COLUMN window_posts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE runs ADD COLUMN hydrated_posts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sentiment_history ADD COLUMN window_posts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sentiment_history ADD COLUMN hydrated_posts INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, stmt := range stmts {

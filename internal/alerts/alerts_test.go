@@ -313,7 +313,7 @@ func conditionNamed(conds []Condition, name string) (Condition, bool) {
 func TestEvaluate_PostingSkippedActionability(t *testing.T) {
 	skip := func(reason string) store.StatsEvent {
 		return store.StatsEvent{EventType: "posting_skipped", Details: "run_id=run-20261104-035500 reason=" + reason +
-			" window_posts=193985 hydrated=145543 unhydrated_pct=25.0 ceiling_posts=150000 rate_limited=0"}
+			" window_posts=193985 hydrated=145543 attempted_lost_pct=25.0 ceiling_posts=150000 rate_limited=0"}
 	}
 	tests := []struct {
 		name   string

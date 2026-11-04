@@ -433,21 +433,22 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		"rate_limited", result.RateLimited,
 	)
 
-	// Exclude posts that failed hydration (no author handle means the
-	// hydrator could not resolve them — deleted, private, or API error).
-	// Including them would skew sentiment with un-engageable ghost posts.
-	windowPosts := len(posts)
-	hydrated := make([]store.Post, 0, len(posts))
-	for _, p := range posts {
-		if p.AuthorHandle != "" {
-			hydrated = append(hydrated, p)
-		}
-	}
-	unhydrated := windowPosts - len(hydrated)
-	if unhydrated > 0 {
-		slog.Info("excluded unhydrated posts from analysis", "dropped", unhydrated, "remaining", len(hydrated))
-	}
-	posts = hydrated
+	// Sentiment covers the window minus the posts hydration attempted and
+	// could not return (deleted, taken down, adult-filtered, failed fetch).
+	// Posts the deadline left unattempted are scored: deletes and account
+	// purges reach post_buffer live, so they are almost all alive. The top
+	// posts are ranked among the hydrated posts only, the ones carrying
+	// engagement counts. When hydration completes this is exactly the
+	// hydrated set, as before.
+	pop := selectPopulation(posts, result.Attempted)
+	slog.Info("window population",
+		"window_posts", pop.WindowPosts,
+		"hydrated", pop.Hydrated,
+		"never_attempted", pop.NeverAttempted,
+		"attempted_lost", pop.AttemptedLost,
+		"attempted_lost_pct", fmt.Sprintf("%.2f", pop.AttemptedLostPct),
+	)
+	posts = pop.Scored
 
 	// Guard: skip posting when too few posts are available (e.g. Jetstream
 	// connection instability).  We still run sentiment + store the data point
@@ -467,28 +468,24 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		lowConfidence = true
 	}
 
-	// If too much of the window never got hydrated, the surviving sample is not
-	// representative, so take the low-confidence path: record sentiment, skip
-	// posting. This applies however the posts were lost — a timeout, a
-	// non-retryable 4xx storm, or retries exhausted early all leave the same
-	// hole, and only the timeout used to be caught here.
+	// If too many of the posts hydration attempted came back lost, the
+	// surviving sample is not representative, so take the low-confidence
+	// path: record sentiment, skip posting. A non-retryable 4xx storm or
+	// retries exhausted early both show up here; a deadline truncation does
+	// not, since the posts it never reached are scored.
 	//
-	// The default of 10% clears prod's routine exclusion rate (~3.6%, from posts
+	// The default of 10% clears prod's routine loss rate (~3.6%, from posts
 	// deleted or moderated between ingest and hydration) with room to spare, so
 	// healthy cycles are unaffected.
-	if windowPosts > 0 {
-		maxUnhydratedPct := envInt("HYDRATION_MAX_UNHYDRATED_PCT", 10)
-		unhydratedPct := float64(unhydrated) * 100 / float64(windowPosts)
-		if unhydratedPct > float64(maxUnhydratedPct) {
-			lowConfidence = true
-			slog.Warn("too much of the window went unhydrated — posting skipped",
-				"unhydrated", unhydrated,
-				"window_posts", windowPosts,
-				"unhydrated_pct", fmt.Sprintf("%.1f%%", unhydratedPct),
-				"max_pct", maxUnhydratedPct,
-				"hydration_timed_out", hydrationTimedOut,
-			)
-		}
+	if maxErrorPct := hydrationMaxErrorPct(); pop.AttemptedLostPct > float64(maxErrorPct) {
+		lowConfidence = true
+		slog.Warn("too many attempted posts were lost in hydration — posting skipped",
+			"attempted_lost", pop.AttemptedLost,
+			"attempted_lost_pct", fmt.Sprintf("%.1f%%", pop.AttemptedLostPct),
+			"window_posts", pop.WindowPosts,
+			"max_pct", maxErrorPct,
+			"hydration_timed_out", hydrationTimedOut,
+		)
 	}
 
 	// The headline — category, net percent and the root/reply split — comes
@@ -524,9 +521,9 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	logPostingSkipped := func() {
 		skipLogged = true
 		_ = collector.LogEvent(context.WithoutCancel(ctx), "posting_skipped",
-			fmt.Sprintf("run_id=%s reason=%s window_posts=%d hydrated=%d unhydrated_pct=%.1f ceiling_posts=%d rate_limited=%d",
+			fmt.Sprintf("run_id=%s reason=%s window_posts=%d hydrated=%d never_attempted=%d attempted_lost_pct=%.1f ceiling_posts=%d rate_limited=%d",
 				runID, postingSkipReason(guardTripped.Load(), windowCapped, len(posts)),
-				windowPosts, len(posts), float64(unhydrated)*100/float64(windowPosts),
+				pop.WindowPosts, pop.Hydrated, pop.NeverAttempted, pop.AttemptedLostPct,
 				budget.CeilingPosts, result.RateLimited))
 	}
 	if lowConfidence {
@@ -535,6 +532,9 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 	collector.RecordAnalysis(len(posts), result.Hydrated, result.Errors, overallSentiment, lowConfidence)
 
+	// Rank among the hydrated posts only. They are the first pop.Hydrated of
+	// posts, and AnalyzePosts keeps order, so they are that prefix of analyzed.
+	analyzed = analyzed[:len(pop.Ranked)]
 	sort.Slice(analyzed, func(i, j int) bool {
 		return analyzed[i].EngagementScore > analyzed[j].EngagementScore
 	})
@@ -591,6 +591,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		AnalysisIntervalMinutes: analysisMinutes,
 		CutoffTime:              cutoff,
 		TotalPostsRetrieved:     len(posts),
+		WindowPosts:             pop.WindowPosts,
+		HydratedPosts:           pop.Hydrated,
 		OverallSentiment:        overallSentiment,
 		NetSentimentPercentage:  netSentimentPct,
 		TopPosts:                topStorePosts,
@@ -613,6 +615,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		NetSentimentPercent:  netSentimentPct,
 		SentimentCategory:    overallSentiment,
 		TotalPosts:           len(posts),
+		WindowPosts:          pop.WindowPosts,
+		HydratedPosts:        pop.Hydrated,
 		TotalFirehosePosts:   firehoseSnapshot,
 		RootSentimentPct:     rootSentimentPct,
 		ReplySentimentPct:    replySentimentPct,

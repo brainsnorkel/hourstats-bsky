@@ -122,9 +122,17 @@ type HydrateResult struct {
 	Total       int // total posts attempted
 	Hydrated    int // successfully hydrated
 	Filtered    int // filtered out (adult content)
-	Errors      int // API or update errors
+	Errors      int // API or update errors, including every never-attempted post
 	Retries     int // batch fetches re-attempted after a retryable failure
 	RateLimited int // batch fetches that came back HTTP 429
+	// Attempted is aligned with the input slice: true when the post's batch
+	// reached getPosts, whether the call succeeded or failed. A post whose
+	// batch was never fetched because the context ended first is false; it
+	// was never checked, so it is not a loss the way a missing post is.
+	Attempted []bool
+	// NeverAttempted counts the false entries of Attempted. They are also
+	// charged to Errors, exactly once.
+	NeverAttempted int
 }
 
 // Hydrator fetches engagement data from the Bluesky API and writes it to the store.
@@ -253,8 +261,11 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 		idx[p.URI] = i
 	}
 
-	// Split into batches.
+	// Split into batches. Batch b covers posts[b*BatchSize:], so a worker
+	// marks its own range of attempted; ranges are disjoint, and wg.Wait
+	// orders those writes before the read below.
 	batches := splitBatches(uris, h.cfg.BatchSize)
+	attempted := make([]bool, len(posts))
 
 	var (
 		hydrated    atomic.Int64
@@ -315,6 +326,11 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 					continue
 				}
 
+				start := batchIdx * h.cfg.BatchSize
+				for i := start; i < start+len(batchURIs); i++ {
+					attempted[i] = true
+				}
+
 				views, err := h.fetchBatch(ctx, batchURIs, limiter, &retries, &rateLimited)
 				if err != nil {
 					slog.Error("hydrator batch failed",
@@ -369,6 +385,13 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 
 	wg.Wait()
 
+	neverAttempted := 0
+	for _, a := range attempted {
+		if !a {
+			neverAttempted++
+		}
+	}
+
 	result := &HydrateResult{
 		Total:       len(posts),
 		Hydrated:    int(hydrated.Load()),
@@ -376,6 +399,9 @@ func (h *Hydrator) Hydrate(ctx context.Context, posts []store.Post) (*HydrateRes
 		Errors:      int(errCount.Load()),
 		Retries:     int(retries.Load()),
 		RateLimited: int(rateLimited.Load()),
+
+		Attempted:      attempted,
+		NeverAttempted: neverAttempted,
 	}
 
 	if ctx.Err() != nil {

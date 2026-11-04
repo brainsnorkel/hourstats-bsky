@@ -508,3 +508,88 @@ func TestHydrateFewerBatchesThanWorkers(t *testing.T) {
 		t.Errorf("Errors = %d, want 0", res.Errors)
 	}
 }
+
+// scriptedFetcher answers getPosts call by call: calls before failAt succeed,
+// call failAt fails with a non-retryable error, and every call from blockAt
+// on blocks until the hydrator's deadline ends it.
+type scriptedFetcher struct {
+	calls   atomic.Int64
+	failAt  int64
+	blockAt int64
+}
+
+func (f *scriptedFetcher) GetPosts(ctx context.Context, uris []string) ([]*bsky.FeedDefs_PostView, error) {
+	n := f.calls.Add(1)
+	switch {
+	case n >= f.blockAt:
+		<-ctx.Done()
+		return nil, ctx.Err()
+	case n == f.failAt:
+		return nil, errors.New("boom")
+	default:
+		return makeViews(uris), nil
+	}
+}
+
+func TestHydrateReportsAttemptedAndNeverAttempted(t *testing.T) {
+	// 10 batches of 5, one worker: batches 1-2 hydrate, batch 3 fails, batch 4
+	// is in flight when the deadline fires, batches 5-10 are never fetched.
+	fetcher := &scriptedFetcher{failAt: 3, blockAt: 4}
+	h := New(fetcher, &mockUpdater{}, Config{
+		BatchSize:      5,
+		MaxConcurrency: 1,
+		RateLimit:      1000,
+		Timeout:        150 * time.Millisecond,
+	})
+
+	posts := makePosts(50)
+	res, err := h.Hydrate(context.Background(), posts)
+	if !errors.Is(err, ErrHydrationTimedOut) {
+		t.Fatalf("err = %v, want ErrHydrationTimedOut", err)
+	}
+	if len(res.Attempted) != len(posts) {
+		t.Fatalf("len(Attempted) = %d, want %d", len(res.Attempted), len(posts))
+	}
+	for i, a := range res.Attempted {
+		if want := i < 20; a != want {
+			t.Errorf("Attempted[%d] (%s) = %v, want %v", i, posts[i].URI, a, want)
+		}
+	}
+	if res.NeverAttempted != 30 {
+		t.Errorf("NeverAttempted = %d, want 30", res.NeverAttempted)
+	}
+	if res.Hydrated != 10 {
+		t.Errorf("Hydrated = %d, want 10", res.Hydrated)
+	}
+	// Never-attempted (30) plus the failed batch (5) plus the in-flight batch
+	// cut by the deadline (5), each charged exactly once.
+	if res.Errors != 40 {
+		t.Errorf("Errors = %d, want 40 = never-attempted 30 + failed-attempted 10", res.Errors)
+	}
+	if got := res.Hydrated + res.Filtered + res.Errors; got != res.Total {
+		t.Errorf("hydrated(%d) + filtered(%d) + errors(%d) = %d, want Total %d",
+			res.Hydrated, res.Filtered, res.Errors, got, res.Total)
+	}
+	if got := fetcher.calls.Load(); got != 4 {
+		t.Errorf("getPosts calls = %d, want 4", got)
+	}
+}
+
+func TestHydrateCompleteMarksEveryPostAttempted(t *testing.T) {
+	fetcher := &mockFetcher{response: func(uris []string) ([]*bsky.FeedDefs_PostView, error) {
+		return makeViews(uris), nil
+	}}
+	h := New(fetcher, &mockUpdater{}, Config{BatchSize: 7, MaxConcurrency: 3, RateLimit: 1000})
+	res, err := h.Hydrate(context.Background(), makePosts(50))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NeverAttempted != 0 {
+		t.Errorf("NeverAttempted = %d, want 0", res.NeverAttempted)
+	}
+	for i, a := range res.Attempted {
+		if !a {
+			t.Errorf("Attempted[%d] = false, want true", i)
+		}
+	}
+}
