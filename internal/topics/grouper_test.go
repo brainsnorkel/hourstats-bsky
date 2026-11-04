@@ -343,6 +343,43 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 			wantTermCount: 3,
 		},
 		{
+			// A reciprocal pair fed the walk back to itself forever before
+			// the chain tracked its own members (prod OOM, 2026-10-17).
+			name: "reciprocal pair terminates",
+			terms: []TermScore{
+				{Term: "election_day", Score: 5.0},
+				{Term: "day_election", Score: 4.0},
+			},
+			wantPhrases:   1,
+			wantPhrase:    "election day election",
+			wantTermCount: 2,
+		},
+		{
+			name: "three-term cycle terminates",
+			terms: []TermScore{
+				{Term: "vote_count", Score: 5.0},
+				{Term: "count_results", Score: 4.5},
+				{Term: "results_vote", Score: 4.0},
+			},
+			wantPhrases:   1,
+			wantPhrase:    "vote count results vote",
+			wantTermCount: 3,
+		},
+		{
+			name: "long chain is bounded",
+			terms: []TermScore{
+				{Term: "t0_t1", Score: 9}, {Term: "t1_t2", Score: 8}, {Term: "t2_t3", Score: 7},
+				{Term: "t3_t4", Score: 6}, {Term: "t4_t5", Score: 5}, {Term: "t5_t6", Score: 4},
+				{Term: "t6_t7", Score: 3}, {Term: "t7_t8", Score: 2}, {Term: "t8_t9", Score: 1},
+				{Term: "t9_t10", Score: 0.5},
+			},
+			// The bounded chain comes first; the two leftover terms form a
+			// second, short phrase.
+			wantPhrases:   2,
+			wantPhrase:    "t0 t1 t2 t3 t4 t5 t6 t7 t8",
+			wantTermCount: maxPhraseChain,
+		},
+		{
 			name: "no overlaps",
 			terms: []TermScore{
 				{Term: "bad_bunny", Score: 5.0},
