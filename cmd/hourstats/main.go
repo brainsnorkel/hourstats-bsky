@@ -95,6 +95,7 @@ func main() {
 		"analysis_minutes", analysisMinutes,
 		"pid", os.Getpid(),
 	)
+	jobCycleWait = jobCycleWaitFor(sharedHydrationBudget(analysisMinutes).Timeout)
 
 	if handle == "" || password == "" {
 		slog.Error("BLUESKY_HANDLE and BLUESKY_PASSWORD must be set")
