@@ -15,6 +15,10 @@ import (
 // minPostsRequired. Low-denominator points produce extreme percentages that
 // distort the chart; they are retained in sentiment_history for audit but
 // excluded from visualisations and aggregations.
+//
+// TotalPosts is the analysed population (window minus attempted-and-lost
+// posts), so an hour whose hydration hit its deadline keeps its full count
+// here and charts like any other; only the post-count rule applies.
 func filterHighConfidence(points []store.SentimentDataPoint) []store.SentimentDataPoint {
 	filtered := make([]store.SentimentDataPoint, 0, len(points))
 	var dropped int
