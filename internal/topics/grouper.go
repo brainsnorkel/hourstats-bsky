@@ -748,6 +748,11 @@ type detectedPhrase struct {
 // detectOverlappingPhrases chains compound terms that share a boundary word
 // (e.g. post_banger + banger_that → "post banger that") into reconstructed
 // viral phrases for the LLM.
+// maxPhraseChain bounds how many compound terms one detected phrase may join.
+// A real headline phrase is three or four terms; the bound exists so a cycle
+// among the terms can never grow a chain without end.
+const maxPhraseChain = 8
+
 func detectOverlappingPhrases(terms []TermScore) []detectedPhrase {
 	type compoundTerm struct {
 		term  string
@@ -776,8 +781,15 @@ func detectOverlappingPhrases(terms []TermScore) []detectedPhrase {
 			continue
 		}
 		chain := []compoundTerm{start}
+		// inChain is the walk's own visited set. `used` is only filled once a
+		// chain is complete, so without this a pair such as election_day and
+		// day_election feeds the walk back to itself forever, and the chain
+		// grows until the process is killed (prod OOM, 2026-10-17 18:01 UTC:
+		// 753 MB of heap in this function). The walk is pure CPU and never
+		// sees the cycle's context, so the memory guard cannot stop it either.
+		inChain := map[string]bool{start.term: true}
 		current := start
-		for {
+		for len(chain) < maxPhraseChain {
 			lastWord := current.words[len(current.words)-1]
 			nexts, ok := byFirst[lastWord]
 			if !ok {
@@ -785,8 +797,9 @@ func detectOverlappingPhrases(terms []TermScore) []detectedPhrase {
 			}
 			found := false
 			for _, next := range nexts {
-				if next.term != current.term && !used[next.term] {
+				if !used[next.term] && !inChain[next.term] {
 					chain = append(chain, next)
+					inChain[next.term] = true
 					current = next
 					found = true
 					break
