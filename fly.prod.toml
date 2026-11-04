@@ -26,6 +26,15 @@ swap_size_mb = 512
   SQLITE_READ_CONNS = "3"
   HEALTH_CHART_MEMORY_LIMIT_MB = "2048"
   ALERT_DISCORD_MENTION = "@here"
+  # 2026-11-04 election-week volume (hs-thk): hours of ~260k English posts exceed the
+  # ~150k hydration ceiling. Publish from a truncated hydration rather than go silent,
+  # lift the window cap off the live volume, and give hydration 25 minutes once the
+  # HYDRATION_TIMEOUT_MINUTES knob is in the binary. Revert HYDRATION_MAX_UNHYDRATED_PCT
+  # to 10 when hs-thk.4 lands.
+  HYDRATION_MAX_UNHYDRATED_PCT = "60"
+  ANALYSIS_MAX_WINDOW_POSTS = "350000"
+  HYDRATION_TIMEOUT_MINUTES = "25"
+  ALERT_CYCLE_SECONDS = "2400"
 
 [mounts]
   source = "data"

@@ -21,10 +21,13 @@ var memTimelineCheckpoints = []time.Duration{
 	20 * time.Second, 30 * time.Second, 45 * time.Second, 60 * time.Second,
 	90 * time.Second, 120 * time.Second, 180 * time.Second, 300 * time.Second,
 	420 * time.Second, 600 * time.Second, 900 * time.Second,
+	1200 * time.Second, 1500 * time.Second, 1800 * time.Second,
+	2400 * time.Second, 3000 * time.Second,
 }
 
 // memTimelineMax caps timeline entries so a long cycle cannot grow the slice.
-const memTimelineMax = 20
+// It leaves room for every checkpoint plus the final entry.
+const memTimelineMax = 25
 
 // memStatsCheapWindow is how long a sampler prefers the cheap RSS read to a
 // full runtime.ReadMemStats. ReadMemStats stops the world, and the OOM under

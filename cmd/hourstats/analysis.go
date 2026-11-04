@@ -302,6 +302,14 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 	slog.Info("posts in window", "count", len(posts), "cutoff", cutoff.Format(time.RFC3339))
+	budget := sharedHydrationBudget(analysisMinutes)
+	if len(posts) > budget.CeilingPosts {
+		slog.Warn("window exceeds hydration ceiling, expect a hydration timeout",
+			"window_posts", len(posts),
+			"ceiling_posts", budget.CeilingPosts,
+			"projected_unhydrated_pct", fmt.Sprintf("%.1f", 100*float64(len(posts)-budget.CeilingPosts)/float64(len(posts))),
+		)
+	}
 
 	if len(posts) == 0 {
 		slog.Warn("no posts in analysis window, skipping")
@@ -372,7 +380,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	if fetcher == nil {
 		fetcher = hydrator.NewBlueskyFetcher(bskyClient.APIClient())
 	}
-	h := hydrator.New(fetcher, db, hydrator.Config{})
+	h := hydrator.New(fetcher, db, hydrator.Config{Timeout: budget.Timeout, RateLimit: float64(budget.RatePerMinute) / 60})
 	result, err := h.Hydrate(cycleCtx, posts)
 	if err != nil && cycleCtx.Err() != nil {
 		logGuardAbort("hydration")

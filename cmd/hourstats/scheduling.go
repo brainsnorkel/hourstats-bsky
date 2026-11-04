@@ -152,11 +152,19 @@ const (
 	shutdownJobBudget      = 1 * time.Second
 	shutdownSnapshotBudget = 1 * time.Second
 	shutdownStatsAPIBudget = 1 * time.Second
-
-	// jobCycleWait bounds how long a background job (daily, yearly) waits for
-	// an in-flight analysis cycle before running without it.
-	jobCycleWait = 15 * time.Minute
 )
+
+// jobCycleWait bounds how long a background job (daily, yearly) waits for an
+// in-flight analysis cycle before running without it. main sets it once at
+// startup to max(15m, hydration timeout + 5m) via jobCycleWaitFor, so a cycle
+// whose hydration legitimately runs its full budget still finishes before the
+// daily job aggregates the day.
+var jobCycleWait = 15 * time.Minute
+
+// jobCycleWaitFor is the job wait that covers a cycle hydrating for timeout.
+func jobCycleWaitFor(timeout time.Duration) time.Duration {
+	return max(15*time.Minute, timeout+5*time.Minute)
+}
 
 // shutdownHooks are the shutdown steps, injected so the ordering can be tested
 // without a real store, consumer or flusher.

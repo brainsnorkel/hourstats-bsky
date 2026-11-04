@@ -89,6 +89,10 @@ func (f *BlueskyFetcher) GetPosts(ctx context.Context, uris []string) ([]*bsky.F
 	return out.Posts, nil
 }
 
+// BatchSize is the most URIs one app.bsky.feed.getPosts call accepts, and the
+// default Config.BatchSize.
+const BatchSize = 25
+
 // Config controls hydration behaviour.
 type Config struct {
 	BatchSize      int           // Max URIs per API call (default 25, Bluesky limit)
@@ -99,7 +103,7 @@ type Config struct {
 
 func (c Config) withDefaults() Config {
 	if c.BatchSize <= 0 {
-		c.BatchSize = 25
+		c.BatchSize = BatchSize
 	}
 	if c.MaxConcurrency <= 0 {
 		c.MaxConcurrency = 10
