@@ -43,7 +43,7 @@ sequenceDiagram
   end
 
   CY->>CY: drop posts with no handle (unhydrated)
-  Note over CY: low_confidence when posts < 500<br/>or unhydrated share > HYDRATION_MAX_UNHYDRATED_PCT, 10%
+  Note over CY: low_confidence when posts < 500<br/>or attempted-and-lost share > HYDRATION_MAX_ERROR_PCT, 10%
   CY->>CY: VADER: net %, root/reply split, category ±0.3
   CY->>CY: emoji-aware shadow score (stored, never posted)
   CY->>CY: top 3 by engagement, one per author
