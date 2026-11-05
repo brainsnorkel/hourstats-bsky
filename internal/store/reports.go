@@ -79,37 +79,105 @@ func (s *Store) GetTopicDaily(ctx context.Context, date string) ([]TopicDailyRow
 	return out, rows.Err()
 }
 
-// GetTopTopicForRange returns the topic that appeared in the most hourly
+// GetTopTopicForRange returns the topic that trended in the most hourly
 // snapshots between startDate and endDate inclusive, with its total
-// appearances. Ties go to the better peak rank. label is "" when the range
-// holds no topic data.
+// appearances. label is "" when the range holds no topic data.
+//
+// topic_daily fragments one subject in two independent ways. The identity
+// tracker splits a subject across topic IDs (Halloween in the week of
+// 2026-10-26 trended 85 hours under its normalised label but only 54 under
+// its best single ID), while Gemini relabels one ID from hour to hour (the
+// 2026 midterms ID of 2026-11-02 trended 37 hours under one ID but 22 under
+// its best single label). So the rows are aggregated twice, by topic_id and
+// by the normalised label key lower(trim(label)), and the better result is
+// returned: the larger SUM(appearances), then the smaller MIN(best_rank),
+// then the by-id result. No two topics in one hourly snapshot carry the same
+// label, so each aggregation is a lower bound on the hours the subject
+// actually trended, and taking the larger is honest: it is never worse than
+// either axis alone.
+//
+// The label shown is the spelling on the group's latest-date row (by id, the
+// (date, topic_id) key makes that row unique; by label, ties on one date go
+// to the larger appearances, then the smaller topic_id). SQLite's lower()
+// folds ASCII only, so labels that differ only in non-ASCII case stay
+// separate groups. Summing across IDs can give a day more appearances than it
+// has hours; cmd/hourstats topicHours caps the week at 168 hours.
 func (s *Store) GetTopTopicForRange(ctx context.Context, startDate, endDate string) (label string, appearances int, err error) {
-	var topicID string
-	var bestRank int
-	err = s.readDB.QueryRowContext(ctx,
-		`SELECT topic_id, SUM(appearances), MIN(best_rank)
-		 FROM topic_daily
-		 WHERE date >= ? AND date <= ?
-		 GROUP BY topic_id
-		 ORDER BY SUM(appearances) DESC, MIN(best_rank) ASC, topic_id ASC
-		 LIMIT 1`, startDate, endDate,
-	).Scan(&topicID, &appearances, &bestRank)
-	if errors.Is(err, sql.ErrNoRows) {
+	byID, err := s.topTopicBy(ctx, topTopicByIDQuery, startDate, endDate)
+	if err != nil {
+		return "", 0, fmt.Errorf("top topic by id %s..%s: %w", startDate, endDate, err)
+	}
+	if !byID.found {
 		return "", 0, nil
 	}
+	byLabel, err := s.topTopicBy(ctx, topTopicByLabelQuery, startDate, endDate)
 	if err != nil {
-		return "", 0, fmt.Errorf("query top topic %s..%s: %w", startDate, endDate, err)
+		return "", 0, fmt.Errorf("top topic by label %s..%s: %w", startDate, endDate, err)
 	}
-	// The label may have been refined over the range; use the latest one.
-	err = s.readDB.QueryRowContext(ctx,
-		`SELECT label FROM topic_daily
-		 WHERE topic_id = ? AND date >= ? AND date <= ?
-		 ORDER BY date DESC LIMIT 1`, topicID, startDate, endDate,
-	).Scan(&label)
+	if byLabel.found && (byLabel.appearances > byID.appearances ||
+		byLabel.appearances == byID.appearances && byLabel.bestRank < byID.bestRank) {
+		return byLabel.label, byLabel.appearances, nil
+	}
+	return byID.label, byID.appearances, nil
+}
+
+// topTopicResult is one aggregation's winner over a date range.
+type topTopicResult struct {
+	label       string
+	appearances int
+	bestRank    int
+	found       bool
+}
+
+// Both queries take (startDate, endDate, startDate, endDate): the first pair
+// picks the winning group, the second fetches that group's rows to choose the
+// displayed label.
+const (
+	topTopicByIDQuery = `
+		WITH best AS (
+			SELECT topic_id, SUM(appearances) AS total, MIN(best_rank) AS best_rank
+			FROM topic_daily
+			WHERE date BETWEEN ? AND ?
+			GROUP BY topic_id
+			ORDER BY total DESC, best_rank ASC, topic_id ASC
+			LIMIT 1
+		)
+		SELECT d.label, best.total, best.best_rank
+		FROM best JOIN topic_daily d ON d.topic_id = best.topic_id
+		WHERE d.date BETWEEN ? AND ?
+		ORDER BY d.date DESC, d.appearances DESC, d.label ASC
+		LIMIT 1`
+
+	topTopicByLabelQuery = `
+		WITH best AS (
+			SELECT lower(trim(label)) AS label_key, SUM(appearances) AS total, MIN(best_rank) AS best_rank
+			FROM topic_daily
+			WHERE date BETWEEN ? AND ?
+			GROUP BY label_key
+			ORDER BY total DESC, best_rank ASC, label_key ASC
+			LIMIT 1
+		)
+		SELECT d.label, best.total, best.best_rank
+		FROM best JOIN topic_daily d ON lower(trim(d.label)) = best.label_key
+		WHERE d.date BETWEEN ? AND ?
+		ORDER BY d.date DESC, d.appearances DESC, d.topic_id ASC
+		LIMIT 1`
+)
+
+// topTopicBy runs one of the two aggregation queries over the range. A range
+// with no rows is not an error: found is false.
+func (s *Store) topTopicBy(ctx context.Context, query, startDate, endDate string) (topTopicResult, error) {
+	var r topTopicResult
+	err := s.readDB.QueryRowContext(ctx, query, startDate, endDate, startDate, endDate).
+		Scan(&r.label, &r.appearances, &r.bestRank)
+	if errors.Is(err, sql.ErrNoRows) {
+		return topTopicResult{}, nil
+	}
 	if err != nil {
-		return "", 0, fmt.Errorf("query top topic label %s: %w", topicID, err)
+		return topTopicResult{}, err
 	}
-	return label, appearances, nil
+	r.found = true
+	return r, nil
 }
 
 // StoreDailyTopPost records the most engaged post of a date. A re-run only
