@@ -176,8 +176,12 @@ func recordReportGuard(ctx context.Context, db *store.Store, key, value string) 
 const reportsStartupDelay = 30 * time.Second
 
 // parseStartupReports reads REPORTS_RUN_AT_STARTUP, a comma list of
-// "weekly" and "monthly". Unknown names are reported back for logging.
-func parseStartupReports(v string) (weekly, monthly bool, unknown []string) {
+// "weekly", "monthly" and "preview". The first two run the named report once
+// at startup, still behind their guard keys and DRY_RUN; "preview" posts the
+// Discord preview of the coming weekly report once, whatever the weekday,
+// which is how staging or a manual restart exercises it. Unknown names are
+// reported back for logging.
+func parseStartupReports(v string) (weekly, monthly, preview bool, unknown []string) {
 	for _, name := range strings.Split(v, ",") {
 		switch strings.ToLower(strings.TrimSpace(name)) {
 		case "":
@@ -185,9 +189,11 @@ func parseStartupReports(v string) (weekly, monthly bool, unknown []string) {
 			weekly = true
 		case "monthly":
 			monthly = true
+		case "preview":
+			preview = true
 		default:
 			unknown = append(unknown, strings.TrimSpace(name))
 		}
 	}
-	return weekly, monthly, unknown
+	return weekly, monthly, preview, unknown
 }

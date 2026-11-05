@@ -177,12 +177,14 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycle
 		slog.Error("weekly report: get daily range failed", "error", err)
 		return r, false
 	}
+	// The rows are kept even when too few, so a caller reporting the skip
+	// (the Sunday preview) can say how many there were.
+	r.Days = days
 	if len(days) < weeklyReportMinDays {
 		slog.Info("weekly report: not enough daily rows, skipping",
 			"week_start", start.Format(dateFormat), "days", len(days), "min", weeklyReportMinDays)
 		return r, false
 	}
-	r.Days = days
 
 	prevStart, prevEnd := start.AddDate(0, 0, -7), start.AddDate(0, 0, -1)
 	if prev, err := db.GetDailySentimentRange(ctx, prevStart.Format(dateFormat), prevEnd.Format(dateFormat)); err != nil {

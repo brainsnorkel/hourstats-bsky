@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -210,6 +212,67 @@ func (n *Notifier) postDiscord(ctx context.Context, c Condition) {
 	if resp.StatusCode >= 300 {
 		slog.Warn("alert webhook returned an error status", "name", c.Name, "status", resp.StatusCode)
 	}
+}
+
+// messageMaxRunes is the most of a PostMessage body that is sent. Discord
+// refuses content over 2000 characters; the margin covers the ellipsis and
+// the few runes Discord counts differently.
+const messageMaxRunes = 1950
+
+// ErrNoWebhook is what PostMessage returns, wrapped, when the notifier is nil
+// or has no webhook configured: the caller has only the log.
+var ErrNoWebhook = errors.New("discord webhook not configured")
+
+// PostMessage sends one free-form message to the webhook, outside the alert
+// path: no severity, no profile prefix, no suppression window, and no
+// mentions of any kind (allowed_mentions is empty, so an "@here" in the text
+// is inert). Content longer than messageMaxRunes is cut with an ellipsis. It
+// returns a wrapped error when the notifier is nil or has no webhook, when
+// the request cannot be built or sent, or when the status is not 2xx. The
+// error never carries the URL: a *url.Error is reduced to its cause, which
+// names at most a host, and the status error names only the code.
+func (n *Notifier) PostMessage(ctx context.Context, content string) error {
+	if n == nil || n.webhookURL == "" {
+		return fmt.Errorf("post discord message: %w", ErrNoWebhook)
+	}
+	if r := []rune(content); len(r) > messageMaxRunes {
+		content = string(r[:messageMaxRunes-1]) + "…"
+	}
+	body, err := json.Marshal(map[string]any{
+		"content":          content,
+		"allowed_mentions": map[string]any{"parse": []string{}},
+	})
+	if err != nil {
+		return fmt.Errorf("post discord message: encode payload: %w", err)
+	}
+
+	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discordTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, n.webhookURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("post discord message: build request: %w", withoutURL(err))
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := n.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("post discord message: %w", withoutURL(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("post discord message: discord returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// withoutURL strips the URL a *url.Error prints, leaving the operation and
+// the underlying cause. Any other error is returned as is.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
+	}
+	return err
 }
 
 // discordPayload is the webhook body. allowed_mentions must name the mention

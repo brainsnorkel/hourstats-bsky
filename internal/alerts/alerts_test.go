@@ -222,6 +222,15 @@ func TestEvaluate_Conditions(t *testing.T) {
 			wantNames: nil,
 		},
 		{
+			// The Sunday preview's own Discord post failed; raising it here is
+			// its retry at the next snapshot.
+			name:         "a failed weekly report preview is a warning",
+			latest:       &store.StatsSnapshot{},
+			events:       []store.StatsEvent{{EventType: "weekly_report_preview_failed", Details: `week_start=2026-11-02 flags=1 error="post discord message: discord returned status 500"`}},
+			wantNames:    []string{"weekly_report_preview_failed"},
+			wantSeverity: SeverityWarn,
+		},
+		{
 			name:      "events that are not alerting events are ignored",
 			latest:    &store.StatsSnapshot{},
 			events:    []store.StatsEvent{{EventType: "app_start"}, {EventType: "wal_pressure_checkpoint"}},

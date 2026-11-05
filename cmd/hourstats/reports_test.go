@@ -93,12 +93,16 @@ func TestReportFormatting(t *testing.T) {
 	if dayLabel("2025-08-30") != "Sat 30 Aug" {
 		t.Errorf("dayLabel = %q", dayLabel("2025-08-30"))
 	}
-	w, m, unknown := parseStartupReports(" Weekly, monthly ,bogus")
-	if !w || !m || len(unknown) != 1 || unknown[0] != "bogus" {
-		t.Errorf("parseStartupReports = %v %v %v", w, m, unknown)
+	w, m, p, unknown := parseStartupReports(" Weekly, monthly ,bogus")
+	if !w || !m || p || len(unknown) != 1 || unknown[0] != "bogus" {
+		t.Errorf("parseStartupReports = %v %v %v %v", w, m, p, unknown)
 	}
-	if w, m, u := parseStartupReports(""); w || m || len(u) != 0 {
-		t.Errorf("empty parse = %v %v %v", w, m, u)
+	if w, m, p, u := parseStartupReports(""); w || m || p || len(u) != 0 {
+		t.Errorf("empty parse = %v %v %v %v", w, m, p, u)
+	}
+	// "preview" is the Sunday Discord preview, runnable on any weekday.
+	if w, m, p, u := parseStartupReports("Preview"); w || m || !p || len(u) != 0 {
+		t.Errorf("preview parse = %v %v %v %v", w, m, p, u)
 	}
 }
 

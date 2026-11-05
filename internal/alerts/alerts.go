@@ -233,6 +233,10 @@ var alertingEvents = map[string]string{
 	// snapshot, so either lands up to ~35 minutes after the cycle started.
 	"hydration_ceiling_projected": SeverityWarn,
 	"posting_skipped":             SeverityWarn,
+	// weekly_report_preview_failed is written by the Sunday preview when its
+	// Discord post failed; raising it here is the retry, since the alert
+	// path posts to the same webhook at the next snapshot.
+	"weekly_report_preview_failed": SeverityWarn,
 }
 
 // actionableEvents are the events where a person should look now rather
@@ -249,18 +253,19 @@ var actionableEvents = map[string]bool{
 
 // eventMeaning explains each event type for the person reading the alert.
 var eventMeaning = map[string]string{
-	"cycle_failed":                "The hour's cycle stopped before recording a run: no summary, no sentiment point. Stage and error are on the event. The next hour runs regardless.",
-	"memory_guard_trip":           "Memory crossed 70% of the machine; the cycle was cancelled and the hour published nothing. Heap profile written to /data.",
-	"memory_guard_warn":           "Memory crossed 55% of the machine; the cycle continued and a heap profile was written. Check the next snapshot's RSS.",
-	"window_capped":               "The hour had more posts than ANALYSIS_MAX_WINDOW_POSTS; marked low confidence, nothing posted. Busy live hours can now exceed the cap, so this is not necessarily a flood.",
-	"hydration_timeout":           "Engagement hydration hit HYDRATION_TIMEOUT_MINUTES; posts it never reached are still scored, ranking uses the hydrated ones, and only attempted posts lost past HYDRATION_MAX_ERROR_PCT stop posting. rate_limited=0 on the event means the bot's own HYDRATION_RATE_PER_MINUTE limiter was the ceiling (rate x 25 x minutes), not the appview; otherwise check public.api.bsky.app errors in the hydrator lines.",
-	"consumer_restart":            "The firehose consumer exited outside its reconnect loop and was restarted. See the error on the event.",
-	"feature_gate_unavailable":    "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
-	"seq_floor_reset":             "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
-	"grouping_failed":             "Gemini grouping failed for the hour, so the trending reply was skipped and the sparkline footer shows no topic. The attempts are on the event. Two or more in a window means Gemini is slow or down.",
-	"hydration_ceiling_projected": "The window is larger than hydration can cover in HYDRATION_TIMEOUT_MINUTES; the cycle will run out of budget about 25 minutes from now. Raise the timeout if the interval allows.",
-	"posting_skipped":             "The hour's cycle finished but published nothing: no summary, sparkline or trending reply. reason= on the event says why; window_posts vs hydrated vs ceiling_posts shows whether hydration ran out of budget (raise HYDRATION_TIMEOUT_MINUTES) or the hour was too small or flooded. Evaluated after each 30-minute snapshot, so this lands up to ~35 minutes after the cycle started.",
-	"stall_detected":              "No posts have reached the bot for over five minutes. connected=false with reconnects means Jetstream itself is unreachable or refusing us; connected=true means a silent connection that has now been dropped. The hour's counts and sentiment will be short. Check the event's last_error and bsky.network status; JETSTREAM_LEGACY=true falls back to the v1 hosts.",
+	"cycle_failed":                 "The hour's cycle stopped before recording a run: no summary, no sentiment point. Stage and error are on the event. The next hour runs regardless.",
+	"memory_guard_trip":            "Memory crossed 70% of the machine; the cycle was cancelled and the hour published nothing. Heap profile written to /data.",
+	"memory_guard_warn":            "Memory crossed 55% of the machine; the cycle continued and a heap profile was written. Check the next snapshot's RSS.",
+	"window_capped":                "The hour had more posts than ANALYSIS_MAX_WINDOW_POSTS; marked low confidence, nothing posted. Busy live hours can now exceed the cap, so this is not necessarily a flood.",
+	"hydration_timeout":            "Engagement hydration hit HYDRATION_TIMEOUT_MINUTES; posts it never reached are still scored, ranking uses the hydrated ones, and only attempted posts lost past HYDRATION_MAX_ERROR_PCT stop posting. rate_limited=0 on the event means the bot's own HYDRATION_RATE_PER_MINUTE limiter was the ceiling (rate x 25 x minutes), not the appview; otherwise check public.api.bsky.app errors in the hydrator lines.",
+	"consumer_restart":             "The firehose consumer exited outside its reconnect loop and was restarted. See the error on the event.",
+	"feature_gate_unavailable":     "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
+	"seq_floor_reset":              "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
+	"grouping_failed":              "Gemini grouping failed for the hour, so the trending reply was skipped and the sparkline footer shows no topic. The attempts are on the event. Two or more in a window means Gemini is slow or down.",
+	"hydration_ceiling_projected":  "The window is larger than hydration can cover in HYDRATION_TIMEOUT_MINUTES; the cycle will run out of budget about 25 minutes from now. Raise the timeout if the interval allows.",
+	"posting_skipped":              "The hour's cycle finished but published nothing: no summary, sparkline or trending reply. reason= on the event says why; window_posts vs hydrated vs ceiling_posts shows whether hydration ran out of budget (raise HYDRATION_TIMEOUT_MINUTES) or the hour was too small or flooded. Evaluated after each 30-minute snapshot, so this lands up to ~35 minutes after the cycle started.",
+	"weekly_report_preview_failed": "The Sunday preview of Monday's weekly report could not be posted to Discord, so the week is unreviewed. The preview text is in the process log (msg \"weekly report preview\"); seed weekly_report_last_week before 00:00 UTC Monday to skip the post.",
+	"stall_detected":               "No posts have reached the bot for over five minutes. connected=false with reconnects means Jetstream itself is unreachable or refusing us; connected=true means a silent connection that has now been dropped. The hour's counts and sentiment will be short. Check the event's last_error and bsky.network status; JETSTREAM_LEGACY=true falls back to the v1 hosts.",
 }
 
 // eventOrder fixes the order alerting events are reported in, so a set of
@@ -277,6 +282,7 @@ var eventOrder = []string{
 	"feature_gate_unavailable",
 	"seq_floor_reset",
 	"grouping_failed",
+	"weekly_report_preview_failed",
 	"stall_detected",
 }
 

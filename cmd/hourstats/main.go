@@ -78,7 +78,7 @@ func main() {
 	healthChartMemoryLimitMB := envInt("HEALTH_CHART_MEMORY_LIMIT_MB", 512)
 	walCheckpointThresholdMB := envInt("WAL_CHECKPOINT_THRESHOLD_MB", 50)
 	reportsEnabled := envBool("REPORTS_ENABLED", false)
-	startupWeekly, startupMonthly, unknownReports := parseStartupReports(envOr("REPORTS_RUN_AT_STARTUP", ""))
+	startupWeekly, startupMonthly, startupPreview, unknownReports := parseStartupReports(envOr("REPORTS_RUN_AT_STARTUP", ""))
 	if len(unknownReports) > 0 {
 		slog.Warn("REPORTS_RUN_AT_STARTUP has unknown job names, ignoring them", "names", unknownReports)
 	}
@@ -283,14 +283,17 @@ func main() {
 
 	// A nil channel never fires, so the startup report run only exists when
 	// asked for. It is how staging exercises the reports without waiting for
-	// a Monday or the 1st; the key_value guards and DRY_RUN still apply.
+	// a Monday or the 1st; the key_value guards and DRY_RUN still apply to the
+	// reports. "preview" posts the weekly preview to Discord, not Bluesky, so
+	// DRY_RUN does not gate it; an unset webhook leaves it in the log.
 	var reportsStartupCh <-chan time.Time
+	previewTarget := weeklyPreviewTarget{Profile: profile, DBPath: dbPath}
 	switch {
-	case reportsEnabled && (startupWeekly || startupMonthly):
+	case reportsEnabled && (startupWeekly || startupMonthly || startupPreview):
 		reportsStartupCh = time.After(reportsStartupDelay)
 		slog.Info("reports: startup run scheduled",
-			"weekly", startupWeekly, "monthly", startupMonthly, "delay", reportsStartupDelay)
-	case startupWeekly || startupMonthly:
+			"weekly", startupWeekly, "monthly", startupMonthly, "preview", startupPreview, "delay", reportsStartupDelay)
+	case startupWeekly || startupMonthly || startupPreview:
 		slog.Warn("REPORTS_RUN_AT_STARTUP is set but REPORTS_ENABLED is false, ignoring")
 	}
 
@@ -402,6 +405,11 @@ func main() {
 				if reportsEnabled {
 					runWeeklyReport(ctx, db, handle, password, dryRun, time.Now(), analysisMinutes)
 				}
+				// Sunday: preview the week that ends tonight to Discord, so
+				// the operator can seed the guard before Monday's post.
+				if reportsEnabled && time.Now().UTC().Weekday() == time.Sunday {
+					runWeeklyReportPreview(ctx, db, alertNotifier, collector, previewTarget, time.Now(), analysisMinutes)
+				}
 			})
 			if !started {
 				slog.Error("background job still running at daily tick, skipping daily cycle")
@@ -433,6 +441,9 @@ func main() {
 				}
 				if startupMonthly {
 					runMonthlyReport(ctx, db, handle, password, dryRun, now)
+				}
+				if startupPreview {
+					runWeeklyReportPreview(ctx, db, alertNotifier, collector, previewTarget, now, analysisMinutes)
 				}
 			})
 			if !started {
