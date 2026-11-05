@@ -171,7 +171,6 @@ func TestVolumeHeadline(t *testing.T) {
 	if tiles[1].Sub != days[fig.busiest].Date.Format("Mon 2 Jan") {
 		t.Errorf("busiest tile = %+v, want the day at fig.busiest (%d)", tiles[1], fig.busiest)
 	}
-	days[0].Runs = 24
 
 	// Stacked: the share tile divides by the firehose figure the post
 	// quotes, the legend by the stack it draws.

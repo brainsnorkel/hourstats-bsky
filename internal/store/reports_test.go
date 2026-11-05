@@ -248,6 +248,9 @@ func cycles(t *testing.T, s *Store, date string, n int) {
 	if err != nil {
 		t.Fatalf("parse %s: %v", date, err)
 	}
+	if n > 24 {
+		t.Fatalf("cycles(%s, %d): one row per hour; more than 24 would spill onto the next date", date, n)
+	}
 	for h := 0; h < n; h++ {
 		dp := SentimentDataPoint{
 			RunID:     fmt.Sprintf("run-%s-%02d", date, h),
