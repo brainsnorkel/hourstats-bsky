@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/christophergentle/hourstats-bsky/internal/formatter"
 	"github.com/fogleman/gg"
 )
 
@@ -224,7 +225,9 @@ func volumeHeadline(days []DailyVolumePoint, meta MonthlyVolumeMeta, stacked boo
 
 	heroSub = fmt.Sprintf("%d days · %s per day", len(days), countText(float64(totals.en)/float64(len(days))))
 	if meta.HasPrevDelta && meta.PrevLabel != "" {
-		heroSub = fmt.Sprintf("%s vs %s", signedPct(meta.PrevDeltaPct), meta.PrevLabel)
+		// The same formatter as the post text beside the chart, so the two
+		// never print the delta differently ("0.0%", never "+0.0%").
+		heroSub = fmt.Sprintf("%s vs %s", formatter.SignedPercent(meta.PrevDeltaPct), meta.PrevLabel)
 	}
 	tiles = []statTile{
 		{Label: "Per day", Value: countText(float64(totals.en) / float64(len(days)))},
@@ -346,21 +349,6 @@ func countText(v float64) string {
 	default:
 		return fmt.Sprintf("%.0f", v)
 	}
-}
-
-// signedPct formats a percentage change for the chart header: "+0.5%",
-// "-0.4%", and a plain "0.0%" for anything that rounds to zero, so neither
-// "+0.0%" nor "-0.0%" is ever drawn. It is the same rule as
-// formatter.SignedPercent, which the post text beside the chart uses, so the
-// two always print a delta the same way.
-func signedPct(v float64) string {
-	switch {
-	case v >= 0.05:
-		return fmt.Sprintf("+%.1f%%", v)
-	case v > -0.05:
-		return "0.0%"
-	}
-	return fmt.Sprintf("%.1f%%", v)
 }
 
 func drawCountGrid(dc *gg.Context, p plotArea, s float64) {

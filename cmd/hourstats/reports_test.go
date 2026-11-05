@@ -1,12 +1,46 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
+
+// newTestStore opens an empty store in a temp dir, closed when the test ends.
+func newTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	db, err := store.New(filepath.Join(t.TempDir(), "reports.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// TestRecordReportGuardSurvivesCancelledContext: the guard write follows a
+// root post that is already out, so it must land even when the scheduler's
+// context was cancelled by a shutdown in between; otherwise the next night's
+// run would post the same period again.
+func TestRecordReportGuardSurvivesCancelledContext(t *testing.T) {
+	db := newTestStore(t)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := recordReportGuard(cancelled, db, weeklyReportGuardKey, "2026-11-02"); err != nil {
+		t.Fatalf("recordReportGuard on a cancelled context: %v", err)
+	}
+	got, err := db.GetKeyValue(context.Background(), weeklyReportGuardKey)
+	if err != nil {
+		t.Fatalf("guard key not written: %v", err)
+	}
+	if got != "2026-11-02" {
+		t.Errorf("guard key = %q, want 2026-11-02", got)
+	}
+}
 
 func TestPreviousWeekAndMonth(t *testing.T) {
 	cases := []struct{ now, wantStart, wantEnd string }{

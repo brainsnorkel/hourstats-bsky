@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 // augustReport is a full August with a full July before it and a firehose
@@ -152,5 +156,35 @@ func TestVolumeExtremesFollowChart(t *testing.T) {
 
 	if _, _, _, ok := volumeExtremes(monthlyReport{}); ok {
 		t.Error("empty month reported extremes")
+	}
+}
+
+// TestRunMonthlyReportSkipsWhenGuardUnreadable: a read error that is not "no
+// such key" must not fall through to the catch-up post. Posting without
+// knowing what was already posted is worse than losing one night's run; an
+// absent key, by contrast, is the documented catch-up case.
+func TestRunMonthlyReportSkipsWhenGuardUnreadable(t *testing.T) {
+	db := newTestStore(t)
+	buf := captureLogs(t)
+
+	// A cancelled context makes GetKeyValue fail before it reaches the
+	// database, with a wrapped context.Canceled rather than sql.ErrNoRows.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	now := time.Date(2026, time.November, 1, 1, 0, 0, 0, time.UTC)
+
+	runMonthlyReport(cancelled, db, "", "", true, now)
+
+	out := buf.String()
+	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"msg":"monthly report: guard key unreadable, skipping this run"`) {
+		t.Errorf("unreadable guard was not warned about: %s", out)
+	}
+	if strings.Contains(out, "DRY_RUN: would post monthly report") {
+		t.Errorf("a read error let the report go ahead: %s", out)
+	}
+	if got, err := db.GetKeyValue(context.Background(), monthlyReportGuardKey); err == nil {
+		t.Errorf("guard key was written (%q) on a run whose read failed, want it still unset", got)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetKeyValue after the failed run: %v, want a not-found error", err)
 	}
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -430,10 +432,22 @@ func completeLanguages(ctx context.Context, db *store.Store, r monthlyReport) ma
 
 // runMonthlyReport posts the candlestick root and the volume reply for the
 // previous calendar month. The guard key is set once the root is posted.
+//
+// Unlike the weekly guard, an absent key (sql.ErrNoRows) is not a first
+// enable to wait out: the previous month is reported whenever the guard does
+// not already name it, so the first run after reports are enabled posts it as
+// a catch-up, as does the run after a skipped 1st. A key that cannot be read
+// for any other reason skips this run with a Warn and writes nothing, since
+// without the guard a post could duplicate one already out.
 func runMonthlyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time) {
 	first, _ := previousMonth(now)
 	monthKey := first.Format("2006-01")
-	if last, _ := db.GetKeyValue(ctx, monthlyReportGuardKey); last == monthKey {
+	last, err := db.GetKeyValue(ctx, monthlyReportGuardKey)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("monthly report: guard key unreadable, skipping this run", "error", err, "month", monthKey)
+		return
+	}
+	if last == monthKey {
 		slog.Info("monthly report already posted", "month", monthKey)
 		return
 	}
@@ -490,7 +504,7 @@ func runMonthlyReport(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 	slog.Info("monthly report posted", "month", monthKey, "uri", rootURI)
-	if err := db.SetKeyValue(ctx, monthlyReportGuardKey, monthKey); err != nil {
+	if err := recordReportGuard(ctx, db, monthlyReportGuardKey, monthKey); err != nil {
 		slog.Error("persist monthly report guard failed", "error", err, "month", monthKey)
 	}
 

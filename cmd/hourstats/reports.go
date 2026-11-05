@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -149,6 +150,25 @@ func sumPosts(days []store.DailySentimentDataPoint) int {
 // these texts.
 func postLength(text string) int {
 	return utf8.RuneCountInString(text)
+}
+
+// reportGuardWriteTimeout bounds the guard write that follows a posted
+// report, since that write no longer answers to the scheduler's context.
+const reportGuardWriteTimeout = 5 * time.Second
+
+// recordReportGuard writes the key_value guard that stops a report being
+// posted twice. The root post is already out when this runs, so the write is
+// detached from ctx's cancellation: a SIGTERM between the post and the write
+// would otherwise lose the guard, and the next night's run would post the
+// same period again. ctx's values are kept; only its cancellation is dropped,
+// and the write has a short deadline of its own instead.
+func recordReportGuard(ctx context.Context, db *store.Store, key, value string) error {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reportGuardWriteTimeout)
+	defer cancel()
+	if err := db.SetKeyValue(writeCtx, key, value); err != nil {
+		return fmt.Errorf("record report guard %s: %w", key, err)
+	}
+	return nil
 }
 
 // reportsStartupDelay is how long after boot a REPORTS_RUN_AT_STARTUP run

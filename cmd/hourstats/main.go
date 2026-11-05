@@ -132,6 +132,11 @@ func main() {
 	if trendingEnabled {
 		_ = db.SetKeyValue(context.Background(), "schedule_trending_with_sentiment", "true")
 	}
+	// Seeded here, not in the daily job, so a Sunday deploy still reports the
+	// week that ends that night (see armWeeklyReportGuard).
+	if reportsEnabled {
+		armWeeklyReportGuard(context.Background(), db, time.Now())
+	}
 
 	// Start stats HTTP API
 	statsPort := 9111

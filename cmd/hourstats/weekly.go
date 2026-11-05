@@ -23,10 +23,13 @@ import (
 const (
 	// weeklyReportGuardKey holds the Monday date of the last week reported,
 	// or, when no week has been reported yet, the Monday of the most recent
-	// complete week at the time reports were first enabled: that week is
-	// deliberately never posted, so switching REPORTS_ENABLED on mid-week does
-	// not publish a review that is already days stale. Unset means reports
-	// have never been enabled on this database.
+	// complete week at the moment the process first started with
+	// REPORTS_ENABLED (armWeeklyReportGuard): that week is deliberately never
+	// posted, so switching reports on mid-week does not publish a review that
+	// is already days stale. Arming at startup rather than in the daily job is
+	// what lets a Sunday deploy report the week that ends that night: the seed
+	// names the week before it, and Monday's job finds a newer week. Unset
+	// means reports have never been enabled on this database.
 	weeklyReportGuardKey = "weekly_report_last_week"
 	// weeklyReportMinDays is how many of the seven daily rows must exist.
 	weeklyReportMinDays = 5
@@ -202,15 +205,44 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycle
 	return r, true
 }
 
+// armWeeklyReportGuard seeds the guard key at process start when it is
+// absent, naming the most recent complete week so the first report covers the
+// week that completes next. It runs at startup rather than inside the daily
+// job because the job only runs at 00:00: a deploy on a Sunday would seed on
+// Monday 00:00 to the week that had just ended, and that week would never be
+// posted. An existing key is left alone. A read error other than
+// sql.ErrNoRows is warned about and nothing is written; a failed write is
+// warned about too, and runWeeklyReport's own seed covers a key still absent
+// that night.
+func armWeeklyReportGuard(ctx context.Context, db *store.Store, now time.Time) {
+	last, err := db.GetKeyValue(ctx, weeklyReportGuardKey)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("weekly report: guard key unreadable at startup, leaving it to the daily run", "error", err)
+		return
+	}
+	if last != "" {
+		slog.Info("weekly report: guard already set", "week_start", last)
+		return
+	}
+	start, _ := previousWeek(now)
+	weekKey := start.Format(dateFormat)
+	if err := db.SetKeyValue(ctx, weeklyReportGuardKey, weekKey); err != nil {
+		slog.Warn("weekly report: arming guard at startup failed, the daily run will seed it", "error", err, "week_start", weekKey)
+		return
+	}
+	slog.Info("weekly report: guard armed at startup, first report is the next complete week", "week_start", weekKey)
+}
+
 // runWeeklyReport posts the week-in-review root and, when a top post is
 // known, the post-of-the-week quote reply. The guard key is set once the
 // root is posted, so a failed reply is not retried by a later re-run.
 //
-// The first run after reports are enabled posts nothing: the guard key is
-// unset, so it is set to the most recent complete week and the function
-// returns, and the first review goes out for the week that completes next. A
-// later run posts whenever the guard names an older week, so a skipped Monday
-// is still caught up the next night.
+// The guard is normally armed at process start (armWeeklyReportGuard). When
+// it is still unset here, because the startup arm could not read or write
+// it, this run posts nothing: the key is set to the most recent complete week
+// and the function returns, and the first review goes out for the week that
+// completes next. A later run posts whenever the guard names an older week,
+// so a skipped Monday is still caught up the next night.
 //
 // When the guard key cannot be read for any reason other than sql.ErrNoRows
 // (its absence), this run is skipped with a Warn and nothing is written: the
@@ -289,7 +321,7 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 		return
 	}
 	slog.Info("weekly report posted", "week_start", weekKey, "uri", rootURI)
-	if err := db.SetKeyValue(ctx, weeklyReportGuardKey, weekKey); err != nil {
+	if err := recordReportGuard(ctx, db, weeklyReportGuardKey, weekKey); err != nil {
 		// The guard is the only duplicate suppression; a restart with
 		// REPORTS_RUN_AT_STARTUP would re-post.
 		slog.Error("persist weekly report guard failed", "error", err, "week_start", weekKey)

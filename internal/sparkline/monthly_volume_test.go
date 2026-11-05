@@ -112,23 +112,6 @@ func headline(days []DailyVolumePoint, meta MonthlyVolumeMeta, stacked bool) (st
 	return volumeHeadline(days, meta, stacked, measureVolume(days, stacked))
 }
 
-// TestSignedPct pins the header's delta formatting, which the post text
-// mirrors through formatter.SignedPercent: a plus sign for a rise, a bare
-// minus for a fall, and "0.0%" for anything that rounds to zero.
-func TestSignedPct(t *testing.T) {
-	for _, tc := range []struct {
-		v    float64
-		want string
-	}{
-		{0, "0.0%"}, {0.04, "0.0%"}, {-0.04, "0.0%"}, {0.05, "+0.1%"},
-		{0.51, "+0.5%"}, {-0.4, "-0.4%"}, {-0.05, "-0.1%"}, {12.345, "+12.3%"},
-	} {
-		if got := signedPct(tc.v); got != tc.want {
-			t.Errorf("signedPct(%v) = %q, want %q", tc.v, got, tc.want)
-		}
-	}
-}
-
 func TestVolumeHeadline(t *testing.T) {
 	days := volumeMonth(31, nil)
 

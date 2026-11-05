@@ -356,6 +356,149 @@ func TestRunWeeklyReportDryRunAppliesReplyLimit(t *testing.T) {
 	}
 }
 
+// TestArmWeeklyReportGuardSeedsFreshStore: on a database that has never had
+// reports enabled, startup arms the guard to the most recent complete week,
+// which is the week deliberately never posted.
+func TestArmWeeklyReportGuardSeedsFreshStore(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+	buf := captureLogs(t)
+
+	// A Wednesday: the most recent complete week ran 26 Oct to 1 Nov.
+	now := time.Date(2026, time.November, 4, 12, 0, 0, 0, time.UTC)
+	armWeeklyReportGuard(ctx, db, now)
+
+	got, err := db.GetKeyValue(ctx, weeklyReportGuardKey)
+	if err != nil {
+		t.Fatalf("guard key not armed: %v", err)
+	}
+	if got != "2026-10-26" {
+		t.Errorf("guard key = %q, want 2026-10-26 (the Monday of the most recent complete week)", got)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"weekly report: guard armed at startup, first report is the next complete week"`) ||
+		!strings.Contains(out, `"week_start":"2026-10-26"`) {
+		t.Errorf("arming line missing or wrong: %s", out)
+	}
+}
+
+// TestArmWeeklyReportGuardKeepsExistingKey: a database that already carries a
+// guard, from an earlier run or an earlier deploy, is left exactly as it is;
+// re-arming would turn every restart into a skipped week.
+func TestArmWeeklyReportGuardKeepsExistingKey(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+	if err := db.SetKeyValue(ctx, weeklyReportGuardKey, "2026-10-19"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+	buf := captureLogs(t)
+
+	armWeeklyReportGuard(ctx, db, time.Date(2026, time.November, 4, 12, 0, 0, 0, time.UTC))
+
+	if got, _ := db.GetKeyValue(ctx, weeklyReportGuardKey); got != "2026-10-19" {
+		t.Errorf("guard key = %q, want it untouched at 2026-10-19", got)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"weekly report: guard already set"`) || !strings.Contains(out, `"week_start":"2026-10-19"`) {
+		t.Errorf("already-set line missing or without the value: %s", out)
+	}
+	if strings.Contains(out, "guard armed at startup") {
+		t.Errorf("an existing guard was re-armed: %s", out)
+	}
+}
+
+// TestArmWeeklyReportGuardSundayDeploy is the scenario the startup seed
+// exists for. Reports are enabled on a Sunday evening; the week ending that
+// night must be the first one reported, at Monday's daily job. Seeding inside
+// the daily job would instead arm the guard to that week at Monday 00:00 and
+// never post it.
+func TestArmWeeklyReportGuardSundayDeploy(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+	buf := captureLogs(t)
+
+	deploy := time.Date(2026, time.November, 8, 20, 0, 0, 0, time.UTC) // a Sunday
+	armWeeklyReportGuard(ctx, db, deploy)
+	if got, _ := db.GetKeyValue(ctx, weeklyReportGuardKey); got != "2026-10-26" {
+		t.Fatalf("guard after a Sunday arm = %q, want 2026-10-26 (the week before the one still in progress)", got)
+	}
+
+	weekStart := time.Date(2026, time.November, 2, 0, 0, 0, 0, time.UTC)
+	seedWeekDays(t, ctx, db, weekStart) // 2 to 8 Nov
+	buf.Reset()
+
+	monday := time.Date(2026, time.November, 9, 0, 5, 0, 0, time.UTC)
+	runWeeklyReport(ctx, db, "", "", true, monday, 60)
+
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"DRY_RUN: would post weekly report"`) {
+		t.Fatalf("Monday's run did not preview the week that ended on deploy night: %s", out)
+	}
+	if !strings.Contains(out, `"week_start":"2026-11-02"`) {
+		t.Errorf("preview is not for the week of 2026-11-02: %s", out)
+	}
+	if strings.Contains(out, "first enable") {
+		t.Errorf("Monday's run re-seeded the guard instead of posting: %s", out)
+	}
+	// A dry run posts nothing, so the guard still names the armed week.
+	if got, _ := db.GetKeyValue(ctx, weeklyReportGuardKey); got != "2026-10-26" {
+		t.Errorf("guard after the dry run = %q, want it unchanged at 2026-10-26", got)
+	}
+}
+
+// TestArmWeeklyReportGuardMondayDeploy: enabling reports on a Monday, after
+// the 00:00 job has passed, arms the guard to the week that just ended. That
+// week is the one deliberately skipped, so Tuesday's job posts nothing even
+// though its data is all there.
+func TestArmWeeklyReportGuardMondayDeploy(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+
+	deploy := time.Date(2026, time.November, 9, 5, 0, 0, 0, time.UTC) // a Monday
+	armWeeklyReportGuard(ctx, db, deploy)
+	if got, _ := db.GetKeyValue(ctx, weeklyReportGuardKey); got != "2026-11-02" {
+		t.Fatalf("guard after a Monday arm = %q, want 2026-11-02 (the week that just ended)", got)
+	}
+	seedWeekDays(t, ctx, db, time.Date(2026, time.November, 2, 0, 0, 0, 0, time.UTC))
+	buf := captureLogs(t)
+
+	tuesday := time.Date(2026, time.November, 10, 0, 5, 0, 0, time.UTC)
+	runWeeklyReport(ctx, db, "", "", true, tuesday, 60)
+
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"weekly report already posted"`) || !strings.Contains(out, `"week_start":"2026-11-02"`) {
+		t.Errorf("Tuesday's run did not treat the armed week as done: %s", out)
+	}
+	if strings.Contains(out, "DRY_RUN: would post weekly report") {
+		t.Errorf("Tuesday's run previewed the week the guard was armed to: %s", out)
+	}
+}
+
+// TestArmWeeklyReportGuardSkipsWhenUnreadable: a read error at startup is not
+// an absent key. Nothing is written, and the daily run's own seed is left to
+// handle a key that really is absent.
+func TestArmWeeklyReportGuardSkipsWhenUnreadable(t *testing.T) {
+	db := newTestStore(t)
+	buf := captureLogs(t)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	armWeeklyReportGuard(cancelled, db, time.Date(2026, time.November, 8, 20, 0, 0, 0, time.UTC))
+
+	out := buf.String()
+	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"msg":"weekly report: guard key unreadable at startup, leaving it to the daily run"`) {
+		t.Errorf("unreadable guard was not warned about: %s", out)
+	}
+	if strings.Contains(out, "guard armed at startup") {
+		t.Errorf("a read error was treated as an absent key: %s", out)
+	}
+	if got, err := db.GetKeyValue(context.Background(), weeklyReportGuardKey); err == nil {
+		t.Errorf("guard key was written (%q) after a failed read, want it still unset", got)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetKeyValue after the failed arm: %v, want a not-found error", err)
+	}
+}
+
 // TestRunWeeklyReportSkipsWhenGuardUnreadable: a read error that is not
 // "no such key" must not be mistaken for a first enable. Arming the guard on a
 // database that just failed a read, or posting without knowing what was
