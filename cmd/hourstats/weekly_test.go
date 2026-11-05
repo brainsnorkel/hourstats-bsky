@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"path/filepath"
@@ -115,11 +116,20 @@ func TestPostWeeklyTopPostReplyDecisions(t *testing.T) {
 		wantQuote bool
 		wantText  string
 		gateCalls int64
+		wantLog   []string // fragments the captured log must contain
 	}{
 		{
 			name:      "ok and quotable quotes with live figures",
 			gate:      &fakeGate{verdicts: map[string]client.Verdict{topURI: live}},
 			wantCalls: 1, wantQuote: true, wantText: liveText, gateCalls: 1,
+			// The posted line must show the gap between the stored and the
+			// live figures, and where the printed ones came from.
+			wantLog: []string{
+				`"msg":"post of the week reply posted"`,
+				`"counts_source":"live"`,
+				`"stored_likes":9800`,
+				`"live_likes":39300`,
+			},
 		},
 		{
 			name:      "quote-controlled replies as text",
@@ -140,15 +150,23 @@ func TestPostWeeklyTopPostReplyDecisions(t *testing.T) {
 			name:      "reply over the post limit posts nothing",
 			gate:      &fakeGate{verdicts: map[string]client.Verdict{topURI: longHandle}},
 			wantCalls: 0, gateCalls: 1,
+			// The skip must be told apart from a gate rejection in the log.
+			wantLog: []string{`"level":"WARN"`, `"msg":"post of the week text over limit, omitting reply"`},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			buf := captureLogs(t)
 			poster := &fakeReplyPoster{}
 			postWeeklyTopPostReply(context.Background(), poster, tc.gate, report, "at://did:plc:me/app.bsky.feed.post/root", "rootcid")
 
 			if got := tc.gate.calls.Load(); got != tc.gateCalls {
 				t.Errorf("gate calls = %d, want %d", got, tc.gateCalls)
+			}
+			for _, want := range tc.wantLog {
+				if !strings.Contains(buf.String(), want) {
+					t.Errorf("log is missing %s:\n%s", want, buf.String())
+				}
 			}
 			if len(poster.replies) != tc.wantCalls {
 				t.Fatalf("replies posted = %d, want %d: %+v", len(poster.replies), tc.wantCalls, poster.replies)
@@ -239,5 +257,42 @@ func TestRunWeeklyReportFirstEnableWaitsForNextWeek(t *testing.T) {
 	// A dry run posts nothing, so the guard still names the first-enable week.
 	if got, _ := db.GetKeyValue(ctx, weeklyReportGuardKey); got != wantKey.Format(dateFormat) {
 		t.Errorf("guard key after dry run = %q, want it unchanged at %q", got, wantKey.Format(dateFormat))
+	}
+}
+
+// TestRunWeeklyReportSkipsWhenGuardUnreadable: a read error that is not
+// "no such key" must not be mistaken for a first enable. Arming the guard on a
+// database that just failed a read, or posting without knowing what was
+// already posted, are both worse than losing one night's run.
+func TestRunWeeklyReportSkipsWhenGuardUnreadable(t *testing.T) {
+	db, err := store.New(filepath.Join(t.TempDir(), "weekly.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	buf := captureLogs(t)
+
+	// A cancelled context makes GetKeyValue fail before it reaches the
+	// database, with a wrapped context.Canceled rather than sql.ErrNoRows.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	now := time.Date(2026, time.November, 4, 0, 5, 0, 0, time.UTC)
+
+	runWeeklyReport(cancelled, db, "", "", true, now, 60)
+
+	out := buf.String()
+	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"msg":"weekly report: guard key unreadable, skipping this run"`) {
+		t.Errorf("unreadable guard was not warned about: %s", out)
+	}
+	if strings.Contains(out, "first enable") {
+		t.Errorf("a read error was treated as a first enable: %s", out)
+	}
+	if strings.Contains(out, "DRY_RUN: would post weekly report") {
+		t.Errorf("a read error let the report go ahead: %s", out)
+	}
+	if got, err := db.GetKeyValue(context.Background(), weeklyReportGuardKey); err == nil {
+		t.Errorf("guard key was written (%q) on a run whose read failed, want it still unset", got)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetKeyValue after the failed run: %v, want a not-found error", err)
 	}
 }
