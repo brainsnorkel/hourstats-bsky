@@ -15,6 +15,11 @@ type DailyVolumePoint struct {
 	Date       time.Time
 	ENPosts    int // English posts analysed
 	TotalPosts int // all firehose posts (0 when not tracked)
+	// Runs is the number of analysis cycles behind the day's counts (0 when
+	// unknown). A day with fewer cycles than the fullest day of the month
+	// is partial: it is drawn, but VolumeExtremes does not name it busiest
+	// or quietest.
+	Runs int
 	// Languages is the firehose split by primary language subtag ("en",
 	// "pt", "und" ...). When every day has one the chart stacks the top
 	// languages instead of drawing the firehose as a single line.
@@ -22,10 +27,14 @@ type DailyVolumePoint struct {
 }
 
 // MonthlyVolumeMeta carries header figures not derivable from the points.
+// The month-over-month delta is computed by the caller (from mean daily
+// English volume, so a short month does not read as a drop) and only
+// formatted here, so the chart header and the post text always agree.
 type MonthlyVolumeMeta struct {
-	MonthLabel  string // "August 2026"
-	PrevMonthEN int    // previous month's English total; 0 when unknown
-	PrevLabel   string
+	MonthLabel   string  // "August 2026"
+	PrevDeltaPct float64 // change vs the previous month, percent; shown when HasPrevDelta
+	HasPrevDelta bool    // false when the previous month is unknown or too thin to compare
+	PrevLabel    string  // "July"
 }
 
 // MonthlyVolumeGenerator renders a daily English post volume line for one month.
@@ -62,7 +71,9 @@ func languageDayTotal(d DailyVolumePoint) int {
 // GenerateMonthlyVolumeChart draws English posts per day as a bold line with
 // day markers. Behind it sits either the full firehose as a soft line, or,
 // when every day carries a language split, a stacked area of English plus
-// the largest languages with the remainder folded into "other".
+// the largest languages with the remainder folded into "other". The busiest
+// and quietest markers and tiles follow VolumeExtremes; when that rule left
+// partial days out, PartialDaysNote is written above the legend.
 func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePoint, meta MonthlyVolumeMeta) ([]byte, error) {
 	if len(days) == 0 {
 		return nil, fmt.Errorf("no daily volume points provided")
@@ -82,32 +93,18 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		stacked = len(series) > 0
 	}
 
-	enTotal, allTotal, maxV := 0, 0, 0.0
-	busiest, quietest := 0, 0
-	hasTotal := false
-	for i, d := range days {
-		enTotal += d.ENPosts
-		total := d.TotalPosts
-		if stacked {
-			total = languageDayTotal(d)
-		}
-		allTotal += total
-		if total > 0 {
-			hasTotal = true
-		}
-		maxV = math.Max(maxV, float64(max(d.ENPosts, total)))
-		if d.ENPosts > days[busiest].ENPosts {
-			busiest = i
-		}
-		if d.ENPosts < days[quietest].ENPosts {
-			quietest = i
-		}
-	}
+	totals := sumVolumes(days, stacked)
+	busiest, quietest := VolumeExtremes(days)
+	footnote := PartialDaysNote(days)
 
-	// The stacked view needs a two-row legend, so its plot ends higher.
+	// The stacked view needs a two-row legend, so its plot ends higher; a
+	// partial-day footnote adds one more row above the legend.
 	footer := 84 * s
 	if stacked {
 		footer = 112 * s
+	}
+	if footnote != "" {
+		footer += 24 * s
 	}
 	first, last := days[0].Date, days[len(days)-1].Date
 	plot := plotArea{
@@ -117,28 +114,10 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		h:   H - 186*s - footer,
 		t0:  first.Truncate(24 * time.Hour),
 		t1:  last.Truncate(24 * time.Hour).Add(24 * time.Hour),
-		rng: countRange(maxV),
+		rng: countRange(totals.maxV),
 	}
 
-	heroSub := fmt.Sprintf("%d days · %s per day", len(days), countText(float64(enTotal)/float64(len(days))))
-	if meta.PrevMonthEN > 0 && meta.PrevLabel != "" {
-		pct := (float64(enTotal)/float64(meta.PrevMonthEN) - 1) * 100
-		heroSub = fmt.Sprintf("%s vs %s", signedPct(pct), meta.PrevLabel)
-	}
-	tiles := []statTile{
-		{Label: "Per day", Value: countText(float64(enTotal) / float64(len(days)))},
-		{Label: "Busiest", Value: countText(float64(days[busiest].ENPosts)), Sub: days[busiest].Date.Format("Mon 2 Jan")},
-		{Label: "Quietest", Value: countText(float64(days[quietest].ENPosts)), Sub: days[quietest].Date.Format("Mon 2 Jan")},
-	}
-	if hasTotal && allTotal > 0 {
-		// In the stacked view the legend already shows English as a share
-		// of the firehose; this tile is the analysed subset, so say so.
-		label := "English share"
-		if stacked {
-			label = "Analysed share"
-		}
-		tiles = append(tiles, statTile{Label: label, Value: fmt.Sprintf("%.0f%%", float64(enTotal)/float64(allTotal)*100), Sub: "of " + countText(float64(allTotal))})
-	}
+	heroSub, tiles := volumeHeadline(days, meta, stacked)
 	subtitle := fmt.Sprintf("%s – %s · English posts analysed per day · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
 	if stacked {
 		subtitle = fmt.Sprintf("%s – %s · firehose posts per day by language tag, English posts analysed as the line · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
@@ -147,7 +126,7 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		Title:     "Bluesky post volume, " + meta.MonthLabel,
 		Subtitle:  subtitle,
 		HeroLabel: "English posts",
-		HeroValue: countText(float64(enTotal)),
+		HeroValue: countText(float64(totals.en)),
 		HeroSub:   heroSub,
 		Tiles:     tiles,
 		Brand:     "@hourstats.bsky.social",
@@ -160,11 +139,13 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		drawLanguageStack(dc, plot, days, series, s)
 		drawAnalysedLine(dc, plot, days, s)
 		drawVolumeExtremes(dc, plot, days, busiest, quietest, themeInkPrimary, s)
-		drawLanguageFooter(dc, spec, series, allTotal, s, W, H)
+		drawLanguageFooter(dc, spec, series, totals.all, s, W, H)
+		drawFootnote(dc, footnote, H-74*s, s)
 	} else {
-		drawVolumeLines(dc, plot, days, hasTotal, s)
+		drawVolumeLines(dc, plot, days, totals.hasTotal, s)
 		drawVolumeExtremes(dc, plot, days, busiest, quietest, themePositive, s)
-		drawVolumeFooter(dc, spec, hasTotal, s, W, H)
+		drawVolumeFooter(dc, spec, totals.hasTotal, s, W, H)
+		drawFootnote(dc, footnote, H-50*s, s)
 	}
 
 	var buf bytes.Buffer
@@ -172,6 +153,164 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		return nil, fmt.Errorf("failed to encode PNG: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// volumeTotals are the month figures the header and legend are built from.
+type volumeTotals struct {
+	en       int     // English posts analysed over the month
+	all      int     // firehose posts: the language-stack sum when stacked, else the sum of TotalPosts
+	tileAll  int     // denominator for the share tile; see sumVolumes
+	hasTotal bool    // at least one day has a firehose figure
+	maxV     float64 // tallest value drawn, for the y range
+}
+
+// sumVolumes totals the month. The legend shares divide by the same stack
+// the bands are drawn from, so the legend always adds up to the picture.
+// The share tile instead divides by the sum of each day's TotalPosts when
+// every day has one, which is the figure the accompanying post quotes; the
+// two can differ by a few percent when a daily row and its language split
+// were written from different cycles. Without a full set of TotalPosts the
+// tile falls back to the stack sum.
+func sumVolumes(days []DailyVolumePoint, stacked bool) volumeTotals {
+	var t volumeTotals
+	postsTotal, postsEveryDay := 0, len(days) > 0
+	for _, d := range days {
+		t.en += d.ENPosts
+		total := d.TotalPosts
+		if stacked {
+			total = languageDayTotal(d)
+		}
+		t.all += total
+		if total > 0 {
+			t.hasTotal = true
+		}
+		postsTotal += d.TotalPosts
+		if d.TotalPosts <= 0 {
+			postsEveryDay = false
+		}
+		t.maxV = math.Max(t.maxV, float64(max(d.ENPosts, total)))
+	}
+	t.tileAll = t.all
+	if postsEveryDay {
+		t.tileAll = postsTotal
+	}
+	return t
+}
+
+// volumeHeadline builds the hero caption and the stat tiles. The caption is
+// the month-over-month delta when the caller supplied one, otherwise the
+// day count and daily mean. The busiest and quietest tiles follow
+// VolumeExtremes, and the share tile divides by sumVolumes' tileAll.
+func volumeHeadline(days []DailyVolumePoint, meta MonthlyVolumeMeta, stacked bool) (heroSub string, tiles []statTile) {
+	if len(days) == 0 {
+		return "", nil
+	}
+	totals := sumVolumes(days, stacked)
+	busiest, quietest := VolumeExtremes(days)
+
+	heroSub = fmt.Sprintf("%d days · %s per day", len(days), countText(float64(totals.en)/float64(len(days))))
+	if meta.HasPrevDelta && meta.PrevLabel != "" {
+		heroSub = fmt.Sprintf("%s vs %s", signedPct(meta.PrevDeltaPct), meta.PrevLabel)
+	}
+	tiles = []statTile{
+		{Label: "Per day", Value: countText(float64(totals.en) / float64(len(days)))},
+		{Label: "Busiest", Value: countText(float64(days[busiest].ENPosts)), Sub: days[busiest].Date.Format("Mon 2 Jan")},
+		{Label: "Quietest", Value: countText(float64(days[quietest].ENPosts)), Sub: days[quietest].Date.Format("Mon 2 Jan")},
+	}
+	if totals.hasTotal && totals.tileAll > 0 {
+		// In the stacked view the legend already shows English as a share
+		// of the firehose; this tile is the analysed subset, so say so.
+		label := "English share"
+		if stacked {
+			label = "Analysed share"
+		}
+		tiles = append(tiles, statTile{Label: label, Value: fmt.Sprintf("%.0f%%", float64(totals.en)/float64(totals.tileAll)*100), Sub: "of " + countText(float64(totals.tileAll))})
+	}
+	return heroSub, tiles
+}
+
+// extremeCandidates decides which days VolumeExtremes chooses between. A day
+// is full when its Runs equals the most cycles any day of the month saw;
+// the choice is restricted to full days (fullOnly) when that leaves at least
+// two of them, and otherwise falls back to every day. fullRuns is 0 when no
+// day carries a run count, which always means every day.
+func extremeCandidates(days []DailyVolumePoint) (fullRuns int, fullOnly bool) {
+	for _, d := range days {
+		fullRuns = max(fullRuns, d.Runs)
+	}
+	if fullRuns == 0 {
+		return 0, false
+	}
+	n := 0
+	for _, d := range days {
+		if d.Runs == fullRuns {
+			n++
+		}
+	}
+	return fullRuns, n >= 2
+}
+
+// VolumeExtremes returns the indices of the busiest and quietest days by
+// English posts. A day is full when its Runs equals the most cycles any day
+// of the month saw; only full days are candidates, so a day cut short by a
+// crash or a deploy is never named the quietest. When fewer than two days
+// are full, or no day carries a run count, every day is a candidate. Ties go
+// to the earlier day. Both indices are 0 for an empty slice.
+func VolumeExtremes(days []DailyVolumePoint) (busiest, quietest int) {
+	fullRuns, fullOnly := extremeCandidates(days)
+	started := false
+	for i, d := range days {
+		if fullOnly && d.Runs != fullRuns {
+			continue
+		}
+		if !started {
+			busiest, quietest, started = i, i, true
+			continue
+		}
+		if d.ENPosts > days[busiest].ENPosts {
+			busiest = i
+		}
+		if d.ENPosts < days[quietest].ENPosts {
+			quietest = i
+		}
+	}
+	return busiest, quietest
+}
+
+// PartialDaysNote is the one-line caveat that accompanies the extremes when
+// VolumeExtremes left days out for having fewer cycles than the fullest day,
+// e.g. "Busiest and quietest exclude 2 partial days with fewer cycles". It is
+// "" when every day was a candidate, so the chart footer and the alt text
+// never claim an exclusion that did not happen.
+func PartialDaysNote(days []DailyVolumePoint) string {
+	fullRuns, fullOnly := extremeCandidates(days)
+	if !fullOnly {
+		return ""
+	}
+	n := 0
+	for _, d := range days {
+		if d.Runs != fullRuns {
+			n++
+		}
+	}
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "Busiest and quietest exclude 1 partial day with fewer cycles"
+	default:
+		return fmt.Sprintf("Busiest and quietest exclude %d partial days with fewer cycles", n)
+	}
+}
+
+// drawFootnote writes a footer caveat on its own row; a "" note draws nothing.
+func drawFootnote(dc *gg.Context, text string, y, s float64) {
+	if text == "" {
+		return
+	}
+	setFont(dc, 15*s, false)
+	dc.SetColor(themeInkMuted)
+	dc.DrawStringAnchored(text, 36*s, y, 0, 0)
 }
 
 // countRange is a zero-based range with five or six nice ticks.

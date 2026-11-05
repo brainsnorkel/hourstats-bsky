@@ -202,9 +202,25 @@ func TestBuildMonthlyTexts(t *testing.T) {
 	if alt := buildMonthlyCandleAltText(r); !strings.Contains(alt, "August 2026") || !strings.Contains(alt, "31 days") {
 		t.Errorf("candle alt: %s", alt)
 	}
-	if alt := buildMonthlyVolumeAltText(r); !strings.Contains(alt, "firehose") || !strings.Contains(alt, "Busiest Wed 12 Aug") {
+	if alt := buildMonthlyVolumeAltText(r); !strings.Contains(alt, "firehose") || !strings.Contains(alt, "Busiest Wed 12 Aug") ||
+		!strings.Contains(alt, "quietest Sun 2 Aug with 1.6M.") || strings.Contains(alt, "partial") {
 		t.Errorf("volume alt: %s", alt)
 	}
+
+	// A day that lost a cycle is never the quietest: the title passes to the
+	// next-quietest full day, and only the alt text says why.
+	r.Days[1].TotalRuns = 23
+	vol = buildMonthlyVolumeText(r)
+	if !strings.Contains(vol, "Busiest: Wed 12 Aug, 2.5M") || !strings.Contains(vol, "Quietest: Sat 1 Aug, 1.9M") || strings.Contains(vol, "partial") {
+		t.Errorf("volume text with a partial day:\n%s", vol)
+	}
+	if n := postLength(vol); n > blueskyPostLimit {
+		t.Errorf("volume text %d runes over limit", n)
+	}
+	if alt := buildMonthlyVolumeAltText(r); !strings.Contains(alt, "quietest Sat 1 Aug with 1.9M. Busiest and quietest exclude 1 partial day with fewer cycles.") {
+		t.Errorf("volume alt with a partial day: %s", alt)
+	}
+	r.Days[1].TotalRuns = 24
 
 	// Without a full previous month or firehose data the comparisons vanish.
 	r.PrevDays, r.Firehose = r.PrevDays[:5], nil
