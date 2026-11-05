@@ -94,14 +94,22 @@ func (s *Store) GetTopicDaily(ctx context.Context, date string) ([]TopicDailyRow
 // then the by-id result. The winner is never smaller than either axis alone,
 // so a subject fragmented either way is not understated.
 //
-// Only the by-id sum is a count of hours. A topic_daily row keeps the label
+// Only the by-id sum is a count of cycles. A topic_daily row keeps the label
 // its ID carried in the day's last snapshot, so the by-label sum credits
-// every hour of an ID to that final label: on 2026-11-04 the midterms ID
+// every cycle of an ID to that final label: on 2026-11-04 the midterms ID
 // carried "2026 Midterm Elections" in 4 of its 22 snapshots yet contributes
 // all 22 to that key. Summed across IDs this can exceed a day's cycles
 // ("donald trump" summed to 28 over 9 IDs on 2026-09-11, a 24-cycle day), so
-// the by-label figure is an estimate that can run high, not a lower bound;
-// cmd/hourstats topicHours caps the week at 168 hours.
+// each (date, label_key) day sum is capped at that day's cycle count, the
+// number of sentiment_history rows whose timestamp falls on the date, before
+// the days are summed; a date with no sentiment_history rows is left
+// uncapped. The cap bounds the by-label figure at one appearance per cycle
+// but it remains an estimate that can run high within that bound (the
+// relabelled ID above still credits 22 to a label it carried for 4), and it
+// does not touch the group's MIN(best_rank) or the label chosen. The by-id
+// axis needs no cap: appearances per (date, topic_id) is already a count of
+// distinct snapshot times. cmd/hourstats topicHours converts appearances to
+// hours with the analysis interval and caps the week at 168 hours.
 //
 // The label shown is the spelling on the group's latest-date row (by id, the
 // (date, topic_id) key makes that row unique; by label, ties on one date go
@@ -135,37 +143,58 @@ type topTopicResult struct {
 	found       bool
 }
 
-// Both queries take (startDate, endDate, startDate, endDate): the first pair
-// picks the winning group, the second fetches that group's rows to choose the
+// Both queries bind ?1 = startDate and ?2 = endDate. The best CTE picks the
+// winning group; the final SELECT fetches that group's rows to choose the
 // displayed label.
 const (
 	topTopicByIDQuery = `
 		WITH best AS (
 			SELECT topic_id, SUM(appearances) AS total, MIN(best_rank) AS best_rank
 			FROM topic_daily
-			WHERE date BETWEEN ? AND ?
+			WHERE date BETWEEN ?1 AND ?2
 			GROUP BY topic_id
 			ORDER BY total DESC, best_rank ASC, topic_id ASC
 			LIMIT 1
 		)
 		SELECT d.label, best.total, best.best_rank
 		FROM best JOIN topic_daily d ON d.topic_id = best.topic_id
-		WHERE d.date BETWEEN ? AND ?
+		WHERE d.date BETWEEN ?1 AND ?2
 		ORDER BY d.date DESC, d.appearances DESC, d.label ASC
 		LIMIT 1`
 
+	// cycles counts the sentiment_history rows on each UTC date of the range;
+	// the timestamps are RFC3339 'YYYY-MM-DDTHH:MM:SSZ', so a date string
+	// sorts before every timestamp of that day and the range test can use the
+	// timestamp index. days sums one label key's rows per date and capped
+	// bounds that sum at the day's cycle count, leaving a date with no
+	// cycles row as it is.
 	topTopicByLabelQuery = `
-		WITH best AS (
-			SELECT lower(trim(label)) AS label_key, SUM(appearances) AS total, MIN(best_rank) AS best_rank
+		WITH cycles AS (
+			SELECT substr(timestamp, 1, 10) AS date, COUNT(*) AS n
+			FROM sentiment_history
+			WHERE timestamp >= ?1 AND timestamp < date(?2, '+1 day')
+			GROUP BY date
+		),
+		days AS (
+			SELECT date, lower(trim(label)) AS label_key, SUM(appearances) AS total, MIN(best_rank) AS best_rank
 			FROM topic_daily
-			WHERE date BETWEEN ? AND ?
+			WHERE date BETWEEN ?1 AND ?2
+			GROUP BY date, label_key
+		),
+		capped AS (
+			SELECT days.label_key, MIN(days.total, COALESCE(cycles.n, days.total)) AS total, days.best_rank
+			FROM days LEFT JOIN cycles ON cycles.date = days.date
+		),
+		best AS (
+			SELECT label_key, SUM(total) AS total, MIN(best_rank) AS best_rank
+			FROM capped
 			GROUP BY label_key
 			ORDER BY total DESC, best_rank ASC, label_key ASC
 			LIMIT 1
 		)
 		SELECT d.label, best.total, best.best_rank
 		FROM best JOIN topic_daily d ON lower(trim(d.label)) = best.label_key
-		WHERE d.date BETWEEN ? AND ?
+		WHERE d.date BETWEEN ?1 AND ?2
 		ORDER BY d.date DESC, d.appearances DESC, d.topic_id ASC
 		LIMIT 1`
 )
@@ -174,7 +203,7 @@ const (
 // with no rows is not an error: found is false.
 func (s *Store) topTopicBy(ctx context.Context, query, startDate, endDate string) (topTopicResult, error) {
 	var r topTopicResult
-	err := s.readDB.QueryRowContext(ctx, query, startDate, endDate, startDate, endDate).
+	err := s.readDB.QueryRowContext(ctx, query, startDate, endDate).
 		Scan(&r.label, &r.appearances, &r.bestRank)
 	if errors.Is(err, sql.ErrNoRows) {
 		return topTopicResult{}, nil

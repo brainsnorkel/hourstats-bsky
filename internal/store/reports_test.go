@@ -240,6 +240,94 @@ func TestGetTopTopicForRange_LabelKeyAndSpelling(t *testing.T) {
 	})
 }
 
+// cycles seeds n sentiment_history rows on a UTC date, one per hour from
+// 00:55, standing in for the day's analysis cycles.
+func cycles(t *testing.T, s *Store, date string, n int) {
+	t.Helper()
+	day, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		t.Fatalf("parse %s: %v", date, err)
+	}
+	for h := 0; h < n; h++ {
+		dp := SentimentDataPoint{
+			RunID:     fmt.Sprintf("run-%s-%02d", date, h),
+			Timestamp: day.Add(time.Duration(h)*time.Hour + 55*time.Minute),
+		}
+		if err := s.StoreSentimentDataPoint(context.Background(), dp); err != nil {
+			t.Fatalf("store cycle %s %d: %v", date, h, err)
+		}
+	}
+}
+
+// seedSharedFinalLabel builds the shape the cap is for: on 2026-10-31 two IDs
+// end the day under the same label with 3 appearances each (a by-label day
+// sum of 6), a third ID carries the label for 2 cycles on 2026-11-01, and a
+// competitor ID trends 5 cycles across both days at rank 2.
+func seedSharedFinalLabel(t *testing.T, s *Store) {
+	t.Helper()
+	hourly(t, s, "2026-10-31", []int{0, 1, 2}, 1, "hw1", "Halloween")
+	hourly(t, s, "2026-10-31", []int{0, 1, 2}, 2, "hw2", "Halloween")
+	hourly(t, s, "2026-11-01", []int{0, 1}, 2, "hw3", "Halloween")
+	hourly(t, s, "2026-10-31", []int{0, 1, 2}, 2, "elect", "Election")
+	hourly(t, s, "2026-11-01", []int{0, 1}, 2, "elect", "Election")
+	rollup(t, s, "2026-10-31", "2026-11-01")
+}
+
+// The by-label day sum is capped at the day's cycle count from
+// sentiment_history, per day, before the days are summed; the group's peak
+// rank survives the cap.
+func TestGetTopTopicForRange_LabelDaySumCappedAtCycles(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedSharedFinalLabel(t, s)
+	cycles(t, s, "2026-10-31", 3)
+	cycles(t, s, "2026-11-01", 5)
+
+	// 2026-10-31 alone: by label halloween 6 capped to the day's 3 cycles,
+	// at rank 1; by id hw1 3 at rank 1. Same sum, same rank, so the by-id
+	// result is returned, and either way the figure is 3, not 6.
+	label, n, err := s.GetTopTopicForRange(ctx, "2026-10-31", "2026-10-31")
+	if err != nil || label != "Halloween" || n != 3 {
+		t.Errorf("capped day = %q, %d, %v; want Halloween, 3", label, n, err)
+	}
+
+	// The week: halloween 3 (capped) + 2 (under 2026-11-01's 5 cycles, so
+	// uncapped) = 5 at rank 1; elect 5 by id at rank 2. Equal sums go to the
+	// better peak rank, which the cap left alone: by label wins with 5. An
+	// uncapped by-label sum would have reported 8.
+	label, n, err = s.GetTopTopicForRange(ctx, "2026-10-26", "2026-11-01")
+	if err != nil || label != "Halloween" || n != 5 {
+		t.Errorf("week = %q, %d, %v; want Halloween, 5", label, n, err)
+	}
+}
+
+// A date with no sentiment_history rows is left uncapped.
+func TestGetTopTopicForRange_LabelDaySumUncappedWithoutCycles(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedSharedFinalLabel(t, s)
+
+	label, n, err := s.GetTopTopicForRange(ctx, "2026-10-31", "2026-10-31")
+	if err != nil || label != "Halloween" || n != 6 {
+		t.Errorf("uncapped day = %q, %d, %v; want Halloween, 6", label, n, err)
+	}
+	label, n, err = s.GetTopTopicForRange(ctx, "2026-10-26", "2026-11-01")
+	if err != nil || label != "Halloween" || n != 8 {
+		t.Errorf("uncapped week = %q, %d, %v; want Halloween, 8", label, n, err)
+	}
+
+	// Cycles on a date outside the range, or on a date with no topics, change
+	// nothing and do not break the empty-range case.
+	cycles(t, s, "2026-10-30", 1)
+	cycles(t, s, "2026-11-02", 24)
+	if label, n, err = s.GetTopTopicForRange(ctx, "2026-10-26", "2026-11-01"); err != nil || label != "Halloween" || n != 8 {
+		t.Errorf("week with cycles outside = %q, %d, %v; want Halloween, 8", label, n, err)
+	}
+	if label, n, err = s.GetTopTopicForRange(ctx, "2026-11-02", "2026-11-08"); err != nil || label != "" || n != 0 {
+		t.Errorf("cycles but no topics = %q, %d, %v; want empty", label, n, err)
+	}
+}
+
 func TestGetTopTopicForRange_Ties(t *testing.T) {
 	ctx := context.Background()
 
