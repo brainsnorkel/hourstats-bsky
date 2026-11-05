@@ -103,7 +103,7 @@ func TestBuildWeeklyReportText(t *testing.T) {
 		t.Errorf("weekly text %d runes over limit", n)
 	}
 
-	reply := buildPostOfWeekText(r)
+	reply := buildPostOfWeekText(r.Start, r.End, storedPostOfWeekFigures(*r.TopPost))
 	if reply != "Post of the week · 25–31 Aug\n\nMost engaged post by @nasa.gov: 48.2k likes, 9.1k reposts, 2.3k replies" {
 		t.Errorf("reply text: %q", reply)
 	}

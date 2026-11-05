@@ -56,6 +56,20 @@ type Verdict struct {
 	// AuthorDID is filled whenever the AppView returned an author, including
 	// for rejected posts, so callers can log or aggregate by account.
 	AuthorDID string
+	// AuthorHandle is the author's handle as the AppView resolved it at check
+	// time, filled whenever an author was returned, including for rejected
+	// posts. The AppView reports "handle.invalid" when it could not resolve
+	// one; callers that print the handle must treat that as absent.
+	AuthorHandle string
+	// Likes, Reposts and Replies are the post's engagement counts as the
+	// AppView had them at check time, so a surface that quotes a post days
+	// after it was stored can print current figures. They are meaningful only
+	// when HasCounts is true.
+	Likes, Reposts, Replies int
+	// HasCounts is true when the AppView returned all three counts for the
+	// post. It stays false for a missing post and for a view that omitted any
+	// of them, in which case the three counts are zero.
+	HasCounts bool
 }
 
 // visibilityLookup is the slice of *VisibilityResolver the gate uses, named so
@@ -175,6 +189,14 @@ func (g *FeatureGate) Check(ctx context.Context, surface string, uris []string) 
 		v := Verdict{OK: true, Quotable: true}
 		if pv.Author != nil {
 			v.AuthorDID = pv.Author.Did
+			v.AuthorHandle = pv.Author.Handle
+		}
+		// The counts are carried even for a rejected post: they describe the
+		// view the AppView returned, and the verdict below decides whether
+		// anything is printed from it.
+		if pv.LikeCount != nil && pv.RepostCount != nil && pv.ReplyCount != nil {
+			v.Likes, v.Reposts, v.Replies = int(*pv.LikeCount), int(*pv.RepostCount), int(*pv.ReplyCount)
+			v.HasCounts = true
 		}
 		sysLabel, labelled := systemLabel(pv)
 		switch {

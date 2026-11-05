@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -9,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
@@ -18,7 +21,12 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	// weeklyReportGuardKey holds the Monday date of the last week reported.
+	// weeklyReportGuardKey holds the Monday date of the last week reported,
+	// or, when no week has been reported yet, the Monday of the most recent
+	// complete week at the time reports were first enabled: that week is
+	// deliberately never posted, so switching REPORTS_ENABLED on mid-week does
+	// not publish a review that is already days stale. Unset means reports
+	// have never been enabled on this database.
 	weeklyReportGuardKey = "weekly_report_last_week"
 	// weeklyReportMinDays is how many of the seven daily rows must exist.
 	weeklyReportMinDays = 5
@@ -95,12 +103,64 @@ func truncateRunes(s string, n int) string {
 	return string(cut) + "…"
 }
 
+// postOfWeekFigures is what the post-of-the-week reply prints about the post.
+type postOfWeekFigures struct {
+	Handle                  string
+	Likes, Reposts, Replies int
+	// Source records where the figures came from: "live" when every one was
+	// taken from the feature gate's verdict, "stored" when every one is the
+	// daily_top_post value, "partial" otherwise.
+	Source string
+}
+
+// Values of postOfWeekFigures.Source.
+const (
+	figuresLive    = "live"
+	figuresStored  = "stored"
+	figuresPartial = "partial"
+)
+
+// invalidHandle is the AppView's marker for an author whose handle could not
+// be resolved. Printing it would name nobody.
+const invalidHandle = "handle.invalid"
+
+// storedPostOfWeekFigures reads the figures as daily_top_post recorded them:
+// the engagement at the hour the post was first seen.
+func storedPostOfWeekFigures(p store.Post) postOfWeekFigures {
+	return postOfWeekFigures{Handle: p.AuthorHandle, Likes: p.Likes, Reposts: p.Reposts, Replies: p.Replies, Source: figuresStored}
+}
+
+// resolvePostOfWeekFigures prefers the feature gate's verdict, which the
+// AppView answered moments ago, over the stored row, which holds the counts
+// from the hour the post was first seen, typically a quarter of what it has a
+// week later. The live handle is used when it is non-empty and resolved; the
+// live counts only when the verdict carries all three. Each field that the
+// verdict cannot supply keeps its stored value.
+func resolvePostOfWeekFigures(stored store.Post, v client.Verdict) postOfWeekFigures {
+	f := storedPostOfWeekFigures(stored)
+	liveHandle := v.AuthorHandle != "" && v.AuthorHandle != invalidHandle
+	if liveHandle {
+		f.Handle = v.AuthorHandle
+	}
+	if v.HasCounts {
+		f.Likes, f.Reposts, f.Replies = v.Likes, v.Reposts, v.Replies
+	}
+	switch {
+	case liveHandle && v.HasCounts:
+		f.Source = figuresLive
+	case !liveHandle && !v.HasCounts:
+		f.Source = figuresStored
+	default:
+		f.Source = figuresPartial
+	}
+	return f
+}
+
 // buildPostOfWeekText renders the reply that quotes the week's top post.
-func buildPostOfWeekText(r weeklyReport) string {
-	p := r.TopPost
+func buildPostOfWeekText(start, end time.Time, f postOfWeekFigures) string {
 	return fmt.Sprintf("Post of the week · %s\n\nMost engaged post by @%s: %s likes, %s reposts, %s replies",
-		rangeLabel(r.Start, r.End), p.AuthorHandle,
-		compactCount(p.Likes), compactCount(p.Reposts), compactCount(p.Replies))
+		rangeLabel(start, end), f.Handle,
+		compactCount(f.Likes), compactCount(f.Reposts), compactCount(f.Replies))
 }
 
 // loadWeeklyReport gathers the previous week's data. ok is false, with the
@@ -145,10 +205,31 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycle
 // runWeeklyReport posts the week-in-review root and, when a top post is
 // known, the post-of-the-week quote reply. The guard key is set once the
 // root is posted, so a failed reply is not retried by a later re-run.
+//
+// The first run after reports are enabled posts nothing: the guard key is
+// unset, so it is set to the most recent complete week and the function
+// returns, and the first review goes out for the week that completes next. A
+// later run posts whenever the guard names an older week, so a skipped Monday
+// is still caught up the next night.
 func runWeeklyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time, cycleMinutes int) {
 	start, _ := previousWeek(now)
 	weekKey := start.Format(dateFormat)
-	if last, _ := db.GetKeyValue(ctx, weeklyReportGuardKey); last == weekKey {
+	last, err := db.GetKeyValue(ctx, weeklyReportGuardKey)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// Without the guard a post here could duplicate one already out, and a
+		// first-enable write would land on a database that just failed a read.
+		slog.Warn("weekly report: guard key unreadable, skipping this run", "error", err, "week_start", weekKey)
+		return
+	}
+	if last == "" {
+		if err := db.SetKeyValue(ctx, weeklyReportGuardKey, weekKey); err != nil {
+			slog.Error("persist weekly report guard failed", "error", err, "week_start", weekKey)
+			return
+		}
+		slog.Info("weekly report: first enable, starting from the next complete week", "week_start", weekKey)
+		return
+	}
+	if last == weekKey {
 		slog.Info("weekly report already posted", "week_start", weekKey)
 		return
 	}
@@ -162,22 +243,20 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 		slog.Error("weekly report text over limit, skipping", "length", n)
 		return
 	}
-	replyText := ""
-	if r.TopPost != nil {
-		replyText = buildPostOfWeekText(r)
-		if n := postLength(replyText); n > blueskyPostLimit {
-			slog.Warn("post of the week text over limit, omitting reply", "length", n)
-			replyText = ""
-		}
-	}
 
 	if dryRun {
+		// No client is built in a dry run, so there is no verdict to take live
+		// figures from: the preview shows the stored ones.
+		replyText := ""
+		if r.TopPost != nil {
+			replyText = buildPostOfWeekText(r.Start, r.End, storedPostOfWeekFigures(*r.TopPost))
+		}
 		slog.Info("DRY_RUN: would post weekly report",
 			"week_start", weekKey, "days", len(r.Days), "prev_days", len(r.PrevDays),
 			"topic", r.TopicLabel, "topic_hours", r.TopicHours,
 			"has_top_post", r.TopPost != nil,
 			"text", text, "text_length", postLength(text),
-			"reply", replyText, "reply_length", postLength(replyText))
+			"reply", replyText, "reply_length", postLength(replyText), "counts_source", figuresStored)
 		return
 	}
 
@@ -203,10 +282,17 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 		slog.Error("persist weekly report guard failed", "error", err, "week_start", weekKey)
 	}
 
-	if replyText == "" {
+	if r.TopPost == nil {
 		return
 	}
-	postWeeklyTopPostReply(apiCtx, bskyClient, r, replyText, rootURI, rootCID)
+	postWeeklyTopPostReply(apiCtx, bskyClient, newFeatureGate(bskyClient), r, rootURI, rootCID)
+}
+
+// weeklyReplyPoster is the slice of *client.BlueskyClient the post-of-the-week
+// reply needs, so the decision can be driven by a recording fake in tests.
+type weeklyReplyPoster interface {
+	PostWithFacetsAsReply(ctx context.Context, text string, facets []*bsky.RichtextFacet, rootURI, rootCID, parentURI, parentCID string) (string, string, error)
+	PostReplyWithQuote(ctx context.Context, text string, rootURI, rootCID, parentURI, parentCID, quoteURI, quoteCID string) (string, string, error)
 }
 
 // postWeeklyTopPostReply quotes the week's top post under the root, falling
@@ -214,11 +300,16 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 // skipping the reply entirely when the post must not be featured at all. The
 // week between the post and this reply is long enough for a block, a label, a
 // deletion or a visibility declaration to land, so the gate runs again here.
-func postWeeklyTopPostReply(ctx context.Context, bskyClient *client.BlueskyClient, r weeklyReport, replyText, rootURI, rootCID string) {
-	verdicts, gateErr := checkFeatureGate(ctx, newFeatureGate(bskyClient), "weekly", []string{r.TopPost.URI})
+//
+// The reply's text is built only after the gate has answered: the verdict's
+// getPosts view carries the post's current handle and engagement, which is
+// what the reply prints, falling back per field to the daily_top_post row.
+// The gate runs after the root is posted so its latency never delays the
+// root. r.TopPost must be non-nil.
+func postWeeklyTopPostReply(ctx context.Context, poster weeklyReplyPoster, gate featureGate, r weeklyReport, rootURI, rootCID string) {
+	verdicts, gateErr := checkFeatureGate(ctx, gate, "weekly", []string{r.TopPost.URI})
 	verdict := verdicts[r.TopPost.URI]
 
-	var err error
 	switch {
 	case gateErr != nil:
 		// The root is already out and its guard key already set, so the week
@@ -228,15 +319,26 @@ func postWeeklyTopPostReply(ctx context.Context, bskyClient *client.BlueskyClien
 	case !verdict.OK:
 		slog.Info("weekly report: post of the week reply skipped, it cannot be featured", "uri", r.TopPost.URI, "reason", verdict.Reason)
 		return
-	case !verdict.Quotable:
+	}
+
+	figures := resolvePostOfWeekFigures(*r.TopPost, verdict)
+	replyText := buildPostOfWeekText(r.Start, r.End, figures)
+	if n := postLength(replyText); n > blueskyPostLimit {
+		slog.Warn("post of the week text over limit, omitting reply", "length", n, "counts_source", figures.Source)
+		return
+	}
+
+	var err error
+	if verdict.Quotable {
+		_, _, err = poster.PostReplyWithQuote(ctx, replyText, rootURI, rootCID, rootURI, rootCID, r.TopPost.URI, r.TopPost.CID)
+	} else {
 		slog.Info("weekly report: top post is quote-controlled, replying without embed", "uri", r.TopPost.URI)
-		_, _, err = bskyClient.PostWithFacetsAsReply(ctx, replyText, nil, rootURI, rootCID, rootURI, rootCID)
-	default:
-		_, _, err = bskyClient.PostReplyWithQuote(ctx, replyText, rootURI, rootCID, rootURI, rootCID, r.TopPost.URI, r.TopPost.CID)
+		_, _, err = poster.PostWithFacetsAsReply(ctx, replyText, nil, rootURI, rootCID, rootURI, rootCID)
 	}
 	if err != nil {
 		slog.Warn("post of the week reply failed", "error", err)
 		return
 	}
-	slog.Info("post of the week reply posted", "top_post", r.TopPost.URI, "quotable", verdict.Quotable)
+	slog.Info("post of the week reply posted", "top_post", r.TopPost.URI, "quotable", verdict.Quotable,
+		"counts_source", figures.Source, "stored_likes", r.TopPost.Likes, "live_likes", verdict.Likes, "live_counts", verdict.HasCounts)
 }
