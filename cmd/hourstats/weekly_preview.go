@@ -168,7 +168,9 @@ func runWeeklyReportPreview(ctx context.Context, db *store.Store, poster weeklyP
 	default:
 		slog.Warn("weekly report preview: discord post failed", "week_start", weekKey, "error", postErr)
 		if events != nil {
-			_ = events.LogEvent(ctx, weeklyPreviewFailedEvent, fmt.Sprintf("week_start=%s flags=%d error=%q", weekKey, len(flags), postErr))
+			// Detached from ctx so a shutdown that cancelled the post still
+			// leaves the event for the alert path to re-raise.
+			_ = events.LogEvent(context.WithoutCancel(ctx), weeklyPreviewFailedEvent, fmt.Sprintf("week_start=%s flags=%d error=%q", weekKey, len(flags), postErr))
 		}
 	}
 }
