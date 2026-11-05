@@ -458,6 +458,26 @@ func TestThresholdsFromEnv(t *testing.T) {
 	}
 }
 
+func TestThresholdsFromEnvWith_KeepsBaseCycleSeconds(t *testing.T) {
+	base := DefaultThresholds()
+	base.CycleSeconds = 1800
+
+	t.Setenv("ALERT_CYCLE_SECONDS", "")
+	if got := ThresholdsFromEnvWith(base).CycleSeconds; got != 1800 {
+		t.Errorf("unset: CycleSeconds = %d, want the base 1800", got)
+	}
+
+	t.Setenv("ALERT_CYCLE_SECONDS", "2400")
+	if got := ThresholdsFromEnvWith(base).CycleSeconds; got != 2400 {
+		t.Errorf("set: CycleSeconds = %d, want 2400", got)
+	}
+
+	t.Setenv("ALERT_CYCLE_SECONDS", "soon")
+	if got := ThresholdsFromEnvWith(base).CycleSeconds; got != 1800 {
+		t.Errorf("garbage: CycleSeconds = %d, want the base 1800", got)
+	}
+}
+
 func TestThresholdsFromEnv_GarbageFallsBackToDefaults(t *testing.T) {
 	t.Setenv("ALERT_CYCLE_SECONDS", "soon")
 	t.Setenv("ALERT_RSS_PCT", "-5")

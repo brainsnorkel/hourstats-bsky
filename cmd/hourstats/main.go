@@ -147,7 +147,11 @@ func main() {
 
 	// Alert thresholds are read once; the state is shared with the API so
 	// /stats/health reports the same evaluation the notifier acted on.
-	alertThresholds := alerts.ThresholdsFromEnv()
+	// The cycle-duration threshold defaults to the hydration timeout plus the
+	// cycle reserve, so it follows HYDRATION_TIMEOUT_MINUTES.
+	alertBase := alerts.DefaultThresholds()
+	alertBase.CycleSeconds = sharedHydrationBudget(analysisMinutes).CycleAlertSeconds
+	alertThresholds := alerts.ThresholdsFromEnvWith(alertBase)
 	alertState := alerts.NewState()
 	alertNotifier := alerts.NewNotifier(profile, os.Getenv("ALERT_DISCORD_WEBHOOK_URL"), nil)
 	alertNotifier.SetMention(os.Getenv("ALERT_DISCORD_MENTION"))

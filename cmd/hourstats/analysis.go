@@ -30,7 +30,9 @@ const topPostCount = 3
 // defaultMaxWindowPosts bounds how many posts one analysis window may load into
 // memory. A window read is the cycle's largest allocation, so an unusually long
 // interval or a firehose surge could otherwise size it past the machine. The
-// default clears prod's busiest hour with room to spare.
+// default clears prod's busiest hour with room to spare. It is the floor of the
+// derived cap: unset, ANALYSIS_MAX_WINDOW_POSTS resolves to the larger of this
+// and the hydration ceiling (see applyCycleLimits).
 const defaultMaxWindowPosts = 300000
 
 // windowCapDecision reports whether the window cap bound the read, i.e. the
@@ -311,7 +313,8 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 
 	cutoff := time.Now().UTC().Add(-time.Duration(analysisMinutes) * time.Minute)
 
-	maxWindowPosts := envInt("ANALYSIS_MAX_WINDOW_POSTS", defaultMaxWindowPosts)
+	budget := sharedHydrationBudget(analysisMinutes)
+	maxWindowPosts := budget.WindowCap
 	posts, availableInWindow, err := db.GetPostsSinceLimit(cycleCtx, cutoff, maxWindowPosts)
 	if err != nil {
 		slog.Error("get posts failed", "error", err)
@@ -320,7 +323,6 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 	slog.Info("posts in window", "count", len(posts), "cutoff", cutoff.Format(time.RFC3339))
-	budget := sharedHydrationBudget(analysisMinutes)
 	if len(posts) > budget.CeilingPosts {
 		slog.Warn("window exceeds hydration ceiling, expect a hydration timeout",
 			"window_posts", len(posts),
