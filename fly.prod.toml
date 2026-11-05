@@ -30,9 +30,10 @@ swap_size_mb = 512
   # ~150k hydration ceiling. Lift the window cap off the live volume and give
   # hydration 25 minutes. Since hs-thk.4 a truncated hydration is no longer a loss
   # (never-attempted posts are scored), so HYDRATION_MAX_ERROR_PCT keeps its default.
+  # The cap stays explicit at 350000, above the 312,500 ceiling; ALERT_CYCLE_SECONDS
+  # is left unset and derives from the timeout (25 min + 10 min cycle reserve = 2100 s, hs-047).
   ANALYSIS_MAX_WINDOW_POSTS = "350000"
   HYDRATION_TIMEOUT_MINUTES = "25"
-  ALERT_CYCLE_SECONDS = "2400"
 
 [mounts]
   source = "data"

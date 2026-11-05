@@ -147,12 +147,20 @@ func DefaultThresholds() Thresholds {
 }
 
 // ThresholdsFromEnv returns the defaults with the ALERT_* overrides applied.
+func ThresholdsFromEnv() Thresholds {
+	return ThresholdsFromEnvWith(DefaultThresholds())
+}
+
+// ThresholdsFromEnvWith returns base with the ALERT_* overrides applied, so a
+// caller can supply derived defaults (cmd/hourstats derives CycleSeconds from
+// the hydration budget).
+//
 // TotalMemoryMB follows the memory guard's resolution order — FLY_VM_MEMORY_MB
 // first, since Fly sets it on every machine and it follows a resize, then the
 // manual MEMORY_GUARD_TOTAL_MB — so the RSS condition and the guard are always
 // talking about the same machine.
-func ThresholdsFromEnv() Thresholds {
-	cfg := DefaultThresholds()
+func ThresholdsFromEnvWith(base Thresholds) Thresholds {
+	cfg := base
 	cfg.CappedPostsPerSnapshot = envInt("ALERT_CAPPED_POSTS_PER_SNAPSHOT", cfg.CappedPostsPerSnapshot)
 	cfg.DeniedPostsWarn = envInt("ALERT_DENIED_POSTS_PER_SNAPSHOT", cfg.DeniedPostsWarn)
 	cfg.StalePostsPerSnapshot = envInt("ALERT_STALE_POSTS_PER_SNAPSHOT", cfg.StalePostsPerSnapshot)
