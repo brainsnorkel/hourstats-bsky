@@ -181,18 +181,21 @@ func TestGetTopTopicForRange_LabelAcrossIDsWins(t *testing.T) {
 	}
 }
 
-// The midterms shape: Gemini relabelled one ID three times, so no single
-// label beats Halloween's two IDs, but the ID does. The displayed label is
-// the one on the ID's latest-date row.
+// The midterms shape: Gemini relabelled one ID on each of three days, so no
+// single label beats Halloween's two IDs, but the ID does. The displayed
+// label is the one on the ID's latest-date row. The relabels sit on separate
+// days because RollupTopicDaily keeps one row per (date, topic_id) carrying
+// only the day's last label, so two labels on one day would collapse into one.
 func TestGetTopTopicForRange_IDAcrossLabelsWins(t *testing.T) {
 	s := newTestStore(t)
 	hourly(t, s, "2026-11-03", []int{0, 1}, 1, "mid", "Midterms")
-	hourly(t, s, "2026-11-03", []int{2, 3}, 1, "mid", "2026 Midterm Elections")
-	hourly(t, s, "2026-11-04", []int{0, 1}, 1, "mid", "Midterm results")
-	hourly(t, s, "2026-11-03", []int{0, 1}, 2, "hw1", "Halloween")
-	hourly(t, s, "2026-11-04", []int{0, 1}, 2, "hw2", "Halloween")
-	rollup(t, s, "2026-11-03", "2026-11-04")
+	hourly(t, s, "2026-11-04", []int{0, 1}, 1, "mid", "2026 Midterm Elections")
+	hourly(t, s, "2026-11-05", []int{0, 1}, 1, "mid", "Midterm results")
+	hourly(t, s, "2026-11-03", []int{2, 3}, 2, "hw1", "Halloween")
+	hourly(t, s, "2026-11-04", []int{2, 3}, 2, "hw2", "Halloween")
+	rollup(t, s, "2026-11-03", "2026-11-04", "2026-11-05")
 
+	// topic_daily: mid has three rows, one per label, 2 appearances each.
 	// By id: mid 6, hw1 2, hw2 2. By label: halloween 4, each midterms label 2.
 	label, n, err := s.GetTopTopicForRange(context.Background(), "2026-11-02", "2026-11-08")
 	if err != nil || label != "Midterm results" || n != 6 {
@@ -252,6 +255,24 @@ func TestGetTopTopicForRange_Ties(t *testing.T) {
 		label, n, err := s.GetTopTopicForRange(ctx, "2026-09-01", "2026-09-07")
 		if err != nil || label != "Beta" || n != 4 {
 			t.Errorf("top = %q, %d, %v; want Beta, 4", label, n, err)
+		}
+	})
+
+	t.Run("equal sums across the axes go to the better peak rank", func(t *testing.T) {
+		s := newTestStore(t)
+		hourly(t, s, "2026-11-03", []int{0, 1}, 2, "mid", "A")
+		hourly(t, s, "2026-11-04", []int{0, 1}, 2, "mid", "B")
+		hourly(t, s, "2026-11-03", []int{2, 3}, 1, "hw1", "Halloween")
+		hourly(t, s, "2026-11-04", []int{2, 3}, 3, "hw2", "Halloween")
+		rollup(t, s, "2026-11-03", "2026-11-04")
+
+		// By id: mid 4 at rank 2 (hw1 2, hw2 2). By label: halloween 4 at
+		// rank 1 (a 2, b 2). Same sum, by label peaked higher: it wins, so
+		// the rank clause between the axes is what this pins. Without it the
+		// by-id result "B" would come back.
+		label, n, err := s.GetTopTopicForRange(ctx, "2026-11-02", "2026-11-08")
+		if err != nil || label != "Halloween" || n != 4 {
+			t.Errorf("top = %q, %d, %v; want Halloween, 4", label, n, err)
 		}
 	})
 

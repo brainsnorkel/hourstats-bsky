@@ -79,29 +79,35 @@ func (s *Store) GetTopicDaily(ctx context.Context, date string) ([]TopicDailyRow
 	return out, rows.Err()
 }
 
-// GetTopTopicForRange returns the topic that trended in the most hourly
-// snapshots between startDate and endDate inclusive, with its total
-// appearances. label is "" when the range holds no topic data.
+// GetTopTopicForRange returns the topic with the most topic_daily
+// appearances between startDate and endDate inclusive, and that count.
+// label is "" when the range holds no topic data.
 //
 // topic_daily fragments one subject in two independent ways. The identity
 // tracker splits a subject across topic IDs (Halloween in the week of
-// 2026-10-26 trended 85 hours under its normalised label but only 54 under
-// its best single ID), while Gemini relabels one ID from hour to hour (the
-// 2026 midterms ID of 2026-11-02 trended 37 hours under one ID but 22 under
-// its best single label). So the rows are aggregated twice, by topic_id and
-// by the normalised label key lower(trim(label)), and the better result is
+// 2026-10-26 summed to 85 appearances under its normalised label but only 54
+// under its best single ID), while Gemini relabels one ID from hour to hour
+// (the 2026 midterms ID of 2026-11-02 trended 37 hours but summed to 22 under
+// its best label key). So the rows are aggregated twice, by topic_id and by
+// the normalised label key lower(trim(label)), and the better result is
 // returned: the larger SUM(appearances), then the smaller MIN(best_rank),
-// then the by-id result. No two topics in one hourly snapshot carry the same
-// label, so each aggregation is a lower bound on the hours the subject
-// actually trended, and taking the larger is honest: it is never worse than
-// either axis alone.
+// then the by-id result. The winner is never smaller than either axis alone,
+// so a subject fragmented either way is not understated.
+//
+// Only the by-id sum is a count of hours. A topic_daily row keeps the label
+// its ID carried in the day's last snapshot, so the by-label sum credits
+// every hour of an ID to that final label: on 2026-11-04 the midterms ID
+// carried "2026 Midterm Elections" in 4 of its 22 snapshots yet contributes
+// all 22 to that key. Summed across IDs this can exceed a day's cycles
+// ("donald trump" summed to 28 over 9 IDs on 2026-09-11, a 24-cycle day), so
+// the by-label figure is an estimate that can run high, not a lower bound;
+// cmd/hourstats topicHours caps the week at 168 hours.
 //
 // The label shown is the spelling on the group's latest-date row (by id, the
 // (date, topic_id) key makes that row unique; by label, ties on one date go
 // to the larger appearances, then the smaller topic_id). SQLite's lower()
 // folds ASCII only, so labels that differ only in non-ASCII case stay
-// separate groups. Summing across IDs can give a day more appearances than it
-// has hours; cmd/hourstats topicHours caps the week at 168 hours.
+// separate groups.
 func (s *Store) GetTopTopicForRange(ctx context.Context, startDate, endDate string) (label string, appearances int, err error) {
 	byID, err := s.topTopicBy(ctx, topTopicByIDQuery, startDate, endDate)
 	if err != nil {
