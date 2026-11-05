@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
 
 // augustReport is a full August with a full July before it and a firehose
@@ -186,5 +188,66 @@ func TestRunMonthlyReportSkipsWhenGuardUnreadable(t *testing.T) {
 		t.Errorf("guard key was written (%q) on a run whose read failed, want it still unset", got)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("GetKeyValue after the failed run: %v, want a not-found error", err)
+	}
+}
+
+// seedMonthDays writes one daily_sentiment row per day of the month that
+// starts on first, with the shape loadMonthlyReport needs: full days of 24
+// cycles, plausible averages and quartiles, and a firehose total each.
+func seedMonthDays(t *testing.T, ctx context.Context, db *store.Store, first time.Time) {
+	t.Helper()
+	for d := first; d.Month() == first.Month(); d = d.AddDate(0, 0, 1) {
+		day := d.Format(dateFormat)
+		avg := 10 + float64(d.Day()%5)*0.4
+		if err := db.StoreDailySentiment(ctx, store.DailySentimentDataPoint{
+			Date: day, RunID: "run-" + day, AverageSentiment: avg, MinSentiment: avg - 4, MaxSentiment: avg + 3,
+			Q1Sentiment: avg - 1.5, MedianSentiment: avg, Q3Sentiment: avg + 1.2, TotalRuns: 24,
+			TotalPosts: 1_900_000 + d.Day()*10_000, TotalFirehosePosts: 3_800_000 + d.Day()*20_000,
+		}); err != nil {
+			t.Fatalf("StoreDailySentiment(%s): %v", day, err)
+		}
+	}
+}
+
+// TestRunMonthlyReportDryRunCatchesUpPreviousMonth is the positive half of
+// TestRunMonthlyReportSkipsWhenGuardUnreadable: an absent guard key is "not
+// yet posted", so the first run after reports are enabled previews the
+// previous calendar month (the documented catch-up) instead of skipping it,
+// and a dry run leaves the guard unset. A refactor that returns on any read
+// error, sql.ErrNoRows included, fails this test.
+func TestRunMonthlyReportDryRunCatchesUpPreviousMonth(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+	// November 7th: the previous calendar month is October, 31 days seeded.
+	now := time.Date(2026, time.November, 7, 1, 0, 30, 0, time.UTC)
+	seedMonthDays(t, ctx, db, time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC))
+	// The full-firehose cutover predates the month, so its firehose line is
+	// drawn from the seeded totals rather than withheld.
+	if err := db.SetKeyValue(ctx, firehoseCountV2Key, "2026-09-01"); err != nil {
+		t.Fatalf("SetKeyValue(%s): %v", firehoseCountV2Key, err)
+	}
+	if _, err := db.GetKeyValue(ctx, monthlyReportGuardKey); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("fresh store: GetKeyValue(%s) = %v, want sql.ErrNoRows", monthlyReportGuardKey, err)
+	}
+	buf := captureLogs(t)
+
+	runMonthlyReport(ctx, db, "", "", true, now)
+
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"DRY_RUN: would post monthly report"`) || !strings.Contains(out, `"month":"2026-10"`) {
+		t.Errorf("absent guard did not fall through to the October preview: %s", out)
+	}
+	for _, want := range []string{`"days":31`, `"firehose_complete":true`, `"mood_text":"October in review`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("preview line missing %s: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "guard key unreadable") {
+		t.Errorf("an absent guard key was treated as a read error: %s", out)
+	}
+	if got, err := db.GetKeyValue(ctx, monthlyReportGuardKey); err == nil {
+		t.Errorf("dry run wrote the guard key (%q), want it still unset", got)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetKeyValue after the dry run: %v, want sql.ErrNoRows", err)
 	}
 }

@@ -50,6 +50,9 @@ func alertDIDCounts(counts []jetstream.DIDCount) []alerts.DIDCount {
 }
 
 func main() {
+	// Taken before the store opens and RunStartupMaintenance runs (minutes on
+	// prod): the weekly guard must be armed to the moment the process started.
+	startedAt := time.Now()
 	profile := envOr("HOURSTATS_PROFILE", "staging")
 	dataDir := envOr("DATA_DIR", "/data")
 	handle := os.Getenv("BLUESKY_HANDLE")
@@ -135,7 +138,7 @@ func main() {
 	// Seeded here, not in the daily job, so a Sunday deploy still reports the
 	// week that ends that night (see armWeeklyReportGuard).
 	if reportsEnabled {
-		armWeeklyReportGuard(context.Background(), db, time.Now())
+		armWeeklyReportGuard(context.Background(), db, startedAt)
 	}
 
 	// Start stats HTTP API
