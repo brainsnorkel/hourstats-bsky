@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -131,6 +132,8 @@ func TestGetTopTopicForRange(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The by-id axis wins here: swift is 7 under one ID but split 3 + 4
+	// across two labels, so by label NASA's 6 would have come first.
 	label, n, err := s.GetTopTopicForRange(ctx, "2026-09-01", "2026-09-07")
 	if err != nil || label != "Taylor Swift engagement" || n != 7 {
 		t.Errorf("week top = %q, %d, %v; want Taylor Swift engagement, 7", label, n, err)
@@ -139,6 +142,246 @@ func TestGetTopTopicForRange(t *testing.T) {
 	if label != "NASA" || n != 6 {
 		t.Errorf("day top = %q, %d; want NASA, 6", label, n)
 	}
+}
+
+// hourly inserts one snapshot per listed hour of a UTC day at the given rank.
+func hourly(t *testing.T, s *Store, date string, hours []int, rank int, topicID, label string) {
+	t.Helper()
+	for _, h := range hours {
+		snap(t, s, fmt.Sprintf("%sT%02d:25:00Z", date, h), rank, topicID, label, 1)
+	}
+}
+
+func rollup(t *testing.T, s *Store, dates ...string) {
+	t.Helper()
+	for _, d := range dates {
+		if _, err := s.RollupTopicDaily(context.Background(), d); err != nil {
+			t.Fatalf("rollup %s: %v", d, err)
+		}
+	}
+}
+
+// The Halloween shape: the identity tracker split one subject across four
+// IDs over two days, so no single ID beats the election topic, but the label
+// does.
+func TestGetTopTopicForRange_LabelAcrossIDsWins(t *testing.T) {
+	s := newTestStore(t)
+	hourly(t, s, "2026-10-31", []int{0, 1, 2}, 1, "elect", "Election")
+	hourly(t, s, "2026-10-31", []int{0, 1}, 2, "hw1", "Halloween")
+	hourly(t, s, "2026-10-31", []int{2, 3}, 2, "hw2", "Halloween")
+	hourly(t, s, "2026-11-01", []int{0, 1, 2}, 1, "elect", "Election")
+	hourly(t, s, "2026-11-01", []int{0, 1}, 2, "hw3", "Halloween")
+	hourly(t, s, "2026-11-01", []int{2, 3}, 2, "hw4", "Halloween")
+	rollup(t, s, "2026-10-31", "2026-11-01")
+
+	// By id: elect 6, each hw* 2. By label: halloween 8, election 6.
+	label, n, err := s.GetTopTopicForRange(context.Background(), "2026-10-26", "2026-11-01")
+	if err != nil || label != "Halloween" || n != 8 {
+		t.Errorf("top = %q, %d, %v; want Halloween, 8", label, n, err)
+	}
+}
+
+// The midterms shape: Gemini relabelled one ID on each of three days, so no
+// single label beats Halloween's two IDs, but the ID does. The displayed
+// label is the one on the ID's latest-date row. The relabels sit on separate
+// days because RollupTopicDaily keeps one row per (date, topic_id) carrying
+// only the day's last label, so two labels on one day would collapse into one.
+func TestGetTopTopicForRange_IDAcrossLabelsWins(t *testing.T) {
+	s := newTestStore(t)
+	hourly(t, s, "2026-11-03", []int{0, 1}, 1, "mid", "Midterms")
+	hourly(t, s, "2026-11-04", []int{0, 1}, 1, "mid", "2026 Midterm Elections")
+	hourly(t, s, "2026-11-05", []int{0, 1}, 1, "mid", "Midterm results")
+	hourly(t, s, "2026-11-03", []int{2, 3}, 2, "hw1", "Halloween")
+	hourly(t, s, "2026-11-04", []int{2, 3}, 2, "hw2", "Halloween")
+	rollup(t, s, "2026-11-03", "2026-11-04", "2026-11-05")
+
+	// topic_daily: mid has three rows, one per label, 2 appearances each.
+	// By id: mid 6, hw1 2, hw2 2. By label: halloween 4, each midterms label 2.
+	label, n, err := s.GetTopTopicForRange(context.Background(), "2026-11-02", "2026-11-08")
+	if err != nil || label != "Midterm results" || n != 6 {
+		t.Errorf("top = %q, %d, %v; want Midterm results, 6", label, n, err)
+	}
+}
+
+// Labels group on lower(trim(label)), and the spelling shown is the one on
+// the group's latest-date row; two rows on that date exercise the tiebreak.
+func TestGetTopTopicForRange_LabelKeyAndSpelling(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("latest date, larger appearances", func(t *testing.T) {
+		s := newTestStore(t)
+		hourly(t, s, "2026-10-30", []int{0, 1, 2, 3, 4}, 1, "other", "Other")
+		hourly(t, s, "2026-10-30", []int{0, 1, 2}, 2, "hw1", " halloween ")
+		hourly(t, s, "2026-10-31", []int{0}, 2, "hw2", "Halloween")
+		hourly(t, s, "2026-10-31", []int{1, 2}, 2, "hw3", "HALLOWEEN")
+		rollup(t, s, "2026-10-30", "2026-10-31")
+
+		// By id: other 5. By label: halloween 3 + 1 + 2 = 6; on the latest
+		// date hw3 has 2 appearances to hw2's 1.
+		label, n, err := s.GetTopTopicForRange(ctx, "2026-10-26", "2026-11-01")
+		if err != nil || label != "HALLOWEEN" || n != 6 {
+			t.Errorf("top = %q, %d, %v; want HALLOWEEN, 6", label, n, err)
+		}
+	})
+
+	t.Run("latest date, equal appearances, smaller topic_id", func(t *testing.T) {
+		s := newTestStore(t)
+		hourly(t, s, "2026-10-30", []int{0, 1, 2, 3}, 1, "other", "Other")
+		hourly(t, s, "2026-10-30", []int{0, 1, 2}, 2, "hw1", " halloween ")
+		hourly(t, s, "2026-10-31", []int{0}, 2, "hwB", "HALLOWEEN")
+		hourly(t, s, "2026-10-31", []int{1}, 2, "hwA", "Halloween")
+		rollup(t, s, "2026-10-30", "2026-10-31")
+
+		// Both latest-date rows have 1 appearance; "hwA" sorts before "hwB".
+		label, n, err := s.GetTopTopicForRange(ctx, "2026-10-26", "2026-11-01")
+		if err != nil || label != "Halloween" || n != 5 {
+			t.Errorf("top = %q, %d, %v; want Halloween, 5", label, n, err)
+		}
+	})
+}
+
+// cycles seeds n sentiment_history rows on a UTC date, one per hour from
+// 00:55, standing in for the day's analysis cycles.
+func cycles(t *testing.T, s *Store, date string, n int) {
+	t.Helper()
+	day, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		t.Fatalf("parse %s: %v", date, err)
+	}
+	if n > 24 {
+		t.Fatalf("cycles(%s, %d): one row per hour; more than 24 would spill onto the next date", date, n)
+	}
+	for h := 0; h < n; h++ {
+		dp := SentimentDataPoint{
+			RunID:     fmt.Sprintf("run-%s-%02d", date, h),
+			Timestamp: day.Add(time.Duration(h)*time.Hour + 55*time.Minute),
+		}
+		if err := s.StoreSentimentDataPoint(context.Background(), dp); err != nil {
+			t.Fatalf("store cycle %s %d: %v", date, h, err)
+		}
+	}
+}
+
+// seedSharedFinalLabel builds the shape the cap is for: on 2026-10-31 two IDs
+// end the day under the same label with 3 appearances each (a by-label day
+// sum of 6), a third ID carries the label for 2 cycles on 2026-11-01, and a
+// competitor ID trends 5 cycles across both days at rank 2.
+func seedSharedFinalLabel(t *testing.T, s *Store) {
+	t.Helper()
+	hourly(t, s, "2026-10-31", []int{0, 1, 2}, 1, "hw1", "Halloween")
+	hourly(t, s, "2026-10-31", []int{0, 1, 2}, 2, "hw2", "Halloween")
+	hourly(t, s, "2026-11-01", []int{0, 1}, 2, "hw3", "Halloween")
+	hourly(t, s, "2026-10-31", []int{0, 1, 2}, 2, "elect", "Election")
+	hourly(t, s, "2026-11-01", []int{0, 1}, 2, "elect", "Election")
+	rollup(t, s, "2026-10-31", "2026-11-01")
+}
+
+// The by-label day sum is capped at the day's cycle count from
+// sentiment_history, per day, before the days are summed; the group's peak
+// rank survives the cap.
+func TestGetTopTopicForRange_LabelDaySumCappedAtCycles(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedSharedFinalLabel(t, s)
+	cycles(t, s, "2026-10-31", 3)
+	cycles(t, s, "2026-11-01", 5)
+
+	// 2026-10-31 alone: by label halloween 6 capped to the day's 3 cycles,
+	// at rank 1; by id hw1 3 at rank 1. Same sum, same rank, so the by-id
+	// result is returned, and either way the figure is 3, not 6.
+	label, n, err := s.GetTopTopicForRange(ctx, "2026-10-31", "2026-10-31")
+	if err != nil || label != "Halloween" || n != 3 {
+		t.Errorf("capped day = %q, %d, %v; want Halloween, 3", label, n, err)
+	}
+
+	// The week: halloween 3 (capped) + 2 (under 2026-11-01's 5 cycles, so
+	// uncapped) = 5 at rank 1; elect 5 by id at rank 2. Equal sums go to the
+	// better peak rank, which the cap left alone: by label wins with 5. An
+	// uncapped by-label sum would have reported 8.
+	label, n, err = s.GetTopTopicForRange(ctx, "2026-10-26", "2026-11-01")
+	if err != nil || label != "Halloween" || n != 5 {
+		t.Errorf("week = %q, %d, %v; want Halloween, 5", label, n, err)
+	}
+}
+
+// A date with no sentiment_history rows is left uncapped.
+func TestGetTopTopicForRange_LabelDaySumUncappedWithoutCycles(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedSharedFinalLabel(t, s)
+
+	label, n, err := s.GetTopTopicForRange(ctx, "2026-10-31", "2026-10-31")
+	if err != nil || label != "Halloween" || n != 6 {
+		t.Errorf("uncapped day = %q, %d, %v; want Halloween, 6", label, n, err)
+	}
+	label, n, err = s.GetTopTopicForRange(ctx, "2026-10-26", "2026-11-01")
+	if err != nil || label != "Halloween" || n != 8 {
+		t.Errorf("uncapped week = %q, %d, %v; want Halloween, 8", label, n, err)
+	}
+
+	// Cycles on a date outside the range, or on a date with no topics, change
+	// nothing and do not break the empty-range case.
+	cycles(t, s, "2026-10-30", 1)
+	cycles(t, s, "2026-11-02", 24)
+	if label, n, err = s.GetTopTopicForRange(ctx, "2026-10-26", "2026-11-01"); err != nil || label != "Halloween" || n != 8 {
+		t.Errorf("week with cycles outside = %q, %d, %v; want Halloween, 8", label, n, err)
+	}
+	if label, n, err = s.GetTopTopicForRange(ctx, "2026-11-02", "2026-11-08"); err != nil || label != "" || n != 0 {
+		t.Errorf("cycles but no topics = %q, %d, %v; want empty", label, n, err)
+	}
+}
+
+func TestGetTopTopicForRange_Ties(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("equal sums go to the better peak rank", func(t *testing.T) {
+		s := newTestStore(t)
+		hourly(t, s, "2026-09-01", []int{0, 1, 2, 3}, 2, "aaa", "Alpha")
+		hourly(t, s, "2026-09-01", []int{0, 1, 2}, 3, "bbb", "Beta")
+		hourly(t, s, "2026-09-01", []int{4}, 1, "bbb", "Beta")
+		rollup(t, s, "2026-09-01")
+
+		// Both 4 appearances; Beta peaked at rank 1, Alpha at 2. The two axes
+		// agree here since every ID has one label.
+		label, n, err := s.GetTopTopicForRange(ctx, "2026-09-01", "2026-09-07")
+		if err != nil || label != "Beta" || n != 4 {
+			t.Errorf("top = %q, %d, %v; want Beta, 4", label, n, err)
+		}
+	})
+
+	t.Run("equal sums across the axes go to the better peak rank", func(t *testing.T) {
+		s := newTestStore(t)
+		hourly(t, s, "2026-11-03", []int{0, 1}, 2, "mid", "A")
+		hourly(t, s, "2026-11-04", []int{0, 1}, 2, "mid", "B")
+		hourly(t, s, "2026-11-03", []int{2, 3}, 1, "hw1", "Halloween")
+		hourly(t, s, "2026-11-04", []int{2, 3}, 3, "hw2", "Halloween")
+		rollup(t, s, "2026-11-03", "2026-11-04")
+
+		// By id: mid 4 at rank 2 (hw1 2, hw2 2). By label: halloween 4 at
+		// rank 1 (a 2, b 2). Same sum, by label peaked higher: it wins, so
+		// the rank clause between the axes is what this pins. Without it the
+		// by-id result "B" would come back.
+		label, n, err := s.GetTopTopicForRange(ctx, "2026-11-02", "2026-11-08")
+		if err != nil || label != "Halloween" || n != 4 {
+			t.Errorf("top = %q, %d, %v; want Halloween, 4", label, n, err)
+		}
+	})
+
+	t.Run("exact tie between the axes goes to the by-id result", func(t *testing.T) {
+		s := newTestStore(t)
+		hourly(t, s, "2026-11-03", []int{0, 1}, 1, "mid", "Midterms")
+		hourly(t, s, "2026-11-04", []int{0, 1}, 1, "mid", "Midterm results")
+		hourly(t, s, "2026-11-03", []int{2, 3}, 1, "hw1", "Halloween")
+		hourly(t, s, "2026-11-04", []int{2, 3}, 1, "hw2", "Halloween")
+		rollup(t, s, "2026-11-03", "2026-11-04")
+
+		// By id: mid 4 at rank 1 (hw1 2, hw2 2). By label: halloween 4 at
+		// rank 1 (each midterms label 2). Same sum, same rank: by id wins.
+		label, n, err := s.GetTopTopicForRange(ctx, "2026-11-02", "2026-11-08")
+		if err != nil || label != "Midterm results" || n != 4 {
+			t.Errorf("top = %q, %d, %v; want Midterm results, 4", label, n, err)
+		}
+	})
 }
 
 func TestDailyTopPost_KeepsBestAndRanges(t *testing.T) {

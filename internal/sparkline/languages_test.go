@@ -78,7 +78,7 @@ func TestLanguageBreakdown(t *testing.T) {
 func TestMonthlyVolumeChart_Stacked(t *testing.T) {
 	days := synthLanguageMonth()
 	gen := NewMonthlyVolumeGenerator()
-	png, err := gen.GenerateMonthlyVolumeChart(days, MonthlyVolumeMeta{MonthLabel: "August 2026", PrevMonthEN: 58_000_000, PrevLabel: "July"})
+	png, err := gen.GenerateMonthlyVolumeChart(days, MonthlyVolumeMeta{MonthLabel: "August 2026", PrevDeltaPct: 3.9, HasPrevDelta: true, PrevLabel: "July"})
 	if err != nil || len(png) == 0 {
 		t.Fatalf("stacked: %d bytes, %v", len(png), err)
 	}

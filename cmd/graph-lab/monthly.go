@@ -54,11 +54,13 @@ func generateMonthlyCharts(seed int64) {
 		name      string
 		withAll   bool
 		withLangs bool
-		prevMult  float64
+		prevMult  float64 // synthetic July English total as a multiple of August's
+		partial   bool    // cut two days short, as an OOM kill or a deploy would
 	}{
-		{"prod-like", true, false, 0.97},
-		{"english-only", false, false, 1.04},
-		{"languages", true, true, 0.97},
+		{"prod-like", true, false, 0.97, false},
+		{"english-only", false, false, 1.04, false},
+		{"languages", true, true, 0.97, false},
+		{"partial-days", true, true, 0.97, true},
 	}
 	for _, sc := range volScenarios {
 		rng := rand.New(rand.NewSource(seed))
@@ -66,14 +68,23 @@ func generateMonthlyCharts(seed int64) {
 		if sc.withLangs {
 			addSyntheticLanguages(rng, days)
 		}
+		if sc.partial {
+			cutDayShort(days, 13)
+			cutDayShort(days, 16)
+		}
 		total := 0
 		for _, d := range days {
 			total += d.ENPosts
 		}
+		// July has 31 days too, so the per-day delta the bot reports is the
+		// ratio of the two monthly totals.
+		curPerDay := float64(total) / float64(len(days))
+		prevPerDay := float64(total) * sc.prevMult / 31
 		img, err := vgen.GenerateMonthlyVolumeChart(days, sparkline.MonthlyVolumeMeta{
-			MonthLabel:  "August 2026",
-			PrevMonthEN: int(float64(total) * sc.prevMult),
-			PrevLabel:   "July",
+			MonthLabel:   "August 2026",
+			PrevDeltaPct: (curPerDay - prevPerDay) / prevPerDay * 100,
+			HasPrevDelta: true,
+			PrevLabel:    "July",
 		})
 		if err != nil {
 			log.Printf("  [FAIL] %s: %v", sc.name, err)
@@ -215,7 +226,19 @@ func syntheticMonthVolume(rng *rand.Rand, withAll bool) []sparkline.DailyVolumeP
 		if withAll {
 			all = int(float64(en) / (0.42 + rng.NormFloat64()*0.01))
 		}
-		out = append(out, sparkline.DailyVolumePoint{Date: date, ENPosts: en, TotalPosts: all})
+		out = append(out, sparkline.DailyVolumePoint{Date: date, ENPosts: en, TotalPosts: all, Runs: 24})
 	}
 	return out
+}
+
+// cutDayShort makes day i a 23-cycle day, scaling its counts down by one
+// hour, so the chart's partial-day rule and footnote can be inspected.
+func cutDayShort(days []sparkline.DailyVolumePoint, i int) {
+	d := &days[i]
+	d.Runs = 23
+	d.ENPosts = d.ENPosts * 23 / 24
+	d.TotalPosts = d.TotalPosts * 23 / 24
+	for code, n := range d.Languages {
+		d.Languages[code] = n * 23 / 24
+	}
 }

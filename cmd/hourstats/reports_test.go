@@ -1,12 +1,46 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
+
+// newTestStore opens an empty store in a temp dir, closed when the test ends.
+func newTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	db, err := store.New(filepath.Join(t.TempDir(), "reports.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// TestRecordReportGuardSurvivesCancelledContext: the guard write follows a
+// root post that is already out, so it must land even when the scheduler's
+// context was cancelled by a shutdown in between; otherwise the next night's
+// run would post the same period again.
+func TestRecordReportGuardSurvivesCancelledContext(t *testing.T) {
+	db := newTestStore(t)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := recordReportGuard(cancelled, db, weeklyReportGuardKey, "2026-11-02"); err != nil {
+		t.Fatalf("recordReportGuard on a cancelled context: %v", err)
+	}
+	got, err := db.GetKeyValue(context.Background(), weeklyReportGuardKey)
+	if err != nil {
+		t.Fatalf("guard key not written: %v", err)
+	}
+	if got != "2026-11-02" {
+		t.Errorf("guard key = %q, want 2026-11-02", got)
+	}
+}
 
 func TestPreviousWeekAndMonth(t *testing.T) {
 	cases := []struct{ now, wantStart, wantEnd string }{
@@ -103,7 +137,7 @@ func TestBuildWeeklyReportText(t *testing.T) {
 		t.Errorf("weekly text %d runes over limit", n)
 	}
 
-	reply := buildPostOfWeekText(r)
+	reply := buildPostOfWeekText(r.Start, r.End, storedPostOfWeekFigures(*r.TopPost))
 	if reply != "Post of the week · 25–31 Aug\n\nMost engaged post by @nasa.gov: 48.2k likes, 9.1k reposts, 2.3k replies" {
 		t.Errorf("reply text: %q", reply)
 	}
@@ -202,9 +236,25 @@ func TestBuildMonthlyTexts(t *testing.T) {
 	if alt := buildMonthlyCandleAltText(r); !strings.Contains(alt, "August 2026") || !strings.Contains(alt, "31 days") {
 		t.Errorf("candle alt: %s", alt)
 	}
-	if alt := buildMonthlyVolumeAltText(r); !strings.Contains(alt, "firehose") || !strings.Contains(alt, "Busiest Wed 12 Aug") {
+	if alt := buildMonthlyVolumeAltText(r); !strings.Contains(alt, "firehose") || !strings.Contains(alt, "Busiest Wed 12 Aug") ||
+		!strings.Contains(alt, "quietest Sun 2 Aug with 1.6M.") || strings.Contains(alt, "partial") {
 		t.Errorf("volume alt: %s", alt)
 	}
+
+	// A day that lost a cycle is never the quietest: the title passes to the
+	// next-quietest full day, and only the alt text says why.
+	r.Days[1].TotalRuns = 23
+	vol = buildMonthlyVolumeText(r)
+	if !strings.Contains(vol, "Busiest: Wed 12 Aug, 2.5M") || !strings.Contains(vol, "Quietest: Sat 1 Aug, 1.9M") || strings.Contains(vol, "partial") {
+		t.Errorf("volume text with a partial day:\n%s", vol)
+	}
+	if n := postLength(vol); n > blueskyPostLimit {
+		t.Errorf("volume text %d runes over limit", n)
+	}
+	if alt := buildMonthlyVolumeAltText(r); !strings.Contains(alt, "quietest Sat 1 Aug with 1.9M. Busiest and quietest exclude 1 partial day with fewer cycles.") {
+		t.Errorf("volume alt with a partial day: %s", alt)
+	}
+	r.Days[1].TotalRuns = 24
 
 	// Without a full previous month or firehose data the comparisons vanish.
 	r.PrevDays, r.Firehose = r.PrevDays[:5], nil

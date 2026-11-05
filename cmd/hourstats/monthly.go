@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -102,18 +104,28 @@ func widestSwing(days []store.DailySentimentDataPoint) int {
 	return w
 }
 
-// busiestQuietest returns the indices of the days with the most and fewest
-// English posts.
-func busiestQuietest(days []store.DailySentimentDataPoint) (hi, lo int) {
-	for i, d := range days {
-		if d.TotalPosts > days[hi].TotalPosts {
-			hi = i
-		}
-		if d.TotalPosts < days[lo].TotalPosts {
-			lo = i
-		}
+// volumeExtreme is one of the month's named days: the busiest or the
+// quietest by English posts, as the chart picks them.
+type volumeExtreme struct {
+	Day   string // "Wed 12 Aug"
+	Count string // "2.5M"
+}
+
+// volumeExtremes names the busiest and quietest days with the same rule the
+// chart draws them by (sparkline.VolumeExtremes over the chart's points), so
+// the post, the alt text and the tiles never disagree, and returns the
+// chart's partial-day caveat ("" when no day was left out). ok is false
+// when the month has no usable day.
+func volumeExtremes(r monthlyReport) (busiest, quietest volumeExtreme, note string, ok bool) {
+	pts := toDailyVolumePoints(r)
+	if len(pts) == 0 {
+		return volumeExtreme{}, volumeExtreme{}, "", false
 	}
-	return hi, lo
+	hi, lo := sparkline.VolumeExtremes(pts)
+	name := func(p sparkline.DailyVolumePoint) volumeExtreme {
+		return volumeExtreme{Day: p.Date.Format("Mon 2 Jan"), Count: compactCount(p.ENPosts)}
+	}
+	return name(pts[hi]), name(pts[lo]), sparkline.PartialDaysNote(pts), true
 }
 
 func (r monthlyReport) firehoseTotal() int {
@@ -149,19 +161,21 @@ func buildMonthlyMoodText(r monthlyReport) string {
 // buildMonthlyVolumeText renders the reply beside the volume chart.
 func buildMonthlyVolumeText(r monthlyReport) string {
 	total := sumPosts(r.Days)
-	hi, lo := busiestQuietest(r.Days)
 
 	analysed := fmt.Sprintf("%s English posts analysed", compactCount(total))
 	if d, ok := r.volumeDelta(); ok {
-		analysed += fmt.Sprintf(", %+.1f%% vs %s", d, r.prevName())
+		analysed += fmt.Sprintf(", %s vs %s", signedPct(d), r.prevName())
 	}
 	lines := []string{
 		"Post volume · " + r.monthName(),
 		"",
 		analysed,
 		fmt.Sprintf("%s per day on average", compactCount(total/len(r.Days))),
-		fmt.Sprintf("Busiest: %s, %s", dayLabel(r.Days[hi].Date), compactCount(r.Days[hi].TotalPosts)),
-		fmt.Sprintf("Quietest: %s, %s", dayLabel(r.Days[lo].Date), compactCount(r.Days[lo].TotalPosts)),
+	}
+	if hi, lo, _, ok := volumeExtremes(r); ok {
+		lines = append(lines,
+			fmt.Sprintf("Busiest: %s, %s", hi.Day, hi.Count),
+			fmt.Sprintf("Quietest: %s, %s", lo.Day, lo.Count))
 	}
 	if fh := r.firehoseTotal(); fh >= total && fh > 0 {
 		lines = append(lines, fmt.Sprintf("English share of the firehose: %.0f%% of %s", float64(total)/float64(fh)*100, compactCount(fh)))
@@ -213,7 +227,6 @@ func buildMonthlyCandleAltText(r monthlyReport) string {
 // buildMonthlyVolumeAltText describes the volume chart.
 func buildMonthlyVolumeAltText(r monthlyReport) string {
 	total := sumPosts(r.Days)
-	hi, lo := busiestQuietest(r.Days)
 	fh := r.firehoseTotal()
 	text := fmt.Sprintf("Line chart of daily English posts analysed on Bluesky in %s", r.monthLabel())
 	if r.Languages != nil {
@@ -224,11 +237,15 @@ func buildMonthlyVolumeAltText(r monthlyReport) string {
 	text += fmt.Sprintf(". %s English posts over %d days, %s per day on average",
 		compactCount(total), len(r.Days), compactCount(total/len(r.Days)))
 	if d, ok := r.volumeDelta(); ok {
-		text += fmt.Sprintf(", %+.1f%% vs %s", d, r.prevName())
+		text += fmt.Sprintf(", %s vs %s", signedPct(d), r.prevName())
 	}
-	text += fmt.Sprintf(". Busiest %s with %s; quietest %s with %s.",
-		dayLabel(r.Days[hi].Date), compactCount(r.Days[hi].TotalPosts),
-		dayLabel(r.Days[lo].Date), compactCount(r.Days[lo].TotalPosts))
+	text += "."
+	if hi, lo, note, ok := volumeExtremes(r); ok {
+		text += fmt.Sprintf(" Busiest %s with %s; quietest %s with %s.", hi.Day, hi.Count, lo.Day, lo.Count)
+		if note != "" {
+			text += " " + note + "."
+		}
+	}
 	if fh >= total && fh > 0 {
 		text += fmt.Sprintf(" English posts were %.0f%% of the %s firehose.", float64(total)/float64(fh)*100, compactCount(fh))
 	}
@@ -262,9 +279,36 @@ func toDailyVolumePoints(r monthlyReport) []sparkline.DailyVolumePoint {
 		if err != nil {
 			continue
 		}
-		out = append(out, sparkline.DailyVolumePoint{Date: t, ENPosts: d.TotalPosts, TotalPosts: r.Firehose[d.Date], Languages: r.Languages[d.Date]})
+		out = append(out, sparkline.DailyVolumePoint{
+			Date: t, ENPosts: d.TotalPosts, TotalPosts: r.Firehose[d.Date], Runs: d.TotalRuns, Languages: r.Languages[d.Date],
+		})
 	}
 	return out
+}
+
+// monthlyCandleMeta carries the header figures to the candlestick chart.
+// PrevMonthAvg is the previous month's mean daily average, the same figure
+// the mood text's "vs July" delta is taken from, and NaN when that month is
+// too thin to compare with, which keeps the comparison off the chart just as
+// hasPrev keeps it out of the text.
+func monthlyCandleMeta(r monthlyReport) sparkline.MonthlyCandleMeta {
+	prevAvg := math.NaN()
+	if r.hasPrev() {
+		prevAvg = meanDailyAverage(r.PrevDays)
+	}
+	return sparkline.MonthlyCandleMeta{MonthLabel: r.monthLabel(), PrevMonthAvg: prevAvg, PrevLabel: r.prevName()}
+}
+
+// monthlyVolumeMeta carries the header figures to the volume chart. The
+// month-over-month delta is volumeDelta(), the same figure the post text
+// quotes, so the chart never shows a different percentage from the words
+// beside it.
+func monthlyVolumeMeta(r monthlyReport) sparkline.MonthlyVolumeMeta {
+	meta := sparkline.MonthlyVolumeMeta{MonthLabel: r.monthLabel(), PrevLabel: r.prevName()}
+	if d, ok := r.volumeDelta(); ok {
+		meta.PrevDeltaPct, meta.HasPrevDelta = d, true
+	}
+	return meta
 }
 
 // firehoseCountV2Key records the first full UTC day on which the firehose
@@ -388,10 +432,22 @@ func completeLanguages(ctx context.Context, db *store.Store, r monthlyReport) ma
 
 // runMonthlyReport posts the candlestick root and the volume reply for the
 // previous calendar month. The guard key is set once the root is posted.
+//
+// Unlike the weekly guard, an absent key (sql.ErrNoRows) is not a first
+// enable to wait out: the previous month is reported whenever the guard does
+// not already name it, so the first run after reports are enabled posts it as
+// a catch-up, as does the run after a skipped 1st. A key that cannot be read
+// for any other reason skips this run with a Warn and writes nothing, since
+// without the guard a post could duplicate one already out.
 func runMonthlyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time) {
 	first, _ := previousMonth(now)
 	monthKey := first.Format("2006-01")
-	if last, _ := db.GetKeyValue(ctx, monthlyReportGuardKey); last == monthKey {
+	last, err := db.GetKeyValue(ctx, monthlyReportGuardKey)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("monthly report: guard key unreadable, skipping this run", "error", err, "month", monthKey)
+		return
+	}
+	if last == monthKey {
 		slog.Info("monthly report already posted", "month", monthKey)
 		return
 	}
@@ -401,22 +457,12 @@ func runMonthlyReport(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 
-	prevAvg := math.NaN()
-	if r.hasPrev() {
-		prevAvg = meanDailyAverage(r.PrevDays)
-	}
-	candlePNG, err := sparkline.NewMonthlyCandleGenerator().GenerateMonthlyCandleChart(toDailyCandles(r.Days),
-		sparkline.MonthlyCandleMeta{MonthLabel: r.monthLabel(), PrevMonthAvg: prevAvg, PrevLabel: r.prevName()})
+	candlePNG, err := sparkline.NewMonthlyCandleGenerator().GenerateMonthlyCandleChart(toDailyCandles(r.Days), monthlyCandleMeta(r))
 	if err != nil {
 		slog.Error("generate monthly candle chart failed", "error", err)
 		return
 	}
-	prevEN := 0
-	if r.hasPrev() {
-		prevEN = sumPosts(r.PrevDays)
-	}
-	volumePNG, err := sparkline.NewMonthlyVolumeGenerator().GenerateMonthlyVolumeChart(toDailyVolumePoints(r),
-		sparkline.MonthlyVolumeMeta{MonthLabel: r.monthLabel(), PrevMonthEN: prevEN, PrevLabel: r.prevName()})
+	volumePNG, err := sparkline.NewMonthlyVolumeGenerator().GenerateMonthlyVolumeChart(toDailyVolumePoints(r), monthlyVolumeMeta(r))
 	if err != nil {
 		slog.Error("generate monthly volume chart failed", "error", err)
 		return
@@ -458,7 +504,7 @@ func runMonthlyReport(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 	slog.Info("monthly report posted", "month", monthKey, "uri", rootURI)
-	if err := db.SetKeyValue(ctx, monthlyReportGuardKey, monthKey); err != nil {
+	if err := recordReportGuard(ctx, db, monthlyReportGuardKey, monthKey); err != nil {
 		slog.Error("persist monthly report guard failed", "error", err, "month", monthKey)
 	}
 

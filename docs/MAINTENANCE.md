@@ -78,15 +78,15 @@ go tool pprof -top hourstats memguard-run-20260909-155500-20260909T155845-45s-tr
 
 ## 5. Platform
 
-- **Apps**: `hourstats-prod` (running), `hourstats-staging` (kept stopped; start it only for a test, stop it after). Both `shared-cpu-1x`, 1 GB RAM, 512 MB swap, region `sjc`, `--ha=false` so there is exactly one machine and one volume each.
+- **Apps**: `hourstats-prod` (running; `shared-cpu-2x`, 2 GB RAM), `hourstats-staging` (kept stopped; start it only for a test, stop it after; `shared-cpu-1x`, 1 GB RAM). Both 512 MB swap, region `sjc`, `--ha=false` so there is exactly one machine and one volume each.
 - **Memory** is the resource that has caused outages: `GOMEMLIMIT=1200MiB` on prod's 2 GB shared-cpu-2x machine since 2026-09-09 (staging keeps `800MiB` on 1 GB), `GOGC=75`, and the analysis cycle and the daily/yearly jobs are serialised so two chart renders never overlap. `cycle_memory_peak` events in `/stats/events` record the RSS peak of every cycle, `cycle_memory_tick` the approach to it; if peaks trend toward the limit, that is the signal to resize before it OOMs. The memory guard (`MEMORY_GUARD_*`) is the backstop: `memory_guard_warn` leaves a heap profile on the volume, `memory_guard_trip` also cancels the cycle so the process survives.
-- **Schedule** is wall-clock aligned in UTC and survives deploys: cycle at :55 (prod) or :25 (staging), daily job at 00:00, yearly chart and monthly report at 01:00. A deploy during a cycle is safe; the shutdown sequence drains buffered posts and persists the cursor inside Fly's 15 s `kill_timeout`.
+- **Schedule** is wall-clock aligned in UTC and survives deploys: cycle at :55 (prod) or :25 (staging), daily job at 00:00, yearly chart and monthly report at 01:00. A deploy during a cycle is safe; the shutdown sequence drains buffered posts and persists the cursor inside Fly's 15 s `kill_timeout`. A deploy during the 00:00 daily job is not: the job is cancelled with a 1 s budget and the daily aggregation has no catch-up (bead hs-12y), so that day's `daily_sentiment` row is lost. Deploy after the hour's `analysis cycle complete` line and outside 00:00–00:45 and 01:00–01:45 UTC (both jobs wait up to 30 min for the :55 cycle before they run).
 - **Billing**: Fly invoices monthly; the Gemini project and the AWS account are the other two bills. None should exceed a few dollars a month; a jump usually means a runaway retry loop or a lifecycle rule missing on S3.
 
 ## 6. Recurring checklist
 
 **Weekly (five minutes)**
-- Look at the account: is there a summary every hour, a sparkline and trending reply under it, the daily quote under the pinned yearly chart?
+- Look at the account: is there a summary every hour, a sparkline and trending reply under it, the daily quote under the pinned yearly chart? On a Monday, the week-in-review root with the post-of-the-week reply under it; on the 1st, the candlestick root with the volume reply (`REPORTS_ENABLED`, since hs-w7z).
 - `fly status -a hourstats-prod`, then `fly proxy 9111:9111 -a hourstats-prod` and `curl localhost:9111/stats/events?hours=168`. Zero `stall_detected`, `consumer_restart`, `cycle_overlap_skipped`, `hydration_timeout`, `gemini_budget_exhausted`, `memory_guard_warn`, `memory_guard_trip` is normal; a handful is fine; a daily pattern is not. Any `memory_guard_*` event is worth opening the profile it left (section 4).
 
 **Monthly**

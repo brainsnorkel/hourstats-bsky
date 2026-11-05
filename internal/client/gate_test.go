@@ -358,3 +358,83 @@ func TestFeatureGateDefaultResolveTimeout(t *testing.T) {
 		t.Errorf("resolveTimeout = %v, want %v", g.resolveTimeout, visibilityResolveTimeout)
 	}
 }
+
+// TestFeatureGateCarriesHandleAndCounts: a surface that quotes a post days
+// after it was stored prints the figures the gate's getPosts call just
+// fetched, so the verdict has to carry them, including for a rejected post.
+func TestFeatureGateCarriesHandleAndCounts(t *testing.T) {
+	const uri = "at://did:plc:aaa/app.bsky.feed.post/1"
+	body := fmt.Sprintf(`{"posts":[{"uri":%q,"cid":"c1","indexedAt":"2026-01-01T00:00:00Z",
+		"author":{"did":"did:plc:aaa","handle":"a.bsky.social"},
+		"likeCount":39300,"repostCount":4100,"replyCount":870}]}`, uri)
+
+	got, err := newTestGate(getPostsServer(t, body).URL, newFakeVisibility(nil)).Check(context.Background(), "weekly", []string{uri})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	v := got[uri]
+	if !v.OK || !v.Quotable {
+		t.Fatalf("Check() = %+v, want a clean pass", v)
+	}
+	if v.AuthorHandle != "a.bsky.social" {
+		t.Errorf("AuthorHandle = %q, want a.bsky.social", v.AuthorHandle)
+	}
+	if !v.HasCounts {
+		t.Error("HasCounts = false, want true when all three counts were returned")
+	}
+	if v.Likes != 39300 || v.Reposts != 4100 || v.Replies != 870 {
+		t.Errorf("counts = %d/%d/%d, want 39300/4100/870", v.Likes, v.Reposts, v.Replies)
+	}
+
+	// A rejected post still carries the view's handle and counts; the verdict
+	// alone decides whether anything is printed from them.
+	blocked := fmt.Sprintf(`{"posts":[{"uri":%q,"cid":"c1","indexedAt":"2026-01-01T00:00:00Z",
+		"author":{"did":"did:plc:aaa","handle":"a.bsky.social","viewer":{"blockedBy":true}},
+		"likeCount":5,"repostCount":1,"replyCount":2}]}`, uri)
+	got, err = newTestGate(getPostsServer(t, blocked).URL, newFakeVisibility(nil)).Check(context.Background(), "weekly", []string{uri})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	v = got[uri]
+	if v.OK || v.Reason != ReasonBlocked {
+		t.Fatalf("Check() = %+v, want OK=false Reason=%q", v, ReasonBlocked)
+	}
+	if v.AuthorHandle != "a.bsky.social" || !v.HasCounts || v.Likes != 5 || v.Reposts != 1 || v.Replies != 2 {
+		t.Errorf("rejected verdict = %+v, want the handle and counts filled anyway", v)
+	}
+}
+
+// TestFeatureGateWithoutCountsLeavesHasCountsFalse: a view that omits any of
+// the three counts must not be read as a post with zero engagement.
+func TestFeatureGateWithoutCountsLeavesHasCountsFalse(t *testing.T) {
+	const uri = "at://did:plc:aaa/app.bsky.feed.post/1"
+	cases := map[string]string{
+		"no counts at all":     ``,
+		"reply count missing":  `,"likeCount":10,"repostCount":3`,
+		"like count missing":   `,"repostCount":3,"replyCount":1`,
+		"repost count missing": `,"likeCount":10,"replyCount":1`,
+	}
+	for name, counts := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"posts":[{"uri":%q,"cid":"c1","indexedAt":"2026-01-01T00:00:00Z",
+				"author":{"did":"did:plc:aaa","handle":"a.bsky.social"}%s}]}`, uri, counts)
+			got, err := newTestGate(getPostsServer(t, body).URL, newFakeVisibility(nil)).Check(context.Background(), "weekly", []string{uri})
+			if err != nil {
+				t.Fatalf("Check() error = %v", err)
+			}
+			v := got[uri]
+			if !v.OK {
+				t.Fatalf("Check() = %+v, want a pass", v)
+			}
+			if v.HasCounts {
+				t.Error("HasCounts = true, want false when a count is missing")
+			}
+			if v.Likes != 0 || v.Reposts != 0 || v.Replies != 0 {
+				t.Errorf("counts = %d/%d/%d, want all zero without HasCounts", v.Likes, v.Reposts, v.Replies)
+			}
+			if v.AuthorHandle != "a.bsky.social" {
+				t.Errorf("AuthorHandle = %q, want it filled regardless of counts", v.AuthorHandle)
+			}
+		})
+	}
+}
