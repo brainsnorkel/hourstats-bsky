@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +68,67 @@ func TestMonthlyVolumeMeta(t *testing.T) {
 	meta = monthlyVolumeMeta(r)
 	if meta.HasPrevDelta || meta.PrevDeltaPct != 0 {
 		t.Errorf("thin previous month: meta = %+v", meta)
+	}
+}
+
+// TestMonthlyCandleMeta checks the candlestick header gets the previous
+// month's mean daily average when that month is full, and NaN when it is
+// thin or absent, so the chart draws no comparison the text does not make.
+func TestMonthlyCandleMeta(t *testing.T) {
+	r := augustReport()
+	meta := monthlyCandleMeta(r)
+	if meta.MonthLabel != "August 2026" || meta.PrevLabel != "July" {
+		t.Errorf("labels = %q %q", meta.MonthLabel, meta.PrevLabel)
+	}
+	if want := meanDailyAverage(r.PrevDays); want == 0 || math.Abs(meta.PrevMonthAvg-want) > 1e-9 {
+		t.Errorf("PrevMonthAvg = %v, want %v", meta.PrevMonthAvg, want)
+	}
+	r.PrevDays = r.PrevDays[:5]
+	if meta := monthlyCandleMeta(r); !math.IsNaN(meta.PrevMonthAvg) {
+		t.Errorf("thin previous month: PrevMonthAvg = %v, want NaN", meta.PrevMonthAvg)
+	}
+	r.PrevDays = nil
+	if meta := monthlyCandleMeta(r); !math.IsNaN(meta.PrevMonthAvg) || meta.PrevLabel != "July" {
+		t.Errorf("no previous month: meta = %+v", meta)
+	}
+}
+
+// withVolumeDelta gives every day of the previous month the same English
+// count, chosen so volumeDelta() comes out at pct to within the rounding of
+// one post a day. pct 0 copies the month's own counts for an exact zero.
+func withVolumeDelta(r monthlyReport, pct float64) monthlyReport {
+	mean := float64(sumPosts(r.Days)) / float64(len(r.Days))
+	for i := range r.PrevDays {
+		r.PrevDays[i].TotalPosts = r.Days[i].TotalPosts
+		if pct != 0 {
+			r.PrevDays[i].TotalPosts = int(math.Round(mean / (1 + pct/100)))
+		}
+	}
+	return r
+}
+
+// TestMonthlyVolumeDeltaText pins the delta's form in the volume post and
+// its alt text to the chart header's: "+0.5%", "-0.4%", and a bare "0.0%"
+// for no change, never "+0.0%". The chart meta carries the same figure.
+func TestMonthlyVolumeDeltaText(t *testing.T) {
+	for _, tc := range []struct {
+		pct  float64
+		want string
+	}{{0, "0.0%"}, {0.51, "+0.5%"}, {-0.4, "-0.4%"}} {
+		r := withVolumeDelta(augustReport(), tc.pct)
+		d, ok := r.volumeDelta()
+		if !ok || math.Abs(d-tc.pct) > 0.001 {
+			t.Fatalf("fixture delta = %v %v, want %v", d, ok, tc.pct)
+		}
+		want := ", " + tc.want + " vs July"
+		for name, text := range map[string]string{"text": buildMonthlyVolumeText(r), "alt": buildMonthlyVolumeAltText(r)} {
+			if !strings.Contains(text, want) || strings.Contains(text, "+0.0%") || strings.Contains(text, "-0.0%") {
+				t.Errorf("delta %v: %s = %q, want %q", tc.pct, name, text, want)
+			}
+		}
+		if meta := monthlyVolumeMeta(r); !meta.HasPrevDelta || meta.PrevDeltaPct != d {
+			t.Errorf("delta %v: chart meta %+v carries a different figure from the text", tc.pct, meta)
+		}
 	}
 }
 

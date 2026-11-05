@@ -17,8 +17,8 @@ type DailyVolumePoint struct {
 	TotalPosts int // all firehose posts (0 when not tracked)
 	// Runs is the number of analysis cycles behind the day's counts (0 when
 	// unknown). A day with fewer cycles than the fullest day of the month
-	// is partial: it is drawn, but VolumeExtremes does not name it busiest
-	// or quietest.
+	// is partial: it is drawn, and VolumeExtremes prefers the full days
+	// over it, falling back to every day when fewer than two are full.
 	Runs int
 	// Languages is the firehose split by primary language subtag ("en",
 	// "pt", "und" ...). When every day has one the chart stacks the top
@@ -93,9 +93,7 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		stacked = len(series) > 0
 	}
 
-	totals := sumVolumes(days, stacked)
-	busiest, quietest := VolumeExtremes(days)
-	footnote := PartialDaysNote(days)
+	fig := measureVolume(days, stacked)
 
 	// The stacked view needs a two-row legend, so its plot ends higher; a
 	// partial-day footnote adds one more row above the legend.
@@ -103,7 +101,7 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 	if stacked {
 		footer = 112 * s
 	}
-	if footnote != "" {
+	if fig.note != "" {
 		footer += 24 * s
 	}
 	first, last := days[0].Date, days[len(days)-1].Date
@@ -114,10 +112,10 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		h:   H - 186*s - footer,
 		t0:  first.Truncate(24 * time.Hour),
 		t1:  last.Truncate(24 * time.Hour).Add(24 * time.Hour),
-		rng: countRange(totals.maxV),
+		rng: countRange(fig.totals.maxV),
 	}
 
-	heroSub, tiles := volumeHeadline(days, meta, stacked)
+	heroSub, tiles := volumeHeadline(days, meta, stacked, fig)
 	subtitle := fmt.Sprintf("%s – %s · English posts analysed per day · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
 	if stacked {
 		subtitle = fmt.Sprintf("%s – %s · firehose posts per day by language tag, English posts analysed as the line · UTC", first.Format("2 Jan"), last.Format("2 Jan"))
@@ -126,7 +124,7 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 		Title:     "Bluesky post volume, " + meta.MonthLabel,
 		Subtitle:  subtitle,
 		HeroLabel: "English posts",
-		HeroValue: countText(float64(totals.en)),
+		HeroValue: countText(float64(fig.totals.en)),
 		HeroSub:   heroSub,
 		Tiles:     tiles,
 		Brand:     "@hourstats.bsky.social",
@@ -138,14 +136,14 @@ func (g *MonthlyVolumeGenerator) GenerateMonthlyVolumeChart(days []DailyVolumePo
 	if stacked {
 		drawLanguageStack(dc, plot, days, series, s)
 		drawAnalysedLine(dc, plot, days, s)
-		drawVolumeExtremes(dc, plot, days, busiest, quietest, themeInkPrimary, s)
-		drawLanguageFooter(dc, spec, series, totals.all, s, W, H)
-		drawFootnote(dc, footnote, H-74*s, s)
+		drawVolumeExtremes(dc, plot, days, fig.busiest, fig.quietest, themeInkPrimary, s)
+		drawLanguageFooter(dc, spec, series, fig.totals.all, s, W, H)
+		drawFootnote(dc, fig.note, H-74*s, s)
 	} else {
-		drawVolumeLines(dc, plot, days, totals.hasTotal, s)
-		drawVolumeExtremes(dc, plot, days, busiest, quietest, themePositive, s)
-		drawVolumeFooter(dc, spec, totals.hasTotal, s, W, H)
-		drawFootnote(dc, footnote, H-50*s, s)
+		drawVolumeLines(dc, plot, days, fig.totals.hasTotal, s)
+		drawVolumeExtremes(dc, plot, days, fig.busiest, fig.quietest, themePositive, s)
+		drawVolumeFooter(dc, spec, fig.totals.hasTotal, s, W, H)
+		drawFootnote(dc, fig.note, H-50*s, s)
 	}
 
 	var buf bytes.Buffer
@@ -197,16 +195,32 @@ func sumVolumes(days []DailyVolumePoint, stacked bool) volumeTotals {
 	return t
 }
 
-// volumeHeadline builds the hero caption and the stat tiles. The caption is
-// the month-over-month delta when the caller supplied one, otherwise the
-// day count and daily mean. The busiest and quietest tiles follow
-// VolumeExtremes, and the share tile divides by sumVolumes' tileAll.
-func volumeHeadline(days []DailyVolumePoint, meta MonthlyVolumeMeta, stacked bool) (heroSub string, tiles []statTile) {
+// volumeFigures are the month figures GenerateMonthlyVolumeChart computes
+// once and hands to the header, the extreme markers and the footnote, so the
+// tile that names the busiest day and the marker on the line can never pick
+// different days.
+type volumeFigures struct {
+	totals            volumeTotals
+	busiest, quietest int    // indices from VolumeExtremes
+	note              string // PartialDaysNote; "" when every day was a candidate
+}
+
+// measureVolume gathers the chart's shared figures for one month.
+func measureVolume(days []DailyVolumePoint, stacked bool) volumeFigures {
+	busiest, quietest := VolumeExtremes(days)
+	return volumeFigures{totals: sumVolumes(days, stacked), busiest: busiest, quietest: quietest, note: PartialDaysNote(days)}
+}
+
+// volumeHeadline builds the hero caption and the stat tiles from the figures
+// measureVolume produced. The caption is the month-over-month delta when the
+// caller supplied one, otherwise the day count and daily mean. The busiest
+// and quietest tiles name the days fig says, which are the days the markers
+// are drawn on, and the share tile divides by sumVolumes' tileAll.
+func volumeHeadline(days []DailyVolumePoint, meta MonthlyVolumeMeta, stacked bool, fig volumeFigures) (heroSub string, tiles []statTile) {
 	if len(days) == 0 {
 		return "", nil
 	}
-	totals := sumVolumes(days, stacked)
-	busiest, quietest := VolumeExtremes(days)
+	totals, busiest, quietest := fig.totals, fig.busiest, fig.quietest
 
 	heroSub = fmt.Sprintf("%d days · %s per day", len(days), countText(float64(totals.en)/float64(len(days))))
 	if meta.HasPrevDelta && meta.PrevLabel != "" {
@@ -334,9 +348,17 @@ func countText(v float64) string {
 	}
 }
 
+// signedPct formats a percentage change for the chart header: "+0.5%",
+// "-0.4%", and a plain "0.0%" for anything that rounds to zero, so neither
+// "+0.0%" nor "-0.0%" is ever drawn. It is the same rule as
+// formatter.SignedPercent, which the post text beside the chart uses, so the
+// two always print a delta the same way.
 func signedPct(v float64) string {
-	if v > 0 {
+	switch {
+	case v >= 0.05:
 		return fmt.Sprintf("+%.1f%%", v)
+	case v > -0.05:
+		return "0.0%"
 	}
 	return fmt.Sprintf("%.1f%%", v)
 }

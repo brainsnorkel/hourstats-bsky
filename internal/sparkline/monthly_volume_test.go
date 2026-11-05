@@ -106,10 +106,33 @@ func shareMonth() []DailyVolumePoint {
 	return days
 }
 
+// headline measures the month and builds its header the way the generator
+// does, so the tests exercise the same two steps in the same order.
+func headline(days []DailyVolumePoint, meta MonthlyVolumeMeta, stacked bool) (string, []statTile) {
+	return volumeHeadline(days, meta, stacked, measureVolume(days, stacked))
+}
+
+// TestSignedPct pins the header's delta formatting, which the post text
+// mirrors through formatter.SignedPercent: a plus sign for a rise, a bare
+// minus for a fall, and "0.0%" for anything that rounds to zero.
+func TestSignedPct(t *testing.T) {
+	for _, tc := range []struct {
+		v    float64
+		want string
+	}{
+		{0, "0.0%"}, {0.04, "0.0%"}, {-0.04, "0.0%"}, {0.05, "+0.1%"},
+		{0.51, "+0.5%"}, {-0.4, "-0.4%"}, {-0.05, "-0.1%"}, {12.345, "+12.3%"},
+	} {
+		if got := signedPct(tc.v); got != tc.want {
+			t.Errorf("signedPct(%v) = %q, want %q", tc.v, got, tc.want)
+		}
+	}
+}
+
 func TestVolumeHeadline(t *testing.T) {
 	days := volumeMonth(31, nil)
 
-	heroSub, tiles := volumeHeadline(days, MonthlyVolumeMeta{PrevDeltaPct: 0.51, HasPrevDelta: true, PrevLabel: "September"}, false)
+	heroSub, tiles := headline(days, MonthlyVolumeMeta{PrevDeltaPct: 0.51, HasPrevDelta: true, PrevLabel: "September"}, false)
 	if heroSub != "+0.5% vs September" {
 		t.Errorf("delta heroSub = %q", heroSub)
 	}
@@ -119,17 +142,36 @@ func TestVolumeHeadline(t *testing.T) {
 	if tiles[1].Sub != "Sat 31 Oct" || tiles[2].Sub != "Thu 1 Oct" {
 		t.Errorf("extreme tiles = %+v %+v", tiles[1], tiles[2])
 	}
+	if heroSub, _ := headline(days, MonthlyVolumeMeta{HasPrevDelta: true, PrevLabel: "September"}, false); heroSub != "0.0% vs September" {
+		t.Errorf("zero-delta heroSub = %q", heroSub)
+	}
 
 	// Without a comparable previous month the caption is the day form,
 	// whatever PrevDeltaPct holds.
-	heroSub, _ = volumeHeadline(days, MonthlyVolumeMeta{PrevDeltaPct: 0.51, PrevLabel: "September"}, false)
+	heroSub, _ = headline(days, MonthlyVolumeMeta{PrevDeltaPct: 0.51, PrevLabel: "September"}, false)
 	if heroSub != "31 days · 1.8M per day" {
 		t.Errorf("day-form heroSub = %q", heroSub)
 	}
-	heroSub, _ = volumeHeadline(days, MonthlyVolumeMeta{PrevDeltaPct: -2, HasPrevDelta: true}, false)
+	heroSub, _ = headline(days, MonthlyVolumeMeta{PrevDeltaPct: -2, HasPrevDelta: true}, false)
 	if heroSub != "31 days · 1.8M per day" {
 		t.Errorf("heroSub without a previous label = %q", heroSub)
 	}
+
+	// The tiles name whichever days the shared figures hold, which are the
+	// days the markers are drawn on: a partial quietest day moves both.
+	days[0].Runs = 23
+	fig := measureVolume(days, false)
+	if fig.quietest != 1 || fig.note != "Busiest and quietest exclude 1 partial day with fewer cycles" {
+		t.Fatalf("figures with a partial first day = %+v", fig)
+	}
+	_, tiles = volumeHeadline(days, MonthlyVolumeMeta{}, false, fig)
+	if tiles[2].Sub != days[fig.quietest].Date.Format("Mon 2 Jan") || tiles[2].Sub != "Fri 2 Oct" {
+		t.Errorf("quietest tile = %+v, want the day at fig.quietest (%d)", tiles[2], fig.quietest)
+	}
+	if tiles[1].Sub != days[fig.busiest].Date.Format("Mon 2 Jan") {
+		t.Errorf("busiest tile = %+v, want the day at fig.busiest (%d)", tiles[1], fig.busiest)
+	}
+	days[0].Runs = 24
 
 	// Stacked: the share tile divides by the firehose figure the post
 	// quotes, the legend by the stack it draws.
@@ -138,7 +180,7 @@ func TestVolumeHeadline(t *testing.T) {
 	if totals.all != 31*3_120_000 || totals.tileAll != 31*3_000_000 || !totals.hasTotal {
 		t.Fatalf("totals = %+v", totals)
 	}
-	_, tiles = volumeHeadline(days, MonthlyVolumeMeta{}, true)
+	_, tiles = headline(days, MonthlyVolumeMeta{}, true)
 	if len(tiles) != 4 {
 		t.Fatalf("stacked tiles = %+v", tiles)
 	}
@@ -156,18 +198,18 @@ func TestVolumeHeadline(t *testing.T) {
 
 	// One day without a firehose figure: the tile falls back to the stack.
 	days[5].TotalPosts = 0
-	_, tiles = volumeHeadline(days, MonthlyVolumeMeta{}, true)
+	_, tiles = headline(days, MonthlyVolumeMeta{}, true)
 	if tiles[3].Sub != "of "+countText(float64(31*3_120_000)) || tiles[3].Value != "62%" {
 		t.Errorf("fallback share tile = %+v", tiles[3])
 	}
 
 	// The line view labels the tile English share of the firehose.
 	days = shareMonth()
-	_, tiles = volumeHeadline(days, MonthlyVolumeMeta{}, false)
+	_, tiles = headline(days, MonthlyVolumeMeta{}, false)
 	if tiles[3].Label != "English share" || tiles[3].Sub != "of 93.0M" {
 		t.Errorf("line-view share tile = %+v", tiles[3])
 	}
-	if heroSub, tiles := volumeHeadline(nil, MonthlyVolumeMeta{}, false); heroSub != "" || tiles != nil {
+	if heroSub, tiles := headline(nil, MonthlyVolumeMeta{}, false); heroSub != "" || tiles != nil {
 		t.Errorf("empty headline = %q %+v", heroSub, tiles)
 	}
 }

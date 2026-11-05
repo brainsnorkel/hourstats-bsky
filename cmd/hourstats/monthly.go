@@ -162,7 +162,7 @@ func buildMonthlyVolumeText(r monthlyReport) string {
 
 	analysed := fmt.Sprintf("%s English posts analysed", compactCount(total))
 	if d, ok := r.volumeDelta(); ok {
-		analysed += fmt.Sprintf(", %+.1f%% vs %s", d, r.prevName())
+		analysed += fmt.Sprintf(", %s vs %s", signedPct(d), r.prevName())
 	}
 	lines := []string{
 		"Post volume · " + r.monthName(),
@@ -235,7 +235,7 @@ func buildMonthlyVolumeAltText(r monthlyReport) string {
 	text += fmt.Sprintf(". %s English posts over %d days, %s per day on average",
 		compactCount(total), len(r.Days), compactCount(total/len(r.Days)))
 	if d, ok := r.volumeDelta(); ok {
-		text += fmt.Sprintf(", %+.1f%% vs %s", d, r.prevName())
+		text += fmt.Sprintf(", %s vs %s", signedPct(d), r.prevName())
 	}
 	text += "."
 	if hi, lo, note, ok := volumeExtremes(r); ok {
@@ -282,6 +282,19 @@ func toDailyVolumePoints(r monthlyReport) []sparkline.DailyVolumePoint {
 		})
 	}
 	return out
+}
+
+// monthlyCandleMeta carries the header figures to the candlestick chart.
+// PrevMonthAvg is the previous month's mean daily average, the same figure
+// the mood text's "vs July" delta is taken from, and NaN when that month is
+// too thin to compare with, which keeps the comparison off the chart just as
+// hasPrev keeps it out of the text.
+func monthlyCandleMeta(r monthlyReport) sparkline.MonthlyCandleMeta {
+	prevAvg := math.NaN()
+	if r.hasPrev() {
+		prevAvg = meanDailyAverage(r.PrevDays)
+	}
+	return sparkline.MonthlyCandleMeta{MonthLabel: r.monthLabel(), PrevMonthAvg: prevAvg, PrevLabel: r.prevName()}
 }
 
 // monthlyVolumeMeta carries the header figures to the volume chart. The
@@ -430,12 +443,7 @@ func runMonthlyReport(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 
-	prevAvg := math.NaN()
-	if r.hasPrev() {
-		prevAvg = meanDailyAverage(r.PrevDays)
-	}
-	candlePNG, err := sparkline.NewMonthlyCandleGenerator().GenerateMonthlyCandleChart(toDailyCandles(r.Days),
-		sparkline.MonthlyCandleMeta{MonthLabel: r.monthLabel(), PrevMonthAvg: prevAvg, PrevLabel: r.prevName()})
+	candlePNG, err := sparkline.NewMonthlyCandleGenerator().GenerateMonthlyCandleChart(toDailyCandles(r.Days), monthlyCandleMeta(r))
 	if err != nil {
 		slog.Error("generate monthly candle chart failed", "error", err)
 		return
