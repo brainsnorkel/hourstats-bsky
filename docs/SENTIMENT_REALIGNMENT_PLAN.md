@@ -1,6 +1,6 @@
 # Plan: switch the headline to the emoji-aware scorer and realign history
 
-Status: implemented, awaiting execution (code landed 2026-09-10; `cmd/realign -apply` not yet run on prod). Decisions taken from section 7: thresholds shift by S rounded to the nearest 0.25; shadow rows use their exact emoji value by default (`-shadow-rows exact`, `shift` available); `net_sentiment_pct_emoji` keeps being written. Proposed 2026-09-10. Tracks beads `hs-tcm`. Deviates from that issue's original schedule (two weeks of pairs, hour-of-day fit) by decision: the pre-switch history is rough enough that a constant shift is sufficient.
+Status: applied on prod 2026-09-10 02:13:56 UTC (`realign -apply`, S=+1.77, 70 shadow pairs, 5631 history rows and 359 daily rows rewritten; originals kept in the `*_prealign` tables, revert with `realign -revert`). Decisions taken from section 7: thresholds shift by S rounded to the nearest 0.25; shadow rows use their exact emoji value by default (`-shadow-rows exact`, `shift` available); `net_sentiment_pct_emoji` keeps being written. Proposed 2026-09-10. Tracks beads `hs-tcm`. Deviates from that issue's original schedule (two weeks of pairs, hour-of-day fit) by decision: the pre-switch history is rough enough that a constant shift is sufficient.
 
 ## 1. Inputs
 
