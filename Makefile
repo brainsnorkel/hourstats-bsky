@@ -57,6 +57,17 @@ graph-lab:
 	go run cmd/graph-lab/main.go
 	@echo "Open test-results/graph-lab/ to view generated charts"
 
+# Rehearse the weekly and monthly report posts against a COPY of a prod backup
+# (daily essential-tables backups: s3://hourstats-sqlite-backups/prod/). Prints
+# every post and alt text with its rune count and writes the two charts to OUT.
+# It asserts nothing: read the output. NOW is the pretend run time (RFC3339,
+# default: now); CYCLE_MINUTES is the analysis interval the backup ran at
+# (default 60, prod's). No network, nothing is posted.
+report-rehearsal:
+	@test -n "$(DB)" || { echo "usage: make report-rehearsal DB=path/to/backup.db [NOW=2026-11-09T00:30:00Z] [OUT=dir] [CYCLE_MINUTES=60]"; exit 1; }
+	HS_REPORT_REHEARSAL_DB="$(DB)" HS_REPORT_REHEARSAL_NOW="$(NOW)" HS_REPORT_REHEARSAL_OUT="$(OUT)" HS_REPORT_REHEARSAL_CYCLE_MINUTES="$(CYCLE_MINUTES)" \
+		go test ./cmd/hourstats -run TestReportRehearsal -count=1 -v
+
 graph-lab-sparkline:
 	go run cmd/graph-lab/main.go -type sparkline
 

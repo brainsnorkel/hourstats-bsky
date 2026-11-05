@@ -34,6 +34,12 @@ swap_size_mb = 512
   # is left unset and derives from the timeout (25 min + 10 min cycle reserve = 2100 s, hs-047).
   ANALYSIS_MAX_WINDOW_POSTS = "350000"
   HYDRATION_TIMEOUT_MINUTES = "25"
+  # Weekly (Monday 00:00 UTC) and monthly (1st, 01:00 UTC) report threads (hs-w7z).
+  # Both jobs run every night and only the key_value guard keys stop them. On the
+  # first start with this set the weekly seeds weekly_report_last_week and waits
+  # for the next complete week; the monthly posts the previous month straight
+  # away as a catch-up unless monthly_report_last_month is seeded to that YYYY-MM.
+  REPORTS_ENABLED = "true"
 
 [mounts]
   source = "data"
