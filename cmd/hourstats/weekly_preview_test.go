@@ -62,6 +62,7 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 	cases := []struct {
 		name        string
 		r           weeklyReport
+		loadFailed  bool
 		ok          bool
 		days        int
 		wantFlags   []string // substrings, one per flag, in order
@@ -90,6 +91,14 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 			wantFlags:   []string{"Monday's run will skip: 3 daily rows (minimum 5)"},
 			wantContent: []string{"⚠️ Monday's run will skip: 3 daily rows (minimum 5)", "root: not built", "reply: none", wantSkipInstruction},
 			notContent:  []string{"Week in review"},
+		},
+		{
+			// A failed read is not an empty week: Monday's own read will likely
+			// succeed and post it, so the preview must not say it will skip.
+			name: "read failed", r: weeklyReport{Start: time.Date(2026, time.November, 2, 0, 0, 0, 0, time.UTC), End: time.Date(2026, time.November, 8, 0, 0, 0, 0, time.UTC)}, loadFailed: true, ok: false, days: 0,
+			wantFlags:   []string{"preview unavailable: the week could not be read"},
+			wantContent: []string{"⚠️ preview unavailable", "Monday's run will post it unreviewed unless skipped", wantSkipInstruction, "root: not built", "reply: none (root not built)"},
+			notContent:  []string{"will skip", "daily rows", "built from", "Week in review", "no daily top post"},
 		},
 		{
 			name: "empty topic label", r: previewReport(6, ""), ok: true, days: 6,
@@ -151,7 +160,7 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			content, flags := buildWeeklyReportPreview(tc.r, tc.ok, tc.days, testPreviewTarget)
+			content, flags := buildWeeklyReportPreview(tc.r, tc.loadFailed, tc.ok, tc.days, testPreviewTarget)
 			if len(flags) != len(tc.wantFlags) {
 				t.Errorf("flags = %q, want %d: %q", flags, len(tc.wantFlags), tc.wantFlags)
 			}
@@ -357,7 +366,74 @@ func TestRunWeeklyReportPreviewEmptyWeek(t *testing.T) {
 	if len(poster.contents) != 1 || !strings.Contains(poster.contents[0], "Monday's run will skip: 0 daily rows (minimum 5)") {
 		t.Errorf("posted = %q", poster.contents)
 	}
-	if out := buf.String(); !strings.Contains(out, `"ok":false`) || !strings.Contains(out, `"days":0`) {
-		t.Errorf("log lacks ok=false days=0: %s", out)
+	if out := buf.String(); !strings.Contains(out, `"loaded":true`) || !strings.Contains(out, `"ok":false`) || !strings.Contains(out, `"days":0`) {
+		t.Errorf("log lacks loaded=true ok=false days=0: %s", out)
+	}
+}
+
+// TestRunWeeklyReportPreviewUnreadWeekIsNotASkip: a week that could not be
+// read, because the daily read failed or the context was cancelled (a
+// SIGTERM landing during the Sunday job), is posted as unavailable and
+// unreviewed. Telling the operator Monday will skip it would be false:
+// Monday's own read will succeed and post the week.
+func TestRunWeeklyReportPreviewUnreadWeekIsNotASkip(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, db *store.Store) context.Context
+	}{
+		{
+			name: "context cancelled before the read",
+			setup: func(t *testing.T, db *store.Store) context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+		},
+		{
+			name: "database read fails",
+			setup: func(t *testing.T, db *store.Store) context.Context {
+				if err := db.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+				return context.Background()
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTestStore(t)
+			seedPreviewWeek(t, context.Background(), db, "Budget")
+			ctx := tc.setup(t, db)
+			buf := captureLogs(t)
+			poster := &fakePreviewPoster{}
+			events := &fakeEventLogger{}
+			now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
+
+			runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now, 60)
+
+			if len(poster.contents) != 1 {
+				t.Fatalf("posted %d messages, want 1", len(poster.contents))
+			}
+			content := poster.contents[0]
+			for _, want := range []string{"⚠️ preview unavailable: the week could not be read", "unreviewed", wantSkipInstruction, "root: not built"} {
+				if !strings.Contains(content, want) {
+					t.Errorf("posted content lacks %q:\n%s", want, content)
+				}
+			}
+			for _, not := range []string{"will skip", "daily rows", "built from", "Week in review", "Budget"} {
+				if strings.Contains(content, not) {
+					t.Errorf("posted content has %q, want it absent:\n%s", not, content)
+				}
+			}
+			out := buf.String()
+			for _, want := range []string{`"msg":"weekly report preview"`, `"week_start":"2026-11-02"`, `"loaded":false`, `"ok":false`, `"discord":true`} {
+				if !strings.Contains(out, want) {
+					t.Errorf("log lacks %s: %s", want, out)
+				}
+			}
+			if len(events.events) != 0 {
+				t.Errorf("the post went out, yet an event was written: %v", events.events)
+			}
+		})
 	}
 }

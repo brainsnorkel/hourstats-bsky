@@ -167,7 +167,9 @@ func buildPostOfWeekText(start, end time.Time, f postOfWeekFigures) string {
 }
 
 // loadWeeklyReport gathers the previous week's data. ok is false, with the
-// reason logged, when there is not enough to report on.
+// reason logged, when there is not enough to report on or the daily rows
+// could not be read; the two are told apart by r.Days, which is nil only on
+// a failed read.
 func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycleMinutes int) (weeklyReport, bool) {
 	start, end := previousWeek(now)
 	r := weeklyReport{Start: start, End: end}
@@ -178,8 +180,13 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycle
 		return r, false
 	}
 	// The rows are kept even when too few, so a caller reporting the skip
-	// (the Sunday preview) can say how many there were.
+	// (the Sunday preview) can say how many there were. They are non-nil from
+	// here, even for an empty week, so that a nil Days means the read above
+	// failed and the preview does not pass that off as a week Monday will skip.
 	r.Days = days
+	if r.Days == nil {
+		r.Days = []store.DailySentimentDataPoint{}
+	}
 	if len(days) < weeklyReportMinDays {
 		slog.Info("weekly report: not enough daily rows, skipping",
 			"week_start", start.Format(dateFormat), "days", len(days), "min", weeklyReportMinDays)
