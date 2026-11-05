@@ -211,6 +211,11 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycle
 // returns, and the first review goes out for the week that completes next. A
 // later run posts whenever the guard names an older week, so a skipped Monday
 // is still caught up the next night.
+//
+// When the guard key cannot be read for any reason other than sql.ErrNoRows
+// (its absence), this run is skipped with a Warn and nothing is written: the
+// error is not a first enable, and without the guard a post could duplicate
+// one already out.
 func runWeeklyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time, cycleMinutes int) {
 	start, _ := previousWeek(now)
 	weekKey := start.Format(dateFormat)
@@ -246,17 +251,25 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 
 	if dryRun {
 		// No client is built in a dry run, so there is no verdict to take live
-		// figures from: the preview shows the stored ones.
-		replyText := ""
+		// figures from: the preview shows the stored ones, held to the same
+		// length rule as the live reply. A stored handle that puts the reply
+		// over the limit is previewed as the omission the live run would log,
+		// not as a reply; the live handle can differ, so this previews the
+		// rule rather than the live outcome.
+		replyText, replyLength, replyOmitted := "", 0, false
 		if r.TopPost != nil {
 			replyText = buildPostOfWeekText(r.Start, r.End, storedPostOfWeekFigures(*r.TopPost))
+			if replyLength = postLength(replyText); replyLength > blueskyPostLimit {
+				replyOmitted, replyText = true, ""
+			}
 		}
 		slog.Info("DRY_RUN: would post weekly report",
 			"week_start", weekKey, "days", len(r.Days), "prev_days", len(r.PrevDays),
 			"topic", r.TopicLabel, "topic_hours", r.TopicHours,
 			"has_top_post", r.TopPost != nil,
 			"text", text, "text_length", postLength(text),
-			"reply", replyText, "reply_length", postLength(replyText), "counts_source", figuresStored)
+			"reply", replyText, "reply_length", replyLength, "reply_omitted", replyOmitted,
+			"counts_source", figuresStored)
 		return
 	}
 
