@@ -86,7 +86,7 @@ go tool pprof -top hourstats memguard-run-20260909-155500-20260909T155845-45s-tr
 ## 6. Recurring checklist
 
 **Weekly (five minutes)**
-- Look at the account: is there a summary every hour, a sparkline and trending reply under it, the daily quote under the pinned yearly chart? On a Monday, the week-in-review root with the post-of-the-week reply under it; on the 1st, the candlestick root with the volume reply (`REPORTS_ENABLED`, since hs-w7z).
+- Look at the account: is there a summary every hour, a sparkline and trending reply under it, the daily quote under the pinned yearly chart? On a Monday, the week-in-review root with the post-of-the-week reply under it; on the 1st, the candlestick root with the volume reply (`REPORTS_ENABLED`, since hs-w7z). On Sunday a `weekly report preview` message lands in the Discord alerts channel with the coming week's text; read the stickiest-topic line (a label naming a year before the week is dropped by the bot itself, and the preview quotes it) and, if the text is wrong, run the skip command in the message before Monday 00:00 UTC. No Sunday preview means the week is unreviewed.
 - `fly status -a hourstats-prod`, then `fly proxy 9111:9111 -a hourstats-prod` and `curl localhost:9111/stats/events?hours=168`. Zero `stall_detected`, `consumer_restart`, `cycle_overlap_skipped`, `hydration_timeout`, `gemini_budget_exhausted`, `memory_guard_warn`, `memory_guard_trip` is normal; a handful is fine; a daily pattern is not. Any `memory_guard_*` event is worth opening the profile it left (section 4).
 
 **Monthly**

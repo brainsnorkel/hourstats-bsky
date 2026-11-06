@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -76,9 +79,11 @@ func buildWeeklyReportText(r weeklyReport) string {
 	}
 	tail := []string{"", fmt.Sprintf("%s English posts analysed", compactCount(sumPosts(r.Days)))}
 
-	// The topic label is the only free text; cap it, and drop the line
-	// altogether rather than let the post exceed the limit.
-	if label := truncateRunes(strings.Join(strings.Fields(r.TopicLabel), " "), maxTopicLabelRunes); label != "" {
+	// The topic label is the only free text: cap it, drop the line when the
+	// label names a year before the week (droppedTopicYears), and drop it
+	// rather than let the post exceed the limit.
+	label := truncateRunes(strings.Join(strings.Fields(r.TopicLabel), " "), maxTopicLabelRunes)
+	if label != "" && len(r.droppedTopicYears()) == 0 {
 		topic := fmt.Sprintf("Stickiest topic: %s, trending %d of %d hours", label, r.TopicHours, weekHours)
 		withTopic := strings.Join(append(append(head, topic), tail...), "\n")
 		if postLength(withTopic) <= blueskyPostLimit {
@@ -90,6 +95,75 @@ func buildWeeklyReportText(r weeklyReport) string {
 
 // maxTopicLabelRunes bounds the stickiest-topic label in the weekly post.
 const maxTopicLabelRunes = 60
+
+// labelYear finds four-digit years (19xx or 20xx) in a topic label, with an
+// optional range tail of two or four digits ("2026-27", "2024/25",
+// "2025-2026"). The character before the year is captured, RE2 having no
+// lookbehind, so a currency amount ("$2000") and a year glued to a letter
+// ("Election2024") are not years; a bare count ("Over 2000 Flights") still
+// is. The grouper's label allowlist (validLabelPattern in internal/topics)
+// admits no currency sign and folds dashes to "-", so those two exclusions
+// are defence in depth for a label stored under other rules.
+var labelYear = regexp.MustCompile(`(^|[^$£€¥\w])((?:19|20)\d{2})(?:[-–/]((?:19|20)\d{2}|\d{2}))?\b`)
+
+// weeklyTopicDroppedEvent is the stats event written when the posted weekly
+// report went out without its topic line; internal/alerts raises it as a
+// warning at the next snapshot, so a drop that the Sunday preview could not
+// foresee (the topic can change once Sunday's rows land) still reaches the
+// operator.
+const weeklyTopicDroppedEvent = "weekly_report_topic_dropped"
+
+// droppedTopicYears returns the years in the topic label that end before the
+// week's first year, as written ("2024", "2024/25"), distinct and in label
+// order. A non-empty result costs the post its topic line
+// (buildWeeklyReportText) and the Sunday preview quotes the dropped label.
+// The grouper is date-blind: it has labelled the 2026 midterms a 2024
+// election, and a label naming an earlier year is wrong far more often than
+// it is about that year. Later years are kept, since talk of 2028 the week
+// after the midterms is a real topic and the grouper's slips run backwards.
+// In January the year just ended is kept too: "2026 Year in Review" in the
+// first week of 2027 is right, not a slip. A label genuinely about an
+// earlier year ("the 2020 election") is the cost: it loses the line too.
+func (r weeklyReport) droppedTopicYears() []string {
+	floor := r.Start.Year()
+	if r.Start.Month() == time.January {
+		floor--
+	}
+	var years []string
+	for _, m := range labelYear.FindAllStringSubmatch(r.TopicLabel, -1) {
+		year, _ := strconv.Atoi(m[2])
+		shown := m[2]
+		if end, _ := strconv.Atoi(m[3]); len(m[3]) == 4 {
+			// A range running backwards ("2026-1999") is not a range.
+			if end >= year {
+				year, shown = end, m[0][len(m[1]):]
+			}
+		} else if m[3] != "" {
+			// A two-digit tail is a range end only when it lands within
+			// thirty years after the start, in the start's century or the
+			// next ("1999-00"). A month ("2024-11-05", "2024-12") never does
+			// for a start year past 2012, and the label is judged by its year
+			// alone.
+			if end += year / 100 * 100; end <= year {
+				end += 100
+			}
+			if end <= year+30 {
+				year, shown = end, m[0][len(m[1]):]
+			}
+		}
+		if year < floor && !slices.Contains(years, shown) {
+			years = append(years, shown)
+		}
+	}
+	return years
+}
+
+// weeklyTopicDroppedDetails is the weekly_report_topic_dropped event's
+// details, which internal/alerts carries into the Discord message. The label
+// comes from the grouper's allowlist, so it has no newline or mention in it.
+func weeklyTopicDroppedDetails(weekKey string, dropped []string, label string) string {
+	return fmt.Sprintf("week_start=%s years=%s label=%q", weekKey, strings.Join(dropped, ","), label)
+}
 
 // truncateRunes shortens s to at most n runes, ending with an ellipsis when
 // it was cut.
@@ -167,7 +241,9 @@ func buildPostOfWeekText(start, end time.Time, f postOfWeekFigures) string {
 }
 
 // loadWeeklyReport gathers the previous week's data. ok is false, with the
-// reason logged, when there is not enough to report on.
+// reason logged, when there is not enough to report on or the daily rows
+// could not be read; the two are told apart by r.Days, which is nil only on
+// a failed read.
 func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycleMinutes int) (weeklyReport, bool) {
 	start, end := previousWeek(now)
 	r := weeklyReport{Start: start, End: end}
@@ -177,12 +253,19 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycle
 		slog.Error("weekly report: get daily range failed", "error", err)
 		return r, false
 	}
+	// The rows are kept even when too few, so a caller reporting the skip
+	// (the Sunday preview) can say how many there were. They are non-nil from
+	// here, even for an empty week, so that a nil Days means the read above
+	// failed and the preview does not pass that off as a week Monday will skip.
+	r.Days = days
+	if r.Days == nil {
+		r.Days = []store.DailySentimentDataPoint{}
+	}
 	if len(days) < weeklyReportMinDays {
 		slog.Info("weekly report: not enough daily rows, skipping",
 			"week_start", start.Format(dateFormat), "days", len(days), "min", weeklyReportMinDays)
 		return r, false
 	}
-	r.Days = days
 
 	prevStart, prevEnd := start.AddDate(0, 0, -7), start.AddDate(0, 0, -1)
 	if prev, err := db.GetDailySentimentRange(ctx, prevStart.Format(dateFormat), prevEnd.Format(dateFormat)); err != nil {
@@ -248,7 +331,7 @@ func armWeeklyReportGuard(ctx context.Context, db *store.Store, now time.Time) {
 // (its absence), this run is skipped with a Warn and nothing is written: the
 // error is not a first enable, and without the guard a post could duplicate
 // one already out.
-func runWeeklyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time, cycleMinutes int) {
+func runWeeklyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time, cycleMinutes int, events eventLogger) {
 	start, _ := previousWeek(now)
 	weekKey := start.Format(dateFormat)
 	last, err := db.GetKeyValue(ctx, weeklyReportGuardKey)
@@ -275,6 +358,11 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 	if !ok {
 		return
 	}
+	dropped := r.droppedTopicYears()
+	if len(dropped) > 0 {
+		slog.Warn("weekly report: topic label names a year before the week, topic line dropped",
+			"week_start", weekKey, "topic", r.TopicLabel, "years", dropped)
+	}
 	text := buildWeeklyReportText(r)
 	if n := postLength(text); n > blueskyPostLimit {
 		slog.Error("weekly report text over limit, skipping", "length", n)
@@ -297,7 +385,7 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 		}
 		slog.Info("DRY_RUN: would post weekly report",
 			"week_start", weekKey, "days", len(r.Days), "prev_days", len(r.PrevDays),
-			"topic", r.TopicLabel, "topic_hours", r.TopicHours,
+			"topic", r.TopicLabel, "topic_hours", r.TopicHours, "topic_dropped_years", dropped,
 			"has_top_post", r.TopPost != nil,
 			"text", text, "text_length", postLength(text),
 			"reply", replyText, "reply_length", replyLength, "reply_omitted", replyOmitted,
@@ -320,11 +408,16 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 		slog.Error("post weekly report failed", "error", err)
 		return
 	}
-	slog.Info("weekly report posted", "week_start", weekKey, "uri", rootURI)
+	slog.Info("weekly report posted", "week_start", weekKey, "uri", rootURI, "topic_dropped_years", dropped)
 	if err := recordReportGuard(ctx, db, weeklyReportGuardKey, weekKey); err != nil {
 		// The guard is the only duplicate suppression; a restart with
 		// REPORTS_RUN_AT_STARTUP would re-post.
 		slog.Error("persist weekly report guard failed", "error", err, "week_start", weekKey)
+	}
+	if len(dropped) > 0 && events != nil {
+		// Only for a post that went out, and detached from ctx so a shutdown
+		// right after it still leaves the event for the alert path.
+		_ = events.LogEvent(context.WithoutCancel(ctx), weeklyTopicDroppedEvent, weeklyTopicDroppedDetails(weekKey, dropped, r.TopicLabel))
 	}
 
 	if r.TopPost == nil {
