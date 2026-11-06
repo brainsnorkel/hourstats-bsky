@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +14,8 @@ import (
 
 // ---------------------------------------------------------------------------
 // Sunday preview of the coming weekly report, posted to the operator's
-// Discord channel so a wrong-year topic label can be caught before Monday.
+// Discord channel so the week's text can be read, and the week skipped if it
+// is wrong, before Monday.
 // ---------------------------------------------------------------------------
 
 // weeklyPreviewPoster is the slice of *alerts.Notifier the preview needs, so
@@ -52,9 +51,6 @@ func weeklyPreviewWeek(now time.Time) (start, end time.Time) {
 	return previousWeek(today.AddDate(0, 0, (8-int(today.Weekday()))%7))
 }
 
-// labelYear finds four-digit years (19xx or 20xx) in a topic label.
-var labelYear = regexp.MustCompile(`\b(?:19|20)\d{2}\b`)
-
 // buildWeeklyReportPreview renders the Discord message and the list of
 // things worth a look before Monday. loadFailed means the week could not be
 // read at all (a database error, or a context cancelled during the Sunday
@@ -77,12 +73,12 @@ func buildWeeklyReportPreview(r weeklyReport, loadFailed, ok bool, days int, tar
 		if label == "" {
 			flags = append(flags, "no topic label (no topic_daily rows for the week)")
 		}
-		for _, y := range labelYear.FindAllString(label, -1) {
-			if y != strconv.Itoa(r.Start.Year()) && y != strconv.Itoa(r.End.Year()) {
-				flags = append(flags, "SUSPECT: the grouper is date-blind, the label names "+y)
-			}
-		}
-		switch {
+		switch years := r.droppedTopicYears(); {
+		case len(years) > 0:
+			// buildWeeklyReportText has left the line out, so the label is
+			// shown here, as inline code: it is nowhere else in the message,
+			// and bare it would render as Discord markdown.
+			flags = append(flags, fmt.Sprintf("topic line dropped: the grouper is date-blind and the label `%s` names %s", strings.ReplaceAll(label, "`", "'"), strings.Join(years, ", ")))
 		case label != "" && !strings.Contains(text, "Stickiest topic:"):
 			flags = append(flags, "topic line omitted: the post would exceed 300 graphemes with it")
 		case truncateRunes(label, maxTopicLabelRunes) != label:

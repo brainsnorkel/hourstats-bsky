@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -225,7 +226,7 @@ func TestRunWeeklyReportFirstEnableWaitsForNextWeek(t *testing.T) {
 	now := time.Date(2026, time.November, 4, 0, 5, 0, 0, time.UTC)
 	wantKey, _ := previousWeek(now)
 
-	runWeeklyReport(ctx, db, "", "", true, now, 60)
+	runWeeklyReport(ctx, db, "", "", true, now, 60, nil)
 
 	got, err := db.GetKeyValue(ctx, weeklyReportGuardKey)
 	if err != nil {
@@ -248,7 +249,7 @@ func TestRunWeeklyReportFirstEnableWaitsForNextWeek(t *testing.T) {
 	seedWeekDays(t, ctx, db, start)
 	buf.Reset()
 
-	runWeeklyReport(ctx, db, "", "", true, later, 60)
+	runWeeklyReport(ctx, db, "", "", true, later, 60, nil)
 
 	out = buf.String()
 	if !strings.Contains(out, "DRY_RUN: would post weekly report") {
@@ -319,7 +320,7 @@ func TestRunWeeklyReportDryRunAppliesReplyLimit(t *testing.T) {
 			}
 			buf := captureLogs(t)
 
-			runWeeklyReport(ctx, db, "", "", true, now, 60)
+			runWeeklyReport(ctx, db, "", "", true, now, 60, nil)
 
 			out := buf.String()
 			if !strings.Contains(out, `"msg":"DRY_RUN: would post weekly report"`) {
@@ -428,7 +429,7 @@ func TestArmWeeklyReportGuardSundayDeploy(t *testing.T) {
 	buf.Reset()
 
 	monday := time.Date(2026, time.November, 9, 0, 5, 0, 0, time.UTC)
-	runWeeklyReport(ctx, db, "", "", true, monday, 60)
+	runWeeklyReport(ctx, db, "", "", true, monday, 60, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"DRY_RUN: would post weekly report"`) {
@@ -463,7 +464,7 @@ func TestArmWeeklyReportGuardMondayDeploy(t *testing.T) {
 	buf := captureLogs(t)
 
 	tuesday := time.Date(2026, time.November, 10, 0, 5, 0, 0, time.UTC)
-	runWeeklyReport(ctx, db, "", "", true, tuesday, 60)
+	runWeeklyReport(ctx, db, "", "", true, tuesday, 60, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"weekly report already posted"`) || !strings.Contains(out, `"week_start":"2026-11-02"`) {
@@ -517,7 +518,7 @@ func TestRunWeeklyReportSkipsWhenGuardUnreadable(t *testing.T) {
 	cancel()
 	now := time.Date(2026, time.November, 4, 0, 5, 0, 0, time.UTC)
 
-	runWeeklyReport(cancelled, db, "", "", true, now, 60)
+	runWeeklyReport(cancelled, db, "", "", true, now, 60, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"msg":"weekly report: guard key unreadable, skipping this run"`) {
@@ -533,5 +534,123 @@ func TestRunWeeklyReportSkipsWhenGuardUnreadable(t *testing.T) {
 		t.Errorf("guard key was written (%q) on a run whose read failed, want it still unset", got)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("GetKeyValue after the failed run: %v, want a not-found error", err)
+	}
+}
+
+// TestBuildWeeklyReportTextDropsWrongYearTopic: the grouper is date-blind,
+// so a label naming a year before the week costs the post its topic line;
+// the week's own years, later years, a cross-year week, January's look back
+// at the year just ended, a currency amount and other four-digit numbers do
+// not. A bare count that looks like a year is the accepted cost, as is a
+// range that ended before the week. The currency and over-60-rune cases
+// cannot come out of the grouper's label allowlist today; they pin the
+// defence in depth.
+func TestBuildWeeklyReportTextDropsWrongYearTopic(t *testing.T) {
+	crossYear := time.Date(2025, time.December, 29, 0, 0, 0, 0, time.UTC) // Mon 29 Dec 2025 – Sun 4 Jan 2026
+	january := time.Date(2027, time.January, 4, 0, 0, 0, 0, time.UTC)     // Mon 4 – Sun 10 Jan 2027
+	february := time.Date(2027, time.February, 1, 0, 0, 0, 0, time.UTC)   // Mon 1 – Sun 7 Feb 2027
+	cases := []struct {
+		name      string
+		label     string
+		start     time.Time // zero: the 2–8 Nov 2026 week
+		wantYears []string
+		wantLine  bool
+	}{
+		{name: "a past year", label: "2024 US Presidential Election", wantYears: []string{"2024"}},
+		{name: "two past years, each reported once", label: "2020 vs 2024: 2024 Turnout", wantYears: []string{"2020", "2024"}},
+		{name: "the week's year", label: "2026 Midterm Elections", wantLine: true},
+		{name: "a later year is kept", label: "2028 Presidential Race", wantLine: true},
+		{name: "a far later year is kept", label: "Agenda 2030", wantLine: true},
+		{name: "a past year beyond the 60-rune cut still counts", label: strings.Repeat("Midterms ", 7) + "2024", wantYears: []string{"2024"}},
+		{name: "a currency amount is not a year", label: "$2000 Stimulus Checks", wantLine: true},
+		{name: "a bare count reads as a year, the accepted cost", label: "Over 2000 Flights Cancelled", wantYears: []string{"2000"}},
+		{name: "a year glued to a letter is not a year", label: "Election2024 Recap", wantLine: true},
+		{name: "a longer number is not a year", label: "Flight 20245", wantLine: true},
+		{name: "a two-digit number is not a year", label: "COVID-19 Inquiry", wantLine: true},
+		{name: "a season range ending in the week's year", label: "2025-26 NBA Season", wantLine: true},
+		{name: "a fiscal range ending before the week", label: "2024/25 Budget", wantYears: []string{"2024/25"}},
+		{name: "a range starting in the week's year", label: "2026/27 Budget", wantLine: true},
+		{name: "a range written in full is judged by its end", label: "2024-2026 Term", wantLine: true},
+		{name: "a range written in full that ended before the week", label: "2023-2025 Term", wantYears: []string{"2023-2025"}},
+		{name: "a range running backwards is judged by its first year", label: "2026-1999 Countdown", wantLine: true},
+		{name: "a century roll is a range end", label: "1999-00 Y2K Scare", wantYears: []string{"1999-00"}},
+		{name: "a decade range is a range", label: "2016-26 Decade", wantLine: true},
+		{name: "a thirty-year range is a range", label: "2020-50 Plan", wantLine: true},
+		{name: "a tail past thirty years is not a range", label: "2020-51 Plan", wantYears: []string{"2020"}},
+		{name: "a date is judged by its year, not read as a range", label: "2024-11-05 Vote", wantYears: []string{"2024"}},
+		{name: "a year-month is judged by its year", label: "2024-12 Recap", wantYears: []string{"2024"}},
+		{name: "no label", label: "", wantLine: false},
+		{name: "a cross-year week keeps its first year", label: "2025 Review and 2026 Preview", start: crossYear, wantLine: true},
+		{name: "a cross-year week still drops an earlier year", label: "2024 Review", start: crossYear, wantYears: []string{"2024"}},
+		{name: "a season ending in the week's year is kept in January too", label: "2026-27 NBA Season", start: january, wantLine: true},
+		{name: "a January week keeps the year just ended", label: "2026 Year in Review", start: january, wantLine: true},
+		{name: "a January week keeps the season that ended last year", label: "2025-26 NBA Season", start: january, wantLine: true},
+		{name: "a January week still drops two years back", label: "2025 Recap", start: january, wantYears: []string{"2025"}},
+		{name: "a February week drops the year just ended", label: "2026 Year in Review", start: february, wantYears: []string{"2026"}},
+		{name: "a February week drops the season that ended last year", label: "2025-26 NBA Season", start: february, wantYears: []string{"2025-26"}},
+		{name: "a February week drops a full range that ended last year", label: "2025-2026 Season", start: february, wantYears: []string{"2025-2026"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := previewReport(7, tc.label)
+			if !tc.start.IsZero() {
+				r.Start, r.End = tc.start, tc.start.AddDate(0, 0, 6)
+				r.Days = weekDays(tc.start.Format(dateFormat), []float64{1, 2, 3, 4, 5, 6, 7}, 1_000_000)
+			}
+			if got := r.droppedTopicYears(); !slices.Equal(got, tc.wantYears) {
+				t.Errorf("droppedTopicYears = %v, want %v", got, tc.wantYears)
+			}
+			text := buildWeeklyReportText(r)
+			if got := strings.Contains(text, "Stickiest topic:"); got != tc.wantLine {
+				t.Errorf("topic line present = %v, want %v:\n%s", got, tc.wantLine, text)
+			}
+			if !strings.Contains(text, "English posts analysed") || postLength(text) > blueskyPostLimit {
+				t.Errorf("the rest of the post is wrong (%d graphemes):\n%s", postLength(text), text)
+			}
+		})
+	}
+}
+
+// TestWeeklyTopicDroppedDetails: the event's details line, as the alert
+// message will carry it.
+func TestWeeklyTopicDroppedDetails(t *testing.T) {
+	got := weeklyTopicDroppedDetails("2026-11-02", []string{"2024", "2020-21"}, `Bush v. Gore "Recount"`)
+	want := `week_start=2026-11-02 years=2024,2020-21 label="Bush v. Gore \"Recount\""`
+	if got != want {
+		t.Errorf("details = %s, want %s", got, want)
+	}
+}
+
+// TestRunWeeklyReportWarnsWhenTopicDropped: the Monday run of a week whose
+// label names an earlier year logs the drop and, in a dry run, previews the
+// text without the topic line and writes no event, since nothing was posted.
+func TestRunWeeklyReportWarnsWhenTopicDropped(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+	seedPreviewWeek(t, ctx, db, "2024 US Presidential Election")
+	// The guard names the week before, so this is a normal Monday run.
+	if err := db.SetKeyValue(ctx, weeklyReportGuardKey, "2026-10-26"); err != nil {
+		t.Fatalf("SetKeyValue: %v", err)
+	}
+	buf := captureLogs(t)
+	events := &fakeEventLogger{}
+
+	runWeeklyReport(ctx, db, "", "", true, time.Date(2026, time.November, 9, 0, 5, 0, 0, time.UTC), 60, events)
+
+	out := buf.String()
+	for _, want := range []string{
+		`"level":"WARN"`, `"msg":"weekly report: topic label names a year before the week, topic line dropped"`,
+		`"week_start":"2026-11-02"`, `"topic":"2024 US Presidential Election"`, `"years":["2024"]`,
+		`"msg":"DRY_RUN: would post weekly report"`, `"topic_dropped_years":["2024"]`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %s: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "Stickiest topic") {
+		t.Errorf("the dry run previews the topic line the live post drops: %s", out)
+	}
+	if len(events.events) != 0 {
+		t.Errorf("a dry run wrote %v; the event is for a post that went out", events.events)
 	}
 }

@@ -107,12 +107,15 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 			notContent:  []string{"Stickiest topic"},
 		},
 		{
+			// The posting path drops the line (buildWeeklyReportText), so the
+			// preview shows the text without it and quotes the label it lost.
 			name: "wrong-year label", r: previewReport(6, "2024 US Presidential Election"), ok: true, days: 6,
-			wantFlags:   []string{"SUSPECT: the grouper is date-blind, the label names 2024"},
-			wantContent: []string{"⚠️ SUSPECT", wantSkipInstruction, "Stickiest topic: 2024 US Presidential Election"},
+			wantFlags:   []string{"topic line dropped: the grouper is date-blind and the label `2024 US Presidential Election` names 2024"},
+			wantContent: []string{"⚠️ topic line dropped", wantSkipInstruction, "```\nWeek in review · 2–8 Nov\n", "English posts analysed"},
+			notContent:  []string{"Stickiest topic", "topic line omitted", "SUSPECT"},
 		},
 		{
-			name: "a year is only suspect when it is neither of the week's", ok: true, days: 6,
+			name: "a cross-year week keeps both of its years", ok: true, days: 6,
 			r: func() weeklyReport {
 				r := previewReport(6, "2025 Review and 2026 Preview")
 				r.Start = time.Date(2025, time.December, 29, 0, 0, 0, 0, time.UTC)
@@ -122,7 +125,7 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 			wantContent: []string{"✅ nothing suspect"},
 		},
 		{
-			name: "a dollar figure is not a year", r: previewReport(6, "$5000 Stimulus"), ok: true, days: 6,
+			name: "a currency amount is not a year", r: previewReport(6, "$2000 Stimulus"), ok: true, days: 6,
 			wantContent: []string{"✅ nothing suspect"},
 		},
 		{
@@ -245,7 +248,7 @@ func seedPreviewWeek(t *testing.T, ctx context.Context, db *store.Store, label s
 
 // TestRunWeeklyReportPreviewPostsToDiscord: on Sunday 8 Nov the preview is
 // built for the week ending that night (2–8 Nov), reaches the poster with the
-// wrong-year label flagged, and is logged with discord=true.
+// wrong-year label reported as dropped, and is logged with discord=true.
 func TestRunWeeklyReportPreviewPostsToDiscord(t *testing.T) {
 	db := newTestStore(t)
 	ctx := context.Background()
@@ -264,10 +267,9 @@ func TestRunWeeklyReportPreviewPostsToDiscord(t *testing.T) {
 	t.Logf("rendered preview:\n%s", content)
 	for _, want := range []string{
 		"HourStats test weekly report preview · week 2–8 Nov",
-		"⚠️ SUSPECT: the grouper is date-blind, the label names 2024",
+		"⚠️ topic line dropped: the grouper is date-blind and the label `2024 US Presidential Election` names 2024",
 		"built from 6 of 7 days",
 		wantSkipInstruction,
-		"Stickiest topic: 2024 US Presidential Election, trending 1 of 168 hours",
 		"6M English posts analysed",
 		"Most engaged post by @top.bsky.social: 9.8k likes, 1.2k reposts, 300 replies",
 	} {
@@ -275,10 +277,13 @@ func TestRunWeeklyReportPreviewPostsToDiscord(t *testing.T) {
 			t.Errorf("posted content lacks %q:\n%s", want, content)
 		}
 	}
+	if strings.Contains(content, "Stickiest topic") {
+		t.Errorf("posted content carries the topic line the posting path drops:\n%s", content)
+	}
 	out := buf.String()
 	for _, want := range []string{
 		`"msg":"weekly report preview"`, `"week_start":"2026-11-02"`, `"ok":true`, `"days":6`,
-		`"topic":"2024 US Presidential Election"`, `"discord":true`, `"flags":["SUSPECT`,
+		`"topic":"2024 US Presidential Election"`, `"discord":true`, `"flags":["topic line dropped`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log lacks %s: %s", want, out)

@@ -231,6 +231,15 @@ func TestEvaluate_Conditions(t *testing.T) {
 			wantSeverity: SeverityWarn,
 		},
 		{
+			// Monday's post went out without its topic line; the operator
+			// hears which label was dropped.
+			name:         "a weekly report that dropped its topic line is a warning",
+			latest:       &store.StatsSnapshot{},
+			events:       []store.StatsEvent{{EventType: "weekly_report_topic_dropped", Details: `week_start=2026-11-02 years=2024 label="2024 US Presidential Election"`}},
+			wantNames:    []string{"weekly_report_topic_dropped"},
+			wantSeverity: SeverityWarn,
+		},
+		{
 			name:      "events that are not alerting events are ignored",
 			latest:    &store.StatsSnapshot{},
 			events:    []store.StatsEvent{{EventType: "app_start"}, {EventType: "wal_pressure_checkpoint"}},
