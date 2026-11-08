@@ -54,6 +54,38 @@ func TestValidateCluster_Labels(t *testing.T) {
 	}
 }
 
+// TestValidateCluster_StripsLeadingConjunction: one leading conjunction or
+// preposition is cut and the rest judged as the label; an article is a title.
+func TestValidateCluster_StripsLeadingConjunction(t *testing.T) {
+	cases := []struct {
+		label      string
+		want       string
+		wantReason string
+	}{
+		{label: "and vote today", want: "vote today"},
+		{label: "For Cybertruck Owners", want: "Cybertruck Owners"},
+		{label: "and or Vote", want: "or Vote"}, // one word at most
+		{label: "The Bear", want: "The Bear"},
+		{label: "The Onion", want: "The Onion"},
+		{label: "A Minecraft Movie", want: "A Minecraft Movie"},
+		{label: "Android Update", want: "Android Update"}, // a word, not a prefix
+		{label: "of", wantReason: "label_too_short"},
+		{label: "and UK", wantReason: "label_too_short"},
+		{label: "with #Politics", wantReason: "label_charset"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			got, reason := validateCluster(TopicCluster{Label: tc.label, Description: "d", Justification: "j"})
+			if reason != tc.wantReason {
+				t.Fatalf("validateCluster(%q) reason = %q, want %q", tc.label, reason, tc.wantReason)
+			}
+			if reason == "" && got.Label != tc.want {
+				t.Errorf("validateCluster(%q) label = %q, want %q", tc.label, got.Label, tc.want)
+			}
+		})
+	}
+}
+
 // A blocked term must only match a whole word: scunthorpe-style false
 // positives would silently delete real topics.
 func TestValidateCluster_BlockedTermMatchesWholeWordsOnly(t *testing.T) {

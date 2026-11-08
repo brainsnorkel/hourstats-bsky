@@ -421,6 +421,13 @@ func validateClusters(clusters []TopicCluster) []TopicCluster {
 	return out
 }
 
+// labelLeadWords are the conjunctions and prepositions validateCluster cuts
+// from the start of a label, one at most.
+var labelLeadWords = map[string]bool{
+	"and": true, "but": true, "or": true, "so": true, "for": true, "with": true,
+	"from": true, "to": true, "of": true, "nor": true, "yet": true,
+}
+
 // validateCluster returns one cluster with its prose normalised, or a
 // non-empty reason naming the first check it failed.
 func validateCluster(c TopicCluster) (TopicCluster, string) {
@@ -428,6 +435,15 @@ func validateCluster(c TopicCluster) (TopicCluster, string) {
 	// joined with a middle dot, or one the model wrote with smart quotes and an
 	// em dash, is normalised rather than rejected.
 	c.Label = foldPunctuation(strings.TrimSpace(c.Label))
+	// A label opening on a conjunction or preposition is a phrase fragment
+	// ("and vote today"); one such word is cut and the rest judged as the
+	// label. Articles stay: "The Bear" and "A Minecraft Movie" are titles.
+	if first, rest, _ := strings.Cut(c.Label, " "); labelLeadWords[strings.ToLower(first)] {
+		c.Label = strings.TrimSpace(rest)
+		if c.Label == "" || (!strings.Contains(c.Label, " ") && countLetters(c.Label) < 3) {
+			return c, "label_too_short"
+		}
+	}
 	// The regex bounds the length too; checking it first only buys a reason
 	// that says which rule was broken, and keeps the bound stated in Go rather
 	// than only inside the pattern.
@@ -773,13 +789,18 @@ type detectedPhrase struct {
 	Terms  []string
 }
 
+// maxPhraseChain bounds how many compound terms one detected phrase may join:
+// four bigrams, five words. A real headline phrase is no longer, and longer
+// chains were welds of unrelated fragments ("admitted having hall mirrors
+// first zone wild"); the bound also keeps a cycle among the terms from
+// growing a chain without end.
+const maxPhraseChain = 4
+
 // detectOverlappingPhrases chains compound terms that share a boundary word
-// (e.g. post_banger + banger_that → "post banger that") into reconstructed
-// viral phrases for the LLM.
-// maxPhraseChain bounds how many compound terms one detected phrase may join.
-// A real headline phrase is three or four terms; the bound exists so a cycle
-// among the terms can never grow a chain without end.
-const maxPhraseChain = 8
+// (e.g. suspected_chinese + chinese_spy → "suspected chinese spy") into
+// reconstructed viral phrases for the LLM. A chain extends only through a
+// plain word (classify): a content stopword or a year ("post", "day",
+// "2026") is shared by too many unrelated bigrams to join two of them.
 
 func detectOverlappingPhrases(terms []TermScore) []detectedPhrase {
 	type compoundTerm struct {
@@ -819,6 +840,9 @@ func detectOverlappingPhrases(terms []TermScore) []detectedPhrase {
 		current := start
 		for len(chain) < maxPhraseChain {
 			lastWord := current.words[len(current.words)-1]
+			if classify(lastWord) != classPlain {
+				break
+			}
 			nexts, ok := byFirst[lastWord]
 			if !ok {
 				break
@@ -900,7 +924,7 @@ func buildPrompt(terms []TermScore, headlines []string, pc promptContext) string
 		for _, p := range phrases {
 			fmt.Fprintf(&b, "- \"%s\" (from terms: %s)\n", p.Phrase, strings.Join(p.Terms, " + "))
 		}
-		b.WriteString("These are likely viral phrases or meme formats being repeated across many posts. Each detected phrase should become a SINGLE topic. Use the phrase (or a recognisable shortened form) as the label.\n")
+		b.WriteString("These are likely viral phrases or meme formats being repeated across many posts. Each detected phrase should become a SINGLE topic. The phrase is evidence of a meme: set is_meme to true and give the topic a readable name, by its recognisable catchphrase or, for a copypasta, by its subject (e.g. 'Cybertruck Copypasta'); never start a label with a conjunction or preposition and never join two phrases into one label.\n")
 	}
 
 	b.WriteString("\nTOPIC QUALITY:\n")
@@ -913,7 +937,7 @@ func buildPrompt(terms []TermScore, headlines []string, pc promptContext) string
 	b.WriteString("- Aggressively merge related terms into the most recognizable event, person, or subject.\n")
 	b.WriteString("- If a major event is happening (e.g. Super Bowl, Oscars), ALL related terms (teams, players, performers, venues) MUST merge into that single event.\n")
 	b.WriteString("- Terms with underscores are multi-word phrases (bad_bunny = \"Bad Bunny\", super_bowl = \"Super Bowl\"). Use multi-word form in labels.\n")
-	b.WriteString("- When compound terms share a word (e.g. post_banger + banger_that), they are fragments of the same viral phrase. Merge ALL overlapping fragments into ONE topic.\n")
+	b.WriteString("- When compound terms share a word (e.g. suspected_chinese + chinese_spy), they are fragments of the same viral phrase. Merge ALL overlapping fragments into ONE topic.\n")
 	b.WriteString("- Aim for 5-7 distinct topics. Fewer strong topics is better than more weak ones.\n")
 	b.WriteString("- Maximum 10 groups. Every input term must appear in exactly one group's keywords.\n\n")
 	b.WriteString("DISAMBIGUATION:\n")

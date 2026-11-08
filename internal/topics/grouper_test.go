@@ -323,36 +323,56 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 		{
 			name: "two overlapping bigrams",
 			terms: []TermScore{
-				{Term: "post_banger", Score: 5.0},
-				{Term: "banger_that", Score: 4.5},
+				{Term: "suspected_chinese", Score: 5.0},
+				{Term: "chinese_spy", Score: 4.5},
 				{Term: "trump", Score: 12.0},
 			},
 			wantPhrases:   1,
-			wantPhrase:    "post banger that",
+			wantPhrase:    "suspected chinese spy",
 			wantTermCount: 2,
 		},
 		{
 			name: "three-term chain",
 			terms: []TermScore{
-				{Term: "post_banger", Score: 5.0},
-				{Term: "banger_that", Score: 4.5},
-				{Term: "that_isnt", Score: 4.0},
+				{Term: "suspected_chinese", Score: 5.0},
+				{Term: "chinese_spy", Score: 4.5},
+				{Term: "spy_balloon", Score: 4.0},
 			},
 			wantPhrases:   1,
-			wantPhrase:    "post banger that isnt",
+			wantPhrase:    "suspected chinese spy balloon",
 			wantTermCount: 3,
 		},
 		{
 			// A reciprocal pair fed the walk back to itself forever before
 			// the chain tracked its own members (prod OOM, 2026-10-17).
+			// election_day cannot chain through the content stopword "day",
+			// so the walk that forms starts at day_election.
 			name: "reciprocal pair terminates",
 			terms: []TermScore{
 				{Term: "election_day", Score: 5.0},
 				{Term: "day_election", Score: 4.0},
 			},
 			wantPhrases:   1,
-			wantPhrase:    "election day election",
+			wantPhrase:    "day election day",
 			wantTermCount: 2,
+		},
+		{
+			name: "a content stopword does not join two bigrams",
+			terms: []TermScore{
+				{Term: "banger_post", Score: 5.0},
+				{Term: "post_office", Score: 4.5},
+				{Term: "election_day", Score: 4.0},
+				{Term: "day_parade", Score: 3.5},
+			},
+			wantPhrases: 0,
+		},
+		{
+			name: "a year does not join two bigrams",
+			terms: []TermScore{
+				{Term: "midterms_2026", Score: 5.0},
+				{Term: "2026_budget", Score: 4.5},
+			},
+			wantPhrases: 0,
 		},
 		{
 			name: "three-term cycle terminates",
@@ -373,10 +393,10 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 				{Term: "t6_t7", Score: 3}, {Term: "t7_t8", Score: 2}, {Term: "t8_t9", Score: 1},
 				{Term: "t9_t10", Score: 0.5},
 			},
-			// The bounded chain comes first; the two leftover terms form a
-			// second, short phrase.
-			wantPhrases:   2,
-			wantPhrase:    "t0 t1 t2 t3 t4 t5 t6 t7 t8",
+			// The bounded chain of four comes first; the leftover terms form
+			// a second chain of four and a third of two.
+			wantPhrases:   3,
+			wantPhrase:    "t0 t1 t2 t3 t4",
 			wantTermCount: maxPhraseChain,
 		},
 		{
@@ -415,6 +435,29 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBuildPrompt_DetectedPhrasesAreNamedMemes: a detected phrase is
+// evidence of a meme to be named, not text to be quoted as the label, and
+// the prompt's fragment example is one the tokenizer can still produce.
+func TestBuildPrompt_DetectedPhrasesAreNamedMemes(t *testing.T) {
+	prompt := buildPrompt([]TermScore{
+		{Term: "suspected_chinese", Score: 5}, {Term: "chinese_spy", Score: 4},
+	}, nil, promptContext{})
+	for _, want := range []string{
+		`- "suspected chinese spy" (from terms: suspected_chinese + chinese_spy)`,
+		"The phrase is evidence of a meme: set is_meme to true and give the topic a readable name, by its recognisable catchphrase or, for a copypasta, by its subject (e.g. 'Cybertruck Copypasta'); never start a label with a conjunction or preposition and never join two phrases into one label.",
+		"(e.g. suspected_chinese + chinese_spy), they are fragments",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"Use the phrase", "banger_that"} {
+		if strings.Contains(prompt, gone) {
+			t.Errorf("prompt still carries %q", gone)
+		}
 	}
 }
 
