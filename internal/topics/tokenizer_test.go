@@ -1,6 +1,7 @@
 package topics
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -123,7 +124,15 @@ func TestTokenize_Profanity(t *testing.T) {
 func TestTokenize_PureNumbers(t *testing.T) {
 	got := Tokenize("in 2026 there were 500 incidents")
 	if contains(got, "2026") || contains(got, "500") {
-		t.Errorf("pure numbers should be stripped, got %v", got)
+		t.Errorf("pure numbers should not be unigrams, got %v", got)
+	}
+	for _, tok := range got {
+		if strings.Contains(tok, "500") || strings.Contains(tok, "2026") {
+			t.Errorf("no bigram should carry 500, nor 2026 next to function words, got %v", got)
+		}
+	}
+	if !contains(got, "incidents") {
+		t.Errorf("content word should remain, got %v", got)
 	}
 }
 
@@ -154,13 +163,13 @@ func TestTokenize_Bigrams(t *testing.T) {
 func TestTokenize_BigramBridgesStopword(t *testing.T) {
 	got := Tokenize("halftime show tonight")
 	if !contains(got, "halftime_show") {
-		t.Errorf("bigram should bridge across stopword, got %v", got)
+		t.Errorf("a plain word should pair with a content stopword, got %v", got)
 	}
 	if contains(got, "show") {
-		t.Errorf("stopword 'show' should not appear as unigram, got %v", got)
+		t.Errorf("content stopword 'show' should not appear as unigram, got %v", got)
 	}
 	if contains(got, "show_tonight") {
-		t.Errorf("bigram of two stopwords should be excluded, got %v", got)
+		t.Errorf("bigram of two content stopwords should be excluded, got %v", got)
 	}
 }
 
@@ -236,4 +245,157 @@ func contains(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func TestTokenize_CompoundsSurvive(t *testing.T) {
+	tests := []struct {
+		text string
+		want string
+	}{
+		{"the White House said", "white_house"},
+		{"New York City", "new_york"},
+		{"World Cup final", "world_cup"},
+		{"Fox News host", "fox_news"},
+		{"First Amendment case", "first_amendment"},
+		{"Real Madrid won", "real_madrid"},
+		{"on election day", "election_day"},
+		{"the halftime show", "halftime_show"},
+		{"Game of Thrones", "game_thrones"},
+		{"Call of Duty", "call_duty"},
+		{"State of the Union", "state_union"},
+		{"post a banger", "post_banger"},
+		{"Gov Newsom signs the bill", "gov_newsom"},
+		{"Black Friday deals", "black_friday"},
+		{"happy new year everyone", "new_year"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := Tokenize(tt.text); !contains(got, tt.want) {
+				t.Errorf("Tokenize(%q) = %v, want %s", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTokenize_NoFunctionWordBigrams(t *testing.T) {
+	tests := []struct {
+		text   string
+		reject []string
+	}{
+		{"and vote today", []string{"and_vote"}},
+		{"Get out and vote today", []string{"and_vote", "out_and"}},
+		{"the cybertruck is getting canned", []string{"the_cybertruck", "cybertruck_is"}},
+		{"monitoring the results", []string{"monitoring_the", "the_results"}},
+		{"what a banger that was", []string{"banger_that", "that_was"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := Tokenize(tt.text)
+			for _, r := range tt.reject {
+				if contains(got, r) {
+					t.Errorf("Tokenize(%q) = %v, must not contain %s", tt.text, got, r)
+				}
+			}
+			for _, tok := range got {
+				a, b, ok := strings.Cut(tok, "_")
+				if !ok {
+					if functionWords[tok] || contentStopwords[tok] {
+						t.Errorf("stopword unigram %s in %v", tok, got)
+					}
+					continue
+				}
+				if functionWords[a] || functionWords[b] {
+					t.Errorf("bigram %s has a function-word side, got %v", tok, got)
+				}
+			}
+		})
+	}
+}
+
+func TestTokenize_SegmentBoundaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		text   string
+		reject string
+		keep   []string
+	}{
+		{"full_stop", "getting canned. Post vehicle", "canned_post", []string{"canned", "vehicle", "getting_canned", "post_vehicle"}},
+		{"exclamation", "volcano erupts! Tsunami warning", "erupts_tsunami", []string{"volcano_erupts", "tsunami_warning"}},
+		{"newline", "volcano eruption\ntsunami warning", "eruption_tsunami", []string{"tsunami_warning"}},
+		{"semicolon", "volcano eruption; tsunami warning", "eruption_tsunami", nil},
+		{"url", "volcano https://example.com/a eruption", "volcano_eruption", []string{"volcano", "eruption"}},
+		{"bare_domain", "volcano example.com eruption", "volcano_eruption", []string{"volcano", "eruption"}},
+		{"mention", "volcano @user.bsky.social eruption", "volcano_eruption", []string{"volcano", "eruption"}},
+		{"emoji", "volcano 🌋 eruption", "volcano_eruption", []string{"volcano", "eruption"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Tokenize(tt.text)
+			if contains(got, tt.reject) {
+				t.Errorf("Tokenize(%q) = %v, must not contain %s", tt.text, got, tt.reject)
+			}
+			for _, k := range tt.keep {
+				if !contains(got, k) {
+					t.Errorf("Tokenize(%q) = %v, want %s", tt.text, got, k)
+				}
+			}
+		})
+	}
+}
+
+func TestTokenize_Years(t *testing.T) {
+	tests := []struct {
+		text   string
+		want   []string
+		reject []string
+	}{
+		{"the 2026 midterms", []string{"2026_midterms", "midterms"}, []string{"2026"}},
+		{"midterms 2026 results", []string{"midterms_2026", "2026_results"}, []string{"2026"}},
+		{"World Cup 2026", []string{"world_cup", "cup_2026"}, []string{"2026"}},
+		{"in 2026 there were 500 people", nil, []string{"2026", "500", "2026_there", "there_were", "were_people", "2026_people"}},
+		{"worse than 2024", nil, []string{"2024", "worse_than", "than_2024", "worse_2024"}},
+		{"2024 election", []string{"2024_election"}, []string{"2024"}},
+		{"new 2026 season", nil, []string{"new_2026", "2026_season", "2026"}},
+		{"1999 2000 election", []string{"2000_election"}, []string{"1999_2000", "1999", "2000"}},
+		{"route 2150 closed", nil, []string{"2150", "route_2150", "2150_closed"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := Tokenize(tt.text)
+			for _, w := range tt.want {
+				if !contains(got, w) {
+					t.Errorf("Tokenize(%q) = %v, want %s", tt.text, got, w)
+				}
+			}
+			for _, r := range tt.reject {
+				if contains(got, r) {
+					t.Errorf("Tokenize(%q) = %v, must not contain %s", tt.text, got, r)
+				}
+			}
+		})
+	}
+}
+
+// TestStopwordClasses_CoverLegacy checks that the two classes partition the
+// pre-v2 stopword list exactly: no word was dropped or added by the split,
+// and none is in both classes.
+func TestStopwordClasses_CoverLegacy(t *testing.T) {
+	for w := range functionWords {
+		if contentStopwords[w] {
+			t.Errorf("%q is both a function word and a content stopword", w)
+		}
+		if !legacyStopwords[w] {
+			t.Errorf("function word %q was not a legacy stopword", w)
+		}
+	}
+	for w := range contentStopwords {
+		if !legacyStopwords[w] {
+			t.Errorf("content stopword %q was not a legacy stopword", w)
+		}
+	}
+	for w := range legacyStopwords {
+		if !functionWords[w] && !contentStopwords[w] {
+			t.Errorf("legacy stopword %q is in neither class", w)
+		}
+	}
 }
