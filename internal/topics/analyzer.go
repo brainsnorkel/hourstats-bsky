@@ -212,7 +212,7 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 		// giving up; only suppress the post if even that yields nothing.
 		// The offline labels are built from firehose tokens, so they get the
 		// same output validation the model's labels do (hs-ws2.3).
-		clusters = validateClusters(AlgorithmicGroup(rows, terms))
+		clusters, _, _ = applyLabelYearRule(validateClusters(AlgorithmicGroup(rows, terms)), a.grouper.now().UTC())
 		if len(clusters) == 0 {
 			return "", fmt.Errorf("%w: grouping failed and offline fallback empty: %w", ErrTopicsUnavailable, err)
 		}

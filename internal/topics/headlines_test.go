@@ -89,7 +89,7 @@ func TestBuildPrompt_WithHeadlines(t *testing.T) {
 	terms := []TermScore{{Term: "hockey", Score: 5.0}, {Term: "finland", Score: 3.0}}
 	headlines := []string{"Finland wins Olympic hockey gold", "Trump proposes tariffs"}
 
-	prompt := buildPrompt(terms, headlines)
+	prompt := buildPrompt(terms, headlines, promptContext{})
 
 	if !strings.Contains(prompt, "CURRENT NEWS HEADLINES") {
 		t.Error("expected headlines section in prompt")
@@ -108,13 +108,13 @@ func TestBuildPrompt_WithHeadlines(t *testing.T) {
 func TestBuildPrompt_WithoutHeadlines(t *testing.T) {
 	terms := []TermScore{{Term: "hockey", Score: 5.0}}
 
-	prompt := buildPrompt(terms, nil)
+	prompt := buildPrompt(terms, nil, promptContext{})
 
 	if strings.Contains(prompt, "CURRENT NEWS HEADLINES") {
 		t.Error("expected no headlines section when nil")
 	}
 
-	prompt2 := buildPrompt(terms, []string{})
+	prompt2 := buildPrompt(terms, []string{}, promptContext{})
 	if strings.Contains(prompt2, "CURRENT NEWS HEADLINES") {
 		t.Error("expected no headlines section when empty")
 	}

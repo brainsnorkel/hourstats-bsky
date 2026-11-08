@@ -7,9 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"regexp"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -17,6 +14,7 @@ import (
 	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/christophergentle/hourstats-bsky/internal/client"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
+	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
 
 // ---------------------------------------------------------------------------
@@ -96,16 +94,6 @@ func buildWeeklyReportText(r weeklyReport) string {
 // maxTopicLabelRunes bounds the stickiest-topic label in the weekly post.
 const maxTopicLabelRunes = 60
 
-// labelYear finds four-digit years (19xx or 20xx) in a topic label, with an
-// optional range tail of two or four digits ("2026-27", "2024/25",
-// "2025-2026"). The character before the year is captured, RE2 having no
-// lookbehind, so a currency amount ("$2000") and a year glued to a letter
-// ("Election2024") are not years; a bare count ("Over 2000 Flights") still
-// is. The grouper's label allowlist (validLabelPattern in internal/topics)
-// admits no currency sign and folds dashes to "-", so those two exclusions
-// are defence in depth for a label stored under other rules.
-var labelYear = regexp.MustCompile(`(^|[^$£€¥\w])((?:19|20)\d{2})(?:[-–/]((?:19|20)\d{2}|\d{2}))?\b`)
-
 // weeklyTopicDroppedEvent is the stats event written when the posted weekly
 // report went out without its topic line; internal/alerts raises it as a
 // warning at the next snapshot, so a drop that the Sunday preview could not
@@ -117,7 +105,8 @@ const weeklyTopicDroppedEvent = "weekly_report_topic_dropped"
 // week's first year, as written ("2024", "2024/25"), distinct and in label
 // order. A non-empty result costs the post its topic line
 // (buildWeeklyReportText) and the Sunday preview quotes the dropped label.
-// The grouper is date-blind: it has labelled the 2026 midterms a 2024
+// The rule is topics.PastLabelYears, which the grouper also applies to
+// fresh labels (hs-aqa.1); before that it labelled the 2026 midterms a 2024
 // election, and a label naming an earlier year is wrong far more often than
 // it is about that year. Later years are kept, since talk of 2028 the week
 // after the midterms is a real topic and the grouper's slips run backwards.
@@ -125,37 +114,7 @@ const weeklyTopicDroppedEvent = "weekly_report_topic_dropped"
 // first week of 2027 is right, not a slip. A label genuinely about an
 // earlier year ("the 2020 election") is the cost: it loses the line too.
 func (r weeklyReport) droppedTopicYears() []string {
-	floor := r.Start.Year()
-	if r.Start.Month() == time.January {
-		floor--
-	}
-	var years []string
-	for _, m := range labelYear.FindAllStringSubmatch(r.TopicLabel, -1) {
-		year, _ := strconv.Atoi(m[2])
-		shown := m[2]
-		if end, _ := strconv.Atoi(m[3]); len(m[3]) == 4 {
-			// A range running backwards ("2026-1999") is not a range.
-			if end >= year {
-				year, shown = end, m[0][len(m[1]):]
-			}
-		} else if m[3] != "" {
-			// A two-digit tail is a range end only when it lands within
-			// thirty years after the start, in the start's century or the
-			// next ("1999-00"). A month ("2024-11-05", "2024-12") never does
-			// for a start year past 2012, and the label is judged by its year
-			// alone.
-			if end += year / 100 * 100; end <= year {
-				end += 100
-			}
-			if end <= year+30 {
-				year, shown = end, m[0][len(m[1]):]
-			}
-		}
-		if year < floor && !slices.Contains(years, shown) {
-			years = append(years, shown)
-		}
-	}
-	return years
+	return topics.PastLabelYears(r.TopicLabel, r.Start)
 }
 
 // weeklyTopicDroppedDetails is the weekly_report_topic_dropped event's

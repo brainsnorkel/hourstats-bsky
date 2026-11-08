@@ -283,7 +283,7 @@ func TestBuildValidationPrompt_UntrustedDataFraming(t *testing.T) {
 }
 
 func TestBuildPrompt_UntrustedTermFraming(t *testing.T) {
-	prompt := buildPrompt([]TermScore{{Term: "hockey", Score: 5.0}}, nil)
+	prompt := buildPrompt([]TermScore{{Term: "hockey", Score: 5.0}}, nil, promptContext{})
 
 	if !strings.Contains(prompt, untrustedTermPreface) {
 		t.Error("grouping prompt should frame the term list as untrusted data")

@@ -816,7 +816,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 				// A standalone post also drops the week high/low footer: the
 				// figures only read as a caption on the chart above them.
 				trendRoot, trendRootCID, trendParent, trendParentCID := rootURI, rootCID, sparkURI, sparkCID
-				trendExtremes := weekExtremes(weekPoints)
+				trendExtremes := weekExtremes(weekPoints, cycleStart.UTC())
 				if sparkURI == "" || sparkCID == "" {
 					trendRoot, trendRootCID, trendParent, trendParentCID = "", "", "", ""
 					trendExtremes = nil

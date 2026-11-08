@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/christophergentle/hourstats-bsky/internal/state"
 	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
@@ -8,8 +10,10 @@ import (
 // weekExtremes picks the highest and lowest hour of the seven-day history so
 // the trending reply can close with them. It returns nil when there is
 // nothing to say: fewer than two readings, or a flat series where the high
-// and the low are the same hour.
-func weekExtremes(points []state.SentimentDataPoint) *topics.WeekExtremes {
+// and the low are the same hour. A topic naming a year before
+// topics.LabelYearFloor(now) is left off: rows stored before the grouper's
+// label year rule carry 2024 election labels for the 2026 midterms.
+func weekExtremes(points []state.SentimentDataPoint, now time.Time) *topics.WeekExtremes {
 	if len(points) < 2 {
 		return nil
 	}
@@ -25,12 +29,20 @@ func weekExtremes(points []state.SentimentDataPoint) *topics.WeekExtremes {
 		High: topics.SentimentExtreme{
 			Value: points[hi].NetSentimentPercent,
 			At:    points[hi].Timestamp,
-			Topic: points[hi].TopTopic,
+			Topic: footerTopic(points[hi].TopTopic, now),
 		},
 		Low: topics.SentimentExtreme{
 			Value: points[lo].NetSentimentPercent,
 			At:    points[lo].Timestamp,
-			Topic: points[lo].TopTopic,
+			Topic: footerTopic(points[lo].TopTopic, now),
 		},
 	}
+}
+
+// footerTopic is the stored top topic, or empty when it names a past year.
+func footerTopic(topic string, now time.Time) string {
+	if len(topics.PastLabelYears(topic, now)) > 0 {
+		return ""
+	}
+	return topic
 }
