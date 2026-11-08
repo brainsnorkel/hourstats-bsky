@@ -173,11 +173,6 @@ func TestBuildWeeklyReportText(t *testing.T) {
 	if got := truncateRunes("ab\u200dcd", 3); got != "ab…" {
 		t.Errorf("truncateRunes joiner = %q", got)
 	}
-	for _, tc := range []struct{ app, mins, want int }{{31, 60, 31}, {62, 30, 31}, {336, 30, 168}, {200, 60, 168}, {5, 0, 5}} {
-		if got := topicHours(tc.app, tc.mins); got != tc.want {
-			t.Errorf("topicHours(%d,%d) = %d, want %d", tc.app, tc.mins, got, tc.want)
-		}
-	}
 }
 
 func mustDate(s string) time.Time {

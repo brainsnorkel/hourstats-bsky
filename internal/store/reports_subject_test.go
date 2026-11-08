@@ -25,7 +25,7 @@ func TestGetTopRankOneSubjectForRange_SubjectKey(t *testing.T) {
 		t.Helper()
 		for range n {
 			at = at.Add(time.Hour)
-			dp := store.SentimentDataPoint{RunID: "run-" + at.Format(time.RFC3339), Timestamp: at, TopTopic: label}
+			dp := store.SentimentDataPoint{RunID: "run-" + at.Format(time.RFC3339), Timestamp: at, TopTopic: label, TotalPosts: 500}
 			if err := s.StoreSentimentDataPoint(ctx, dp); err != nil {
 				t.Fatal(err)
 			}
@@ -35,7 +35,7 @@ func TestGetTopRankOneSubjectForRange_SubjectKey(t *testing.T) {
 	add("US Presidential Elections", 2)
 	add("Brazilian Presidential Election", 4)
 
-	label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", topics.SubjectKey)
+	label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", 500, topics.SubjectKey)
 	if err != nil || label != "2024 US Presidential Election" || n != 5 {
 		t.Errorf("top = %q, %d, %v; want 2024 US Presidential Election, 5", label, n, err)
 	}

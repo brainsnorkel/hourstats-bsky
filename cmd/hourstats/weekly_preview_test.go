@@ -238,7 +238,7 @@ func seedPreviewWeek(t *testing.T, ctx context.Context, db *store.Store, label s
 		t.Fatalf("StoreDailyTopPost: %v", err)
 	}
 	cycle := wed.Add(14 * time.Hour)
-	if err := db.StoreSentimentDataPoint(ctx, store.SentimentDataPoint{RunID: "run-cycle", Timestamp: cycle, TopTopic: label}); err != nil {
+	if err := db.StoreSentimentDataPoint(ctx, store.SentimentDataPoint{RunID: "run-cycle", Timestamp: cycle, TopTopic: label, TotalPosts: minPostsRequired}); err != nil {
 		t.Fatalf("StoreSentimentDataPoint: %v", err)
 	}
 }

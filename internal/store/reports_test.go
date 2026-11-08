@@ -385,15 +385,24 @@ func TestGetTopTopicForRange_Ties(t *testing.T) {
 	})
 }
 
+// testFloor stands in for cmd/hourstats minPostsRequired, the posting floor.
+const testFloor = 500
+
 // rankOne stores one sentiment_history cycle with its rank-1 label at an
-// RFC3339 timestamp.
+// RFC3339 timestamp, with exactly testFloor posts.
 func rankOne(t *testing.T, s *Store, ts, label string) {
+	t.Helper()
+	rankOnePosts(t, s, ts, label, testFloor)
+}
+
+// rankOnePosts is rankOne with an explicit total_posts.
+func rankOnePosts(t *testing.T, s *Store, ts, label string, posts int) {
 	t.Helper()
 	at, err := time.Parse(time.RFC3339, ts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dp := SentimentDataPoint{RunID: "run-" + ts, Timestamp: at, TopTopic: label}
+	dp := SentimentDataPoint{RunID: "run-" + ts, Timestamp: at, TopTopic: label, TotalPosts: posts}
 	if err := s.StoreSentimentDataPoint(context.Background(), dp); err != nil {
 		t.Fatalf("store %s: %v", ts, err)
 	}
@@ -406,7 +415,7 @@ func lowerKey(l string) string { return strings.ToLower(l) }
 func TestGetTopRankOneSubjectForRange(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey); err != nil || label != "" || n != 0 {
+	if label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey); err != nil || label != "" || n != 0 {
 		t.Fatalf("empty range = %q, %d, %v", label, n, err)
 	}
 
@@ -425,11 +434,11 @@ func TestGetTopRankOneSubjectForRange(t *testing.T) {
 	}
 
 	// Election's modal spelling is shown over its more recent lowercase one.
-	label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+	label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
 	if err != nil || label != "Election" || n != 3 {
 		t.Errorf("week top = %q, %d, %v; want Election, 3", label, n, err)
 	}
-	label, n, _ = s.GetTopRankOneSubjectForRange(ctx, "2026-11-03", "2026-11-03", lowerKey)
+	label, n, _ = s.GetTopRankOneSubjectForRange(ctx, "2026-11-03", "2026-11-03", testFloor, lowerKey)
 	if label != "Halloween" || n != 2 {
 		t.Errorf("day top = %q, %d; want Halloween, 2", label, n)
 	}
@@ -443,7 +452,7 @@ func TestGetTopRankOneSubjectForRange_Ties(t *testing.T) {
 		rankOne(t, s, "2026-11-06T00:55:00Z", "Alpha")
 		rankOne(t, s, "2026-11-03T00:55:00Z", "Zulu")
 		rankOne(t, s, "2026-11-07T00:55:00Z", "Zulu")
-		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
 		if err != nil || label != "Zulu" || n != 2 {
 			t.Errorf("top = %q, %d, %v; want Zulu, 2", label, n, err)
 		}
@@ -453,11 +462,11 @@ func TestGetTopRankOneSubjectForRange_Ties(t *testing.T) {
 		// Two rows share a timestamp under different run IDs.
 		for _, l := range []string{"Zulu", "Alpha"} {
 			at, _ := time.Parse(time.RFC3339, "2026-11-04T00:55:00Z")
-			if err := s.StoreSentimentDataPoint(ctx, SentimentDataPoint{RunID: "run-" + l, Timestamp: at, TopTopic: l}); err != nil {
+			if err := s.StoreSentimentDataPoint(ctx, SentimentDataPoint{RunID: "run-" + l, Timestamp: at, TopTopic: l, TotalPosts: testFloor}); err != nil {
 				t.Fatal(err)
 			}
 		}
-		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
 		if err != nil || label != "Alpha" || n != 1 {
 			t.Errorf("top = %q, %d, %v; want Alpha, 1", label, n, err)
 		}
@@ -469,15 +478,91 @@ func TestGetTopRankOneSubjectForRange_Ties(t *testing.T) {
 		rankOne(t, s, "2026-11-02T02:55:00Z", "midterms")
 		rankOne(t, s, "2026-11-02T03:55:00Z", "Midterms")
 		rankOne(t, s, "2026-11-02T04:55:00Z", "midterms")
-		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
 		if err != nil || label != "midterms" || n != 5 {
 			t.Errorf("top = %q, %d, %v; want midterms, 5", label, n, err)
 		}
 		rankOne(t, s, "2026-11-02T05:55:00Z", "MIDTERMS")
 		rankOne(t, s, "2026-11-02T06:55:00Z", "MIDTERMS")
-		label, n, _ = s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+		label, n, _ = s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
 		if label != "MIDTERMS" || n != 7 {
 			t.Errorf("top = %q, %d; want MIDTERMS, 7", label, n)
+		}
+	})
+}
+
+// Hours are distinct clock hours, cycles under the posting floor are not
+// counted, and a whitespace-only label is no label.
+func TestGetTopRankOneSubjectForRange_HoursAndFloor(t *testing.T) {
+	ctx := context.Background()
+	t.Run("two cycles in one clock hour count once", func(t *testing.T) {
+		s := newTestStore(t)
+		// 30-minute interval: Alpha leads both cycles of 01:00 and 02:00
+		// (4 cycles, 2 hours); Zulu leads 3 cycles in 3 hours.
+		for _, ts := range []string{"2026-11-02T01:25:00Z", "2026-11-02T01:55:00Z", "2026-11-02T02:25:00Z", "2026-11-02T02:55:00Z"} {
+			rankOne(t, s, ts, "Alpha")
+		}
+		for _, ts := range []string{"2026-11-02T03:25:00Z", "2026-11-02T04:25:00Z", "2026-11-02T05:25:00Z"} {
+			rankOne(t, s, ts, "Zulu")
+		}
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
+		if err != nil || label != "Zulu" || n != 3 {
+			t.Errorf("top = %q, %d, %v; want Zulu, 3", label, n, err)
+		}
+	})
+	t.Run("the hour is the cycle's start, from the run ID", func(t *testing.T) {
+		s := newTestStore(t)
+		// Production run IDs: the 08:55 and 09:55 cycles of 2026-11-04 were
+		// stamped 09:00:13 and 09:59:35, both in the timestamp's hour 09.
+		for _, c := range []struct{ run, ts string }{
+			{"run-20261104-085500", "2026-11-04T09:00:13Z"},
+			{"run-20261104-095500", "2026-11-04T09:59:35Z"},
+		} {
+			at, _ := time.Parse(time.RFC3339, c.ts)
+			if err := s.StoreSentimentDataPoint(ctx, SentimentDataPoint{RunID: c.run, Timestamp: at, TopTopic: "Alpha", TotalPosts: testFloor}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
+		if err != nil || label != "Alpha" || n != 2 {
+			t.Errorf("top = %q, %d, %v; want Alpha, 2", label, n, err)
+		}
+	})
+	t.Run("two spellings of one subject in one hour count once", func(t *testing.T) {
+		s := newTestStore(t)
+		rankOne(t, s, "2026-11-02T01:25:00Z", "Alpha")
+		rankOne(t, s, "2026-11-02T01:55:00Z", "ALPHA")
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
+		if err != nil || label != "ALPHA" || n != 1 {
+			t.Errorf("top = %q, %d, %v; want ALPHA, 1", label, n, err)
+		}
+	})
+	t.Run("a cycle under the posting floor is not counted", func(t *testing.T) {
+		s := newTestStore(t)
+		rankOne(t, s, "2026-11-02T01:55:00Z", "Alpha")
+		rankOnePosts(t, s, "2026-11-02T02:55:00Z", "Zulu", testFloor)
+		rankOnePosts(t, s, "2026-11-02T03:55:00Z", "Zulu", testFloor-1)
+		rankOnePosts(t, s, "2026-11-02T04:55:00Z", "Zulu", 0)
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
+		if err != nil || label != "Zulu" || n != 1 {
+			// Zulu has 1 hour, Alpha 1; Zulu's is later.
+			t.Errorf("top = %q, %d, %v; want Zulu, 1", label, n, err)
+		}
+		rankOne(t, s, "2026-11-02T05:55:00Z", "Alpha")
+		label, n, _ = s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
+		if label != "Alpha" || n != 2 {
+			t.Errorf("top = %q, %d; want Alpha, 2 (Zulu's under-floor hours ignored)", label, n)
+		}
+	})
+	t.Run("a whitespace label is ignored", func(t *testing.T) {
+		s := newTestStore(t)
+		rankOne(t, s, "2026-11-02T01:55:00Z", "Alpha")
+		for h := 2; h < 6; h++ {
+			rankOne(t, s, fmt.Sprintf("2026-11-02T%02d:55:00Z", h), "  ")
+		}
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", testFloor, lowerKey)
+		if err != nil || label != "Alpha" || n != 1 {
+			t.Errorf("top = %q, %d, %v; want Alpha, 1", label, n, err)
 		}
 	})
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strings"
 	"time"
 	"unicode"
@@ -44,18 +43,8 @@ type weeklyReport struct {
 	Days       []store.DailySentimentDataPoint // the week, ordered
 	PrevDays   []store.DailySentimentDataPoint // the week before, for the delta
 	TopicLabel string                          // "" when no topic data exists
-	TopicHours int                             // hours the topic held rank 1, from its rank-1 cycles
+	TopicHours int                             // distinct clock hours the topic held rank 1, at most weekHours
 	TopPost    *store.Post                     // nil when no daily top post exists
-}
-
-// topicHours converts rank-1 cycles to hours for the configured analysis
-// interval, capped at the hours in a week.
-func topicHours(cycles, cycleMinutes int) int {
-	if cycleMinutes <= 0 {
-		cycleMinutes = 60
-	}
-	h := int(math.Round(float64(cycles*cycleMinutes) / 60))
-	return min(h, weekHours)
 }
 
 // buildWeeklyReportText renders the root post.
@@ -203,7 +192,11 @@ func buildPostOfWeekText(start, end time.Time, f postOfWeekFigures) string {
 // reason logged, when there is not enough to report on or the daily rows
 // could not be read; the two are told apart by r.Days, which is nil only on
 // a failed read.
-func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycleMinutes int) (weeklyReport, bool) {
+//
+// The last parameter was the analysis interval in minutes, used to turn
+// rank-1 cycles into hours; the topic query now counts distinct clock hours
+// itself, so it is unused and kept only so the callers need not change.
+func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, _ int) (weeklyReport, bool) {
 	start, end := previousWeek(now)
 	r := weeklyReport{Start: start, End: end}
 
@@ -233,15 +226,19 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycle
 		r.PrevDays = prev
 	}
 
-	// The subject with the most rank-1 cycles, shown under its modal label.
-	// When that label names a year before the week the line is dropped
-	// (droppedTopicYears) with no fallback to another spelling or to the
-	// runner-up: the runner-up of a mislabelled election week is an older
-	// election, which no year guard catches.
-	if label, cycles, err := db.GetTopRankOneSubjectForRange(ctx, start.Format(dateFormat), end.Format(dateFormat), topics.SubjectKey); err != nil {
+	// The subject with the most rank-1 clock hours among cycles at or above
+	// the posting floor (the rule filterHighConfidence applies to the
+	// sparkline), shown under its modal label. When that label names a year
+	// before the week the line is dropped (droppedTopicYears) with no
+	// fallback to another spelling or to the runner-up: the runner-up of a
+	// mislabelled election week is an older election, which no year guard
+	// catches. After hs-aqa.1, a mislabelled election hour is stored
+	// year-stripped as "US Presidential Election", which this guard cannot
+	// catch either; the dated grouping prompt is what makes that rare.
+	if label, hours, err := db.GetTopRankOneSubjectForRange(ctx, start.Format(dateFormat), end.Format(dateFormat), minPostsRequired, topics.SubjectKey); err != nil {
 		slog.Warn("weekly report: top topic lookup failed, omitting topic line", "error", err)
 	} else {
-		r.TopicLabel, r.TopicHours = label, topicHours(cycles, cycleMinutes)
+		r.TopicLabel, r.TopicHours = label, min(hours, weekHours)
 	}
 
 	if top, err := db.GetTopPostForRange(ctx, start.Format(dateFormat), end.Format(dateFormat)); err != nil {

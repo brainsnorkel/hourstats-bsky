@@ -23,6 +23,13 @@ func TestSubjectKey(t *testing.T) {
 		{"ÉLECTIONS", "élection"},
 		{"Over 2000 Flights", "over flight"},
 		{"Election2024", "election2024"},
+		{"Donald Trump and US Elections", "donald trump election"},
+		{"Donald Trump & US Elections", "donald trump election"},
+		{"Donald Trump's Comments on Canada", "donald trump comment canada"},
+		{"Donald Trump’s Comments on Canada", "donald trump comment canada"},
+		{"Taylor Swift's Album", "taylor swift album"},
+		{"Taylor Swift Album", "taylor swift album"},
+		{"Voters' Concerns", "voter concern"},
 		{"", ""},
 		{"  2026 ", ""},
 	}
