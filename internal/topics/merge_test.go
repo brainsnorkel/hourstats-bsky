@@ -122,6 +122,55 @@ func TestMergeSimilarClusters(t *testing.T) {
 			wantCount: 1,
 			wantLabel: "Kristi Noem DHS Secretary",
 		},
+		{
+			// The scored member names the subject: a longer label from a
+			// weaker member must not take over the merged cluster.
+			name: "the member with the highest summed score names the cluster",
+			clusters: []TopicCluster{
+				{Label: "Midterm Results", Keywords: []string{"midterm"}},
+				{Label: "US Presidential Election Fallout", Keywords: []string{"elections", "president"}},
+			},
+			terms: []TermScore{
+				{Term: "midterm", Score: 10},
+				{Term: "elections", Score: 4},
+				{Term: "president", Score: 3},
+				{Term: "midterm_elections", Score: 6},
+			},
+			wantCount: 1,
+			wantLabel: "Midterm Results",
+		},
+		{
+			// The bigram only replaces the winner when it extends it, so a
+			// bridge that names something else leaves the winner alone.
+			name: "a bigram not containing the winner's words does not replace it",
+			clusters: []TopicCluster{
+				{Label: "Noem", Keywords: []string{"noem"}},
+				{Label: "Homeland Security", Keywords: []string{"dhs"}},
+			},
+			terms: []TermScore{
+				{Term: "dhs", Score: 10},
+				{Term: "noem", Score: 4},
+				{Term: "noem_dhs", Score: 6},
+			},
+			wantCount: 1,
+			wantLabel: "Homeland Security",
+		},
+		{
+			// Equal sums fall back to the most-words rule across the bigram
+			// label and every member label.
+			name: "a score tie falls back to the most words",
+			clusters: []TopicCluster{
+				{Label: "Alpha", Keywords: []string{"alpha"}},
+				{Label: "Beta Story Arc", Keywords: []string{"beta"}},
+			},
+			terms: []TermScore{
+				{Term: "alpha", Score: 5},
+				{Term: "beta", Score: 5},
+				{Term: "alpha_beta", Score: 6},
+			},
+			wantCount: 1,
+			wantLabel: "Beta Story Arc",
+		},
 	}
 
 	for _, tt := range tests {

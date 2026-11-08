@@ -135,12 +135,12 @@ func buildWeeklyReportPreview(r weeklyReport, loadFailed, ok bool, days int, tar
 // could not be read (the daily read failed, or ctx was cancelled part-way,
 // as a SIGTERM during the Sunday job does) is posted as unavailable and
 // unreviewed rather than as one Monday will skip.
-func runWeeklyReportPreview(ctx context.Context, db *store.Store, poster weeklyPreviewPoster, events eventLogger, target weeklyPreviewTarget, now time.Time, cycleMinutes int) {
+func runWeeklyReportPreview(ctx context.Context, db *store.Store, poster weeklyPreviewPoster, events eventLogger, target weeklyPreviewTarget, now time.Time) {
 	start, _ := weeklyPreviewWeek(now)
 	weekKey := start.Format(dateFormat)
 	// loadWeeklyReport takes the run time and reads the week before it, so it
 	// is asked as of the Monday that follows the previewed week.
-	r, ok := loadWeeklyReport(ctx, db, start.AddDate(0, 0, 7), cycleMinutes)
+	r, ok := loadWeeklyReport(ctx, db, start.AddDate(0, 0, 7))
 	// loadWeeklyReport leaves Days nil only when the daily read failed. A
 	// context cancelled after that read makes the topic and top-post lookups
 	// fail and be omitted silently, so that week is unread too.

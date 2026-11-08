@@ -142,18 +142,19 @@ var (
 
 // applyLabelYearRule strips the past years a cluster's top terms do not back
 // from every label, and drops a cluster whose label is unusable without them.
-// It runs after MergeSimilarClusters, whose merged label can come from a
-// bridging bigram the model never saw.
+// It runs both before and after MergeSimilarClusters (it is idempotent: a
+// kept label names only backed years): before, so the merge picks among
+// labels already judged, and after, because a merged cluster's keywords are
+// a union whose top term can differ from either member's.
 //
 // For each cluster, in order:
 //  1. A label naming no past year (pastLabelYearMatches) is kept as is.
-//  2. Each past year is judged on its own (yearBacked). It is backed only by
-//     a keyword carrying that exact year whose TF-IDF score is at least that
-//     of every keyword carrying the current or a later year, and at least
-//     half the cluster's top keyword score; a keyword with no score backs
-//     nothing. When every past year is backed the cluster is kept unchanged:
-//     "1989 (Taylor's Version)" with 1989_taylor on top is about that year,
-//     while a 2024_election under 2026_midterms is a comparison.
+//  2. Each past year is judged on its own (yearBacked). It is backed only
+//     when a keyword carrying that exact year is the cluster's top-scoring
+//     keyword, ties allowed; a keyword with no score backs nothing. When
+//     every past year is backed the cluster is kept unchanged: "1989
+//     (Taylor's Version)" with 1989_taylor on top is about that year, while
+//     a 2024_election under midterms is a comparison.
 //  3. Only the unbacked years are cut out, each with one attached separator,
 //     and emptied brackets and quotes go with them (stripLabelYears).
 //  4. The result is dropped, not repaired, when it still names an unbacked
@@ -169,12 +170,11 @@ func applyLabelYearRule(clusters []TopicCluster, terms []TermScore, now time.Tim
 	for _, t := range terms {
 		scores[strings.ToLower(t.Term)] = t.Score
 	}
-	floor := LabelYearFloor(now)
 	kept = make([]TopicCluster, 0, len(clusters))
 	for _, c := range clusters {
 		var unbacked []labelYearMatch
 		for _, m := range pastLabelYearMatches(c.Label, now) {
-			if !yearBacked(m, c.Keywords, scores, floor) {
+			if !yearBacked(m, c.Keywords, scores) {
 				unbacked = append(unbacked, m)
 			}
 		}
@@ -185,7 +185,7 @@ func applyLabelYearRule(clusters []TopicCluster, terms []TermScore, now time.Tim
 		original := c.Label
 		c.Label = stripLabelYears(c.Label, unbacked)
 		validated := c
-		reason := strippedLabelProblem(c.Label, c.Keywords, scores, floor, now)
+		reason := strippedLabelProblem(c.Label, c.Keywords, scores, now)
 		if reason == "" {
 			validated, reason = validateCluster(c)
 		}
@@ -199,16 +199,19 @@ func applyLabelYearRule(clusters []TopicCluster, terms []TermScore, now time.Tim
 		kept = append(kept, validated)
 	}
 	// Logged on every call, 0/0 included: the zero line is a deliberate
-	// heartbeat, so the strip and drop rates can be tracked per cycle.
+	// heartbeat, so the strip and drop rates can be tracked per cycle. Each
+	// grouping path calls this twice (before and after the merge), so a cycle
+	// logs two lines; the second normally reads 0/0 unless a merge changed a
+	// cluster's top keyword.
 	slog.Info("topics: label year rule", "label_year_stripped", stripped, "label_year_dropped", dropped)
 	return kept, stripped, dropped
 }
 
 // strippedLabelProblem names why a label left by stripLabelYears is
 // unusable, or returns "" (step 4 of applyLabelYearRule).
-func strippedLabelProblem(label string, keywords []string, scores map[string]float64, floor int, now time.Time) string {
+func strippedLabelProblem(label string, keywords []string, scores map[string]float64, now time.Time) string {
 	for _, m := range pastLabelYearMatches(label, now) {
-		if !yearBacked(m, keywords, scores, floor) {
+		if !yearBacked(m, keywords, scores) {
 			return "past_year_remains"
 		}
 	}
@@ -238,26 +241,24 @@ func strippedLabelProblem(label string, keywords []string, scores map[string]flo
 }
 
 // yearBacked reports whether a keyword carrying one of m's four-digit years
-// is the cluster's dominant year term: scored at least as high as every
-// keyword carrying a year at or after floor, and at least half the cluster's
-// top keyword score. A keyword with no score backs nothing.
-func yearBacked(m labelYearMatch, keywords []string, scores map[string]float64, floor int) bool {
-	top, current := 0.0, 0.0
+// is the cluster's top-scoring keyword (a tie with another keyword counts).
+// A keyword with no score backs nothing, and with no scored keyword at all
+// no year is backed. Anything less than the top is a comparison or a side
+// mention: "2024 US Presidential Election" over midterms, election,
+// 2024_election and vote is about the midterms.
+func yearBacked(m labelYearMatch, keywords []string, scores map[string]float64) bool {
+	top, scored := 0.0, false
 	for _, k := range keywords {
-		s, ok := scores[strings.ToLower(k)]
-		if !ok {
-			continue
+		if s, ok := scores[strings.ToLower(k)]; ok && (!scored || s > top) {
+			top, scored = s, true
 		}
-		top = max(top, s)
-		for _, y := range keywordYears(k) {
-			if y >= floor {
-				current = max(current, s)
-			}
-		}
+	}
+	if !scored {
+		return false
 	}
 	for _, k := range keywords {
 		s, ok := scores[strings.ToLower(k)]
-		if !ok || s < current || s < top/2 {
+		if !ok || s < top {
 			continue
 		}
 		for _, y := range keywordYears(k) {

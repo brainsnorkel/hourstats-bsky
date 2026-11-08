@@ -28,6 +28,7 @@ func geminiMockHandler(clusters []TopicCluster) http.HandlerFunc {
 }
 
 func TestGroupAndLabel_Success(t *testing.T) {
+	withoutHeadlines(t)
 	expected := []TopicCluster{
 		{
 			Label:         "Donald Trump",
@@ -73,6 +74,7 @@ func TestGroupAndLabel_Success(t *testing.T) {
 }
 
 func TestGroupAndLabel_EmptyTerms(t *testing.T) {
+	withoutHeadlines(t)
 	g := NewGrouper("test-key", "", "")
 	clusters, err := g.GroupAndLabel(context.Background(), nil)
 	if err != nil {
@@ -84,6 +86,7 @@ func TestGroupAndLabel_EmptyTerms(t *testing.T) {
 }
 
 func TestGroupAndLabel_APIError(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("internal server error"))
@@ -106,6 +109,7 @@ func TestGroupAndLabel_APIError(t *testing.T) {
 }
 
 func TestGroupAndLabel_MalformedResponse(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := geminiResponse{
 			Candidates: []geminiCandidate{
@@ -131,6 +135,7 @@ func TestGroupAndLabel_MalformedResponse(t *testing.T) {
 }
 
 func TestGroupAndLabel_FallbackOnPrimary429(t *testing.T) {
+	withoutHeadlines(t)
 	expected := []TopicCluster{
 		{Label: "Donald Trump", Description: "Trump discussion", Keywords: []string{"trump"}, Justification: "j"},
 	}
@@ -164,6 +169,7 @@ func TestGroupAndLabel_FallbackOnPrimary429(t *testing.T) {
 }
 
 func TestGroupAndLabel_BothTiersFail(t *testing.T) {
+	withoutHeadlines(t)
 	fail := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("boom"))
@@ -186,6 +192,7 @@ func TestGroupAndLabel_BothTiersFail(t *testing.T) {
 }
 
 func TestGroupAndLabel_PrimarySuccessSkipsFallback(t *testing.T) {
+	withoutHeadlines(t)
 	expected := []TopicCluster{
 		{Label: "Weather", Description: "Weather discussion", Keywords: []string{"rain"}, Justification: "j"},
 	}
@@ -216,6 +223,7 @@ func TestGroupAndLabel_PrimarySuccessSkipsFallback(t *testing.T) {
 }
 
 func TestGroupAndLabel_RateLimit(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
 		{Label: "Test", Keywords: []string{"test"}, Synonyms: []string{}},
 	}))
@@ -447,7 +455,7 @@ func TestBuildPrompt_DetectedPhrasesAreNamedMemes(t *testing.T) {
 	}, nil, promptContext{})
 	for _, want := range []string{
 		`- "suspected chinese spy" (from terms: suspected_chinese + chinese_spy)`,
-		"The phrase is evidence of a meme: set is_meme to true and give the topic a readable name, by its recognisable catchphrase or, for a copypasta, by its subject (e.g. 'Cybertruck Copypasta'); never start a label with a conjunction or preposition and never join two phrases into one label.",
+		"The phrase is evidence of a meme: set is_meme to true and give the topic a readable name, by its recognisable catchphrase or, for a copypasta, by its subject (e.g. 'Cybertruck Copypasta'); never start a label with a conjunction such as and/but/or and never join two phrases into one label.",
 		"(e.g. suspected_chinese + chinese_spy), they are fragments",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -759,6 +767,7 @@ func TestNormalizeClusterKeywords(t *testing.T) {
 // empty answer: returning (nil, nil) suppressed the trending post, where an
 // error lets RunAnalysisCycle fall through to the offline fallback.
 func TestGroupAndLabel_AllClustersFailValidationIsAnError(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
 		{Label: "Follow @evil.bsky.social", Keywords: []string{"trump"}},
 		{Label: "Visit", Description: "http://evil.example", Keywords: []string{"trump"}},
@@ -781,6 +790,7 @@ func TestGroupAndLabel_AllClustersFailValidationIsAnError(t *testing.T) {
 // An all-"__discard__" response keeps its old meaning: the model did answer and
 // judged every term too vague, which is not a validation failure.
 func TestGroupAndLabel_AllDiscardedIsNotAnError(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
 		{Label: "__discard__", Keywords: []string{"trump"}, Justification: "too vague"},
 	}))
@@ -797,6 +807,7 @@ func TestGroupAndLabel_AllDiscardedIsNotAnError(t *testing.T) {
 }
 
 func TestGroupAndLabel_DropsUnknownKeywords(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{{
 		Label:    "Donald Trump",
 		Keywords: []string{"Trump", "Fabricated"},
@@ -960,5 +971,27 @@ func TestFormatGroupingAttempts(t *testing.T) {
 func TestModelFromEndpoint(t *testing.T) {
 	if got := modelFromEndpoint(groupingEndpoint("gemini-2.5-pro")); got != "gemini-2.5-pro" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// TestGroupAndLabel_MergesBigramSplit: GroupAndLabel merges the clusters a
+// TF-IDF bigram bridges, since the caller no longer runs its own merge.
+func TestGroupAndLabel_MergesBigramSplit(t *testing.T) {
+	withoutHeadlines(t)
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "Kristi", Description: "d", Keywords: []string{"kristi"}, Justification: "j"},
+		{Label: "Noem", Description: "d", Keywords: []string{"noem"}, Justification: "j"},
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	got, err := g.GroupAndLabel(context.Background(), []TermScore{
+		{Term: "kristi", Score: 10}, {Term: "noem", Score: 9}, {Term: "kristi_noem", Score: 8},
+	})
+	if err != nil {
+		t.Fatalf("GroupAndLabel: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "Kristi Noem" {
+		t.Fatalf("clusters = %+v, want one merged cluster labelled %q", got, "Kristi Noem")
 	}
 }

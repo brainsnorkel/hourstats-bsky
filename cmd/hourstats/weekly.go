@@ -194,10 +194,9 @@ func buildPostOfWeekText(start, end time.Time, f postOfWeekFigures) string {
 // could not be read; the two are told apart by r.Days, which is nil only on
 // a failed read.
 //
-// The last parameter was the analysis interval in minutes, used to turn
-// rank-1 cycles into hours; the topic query now counts distinct clock hours
-// itself, so it is unused and kept only so the callers need not change.
-func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, _ int) (weeklyReport, bool) {
+// The topic query counts distinct clock hours itself, so no analysis
+// interval is needed to turn rank-1 cycles into hours.
+func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time) (weeklyReport, bool) {
 	start, end := previousWeek(now)
 	r := weeklyReport{Start: start, End: end}
 
@@ -293,7 +292,7 @@ func armWeeklyReportGuard(ctx context.Context, db *store.Store, now time.Time) {
 // (its absence), this run is skipped with a Warn and nothing is written: the
 // error is not a first enable, and without the guard a post could duplicate
 // one already out.
-func runWeeklyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time, cycleMinutes int, events eventLogger) {
+func runWeeklyReport(ctx context.Context, db *store.Store, handle, password string, dryRun bool, now time.Time, events eventLogger) {
 	start, _ := previousWeek(now)
 	weekKey := start.Format(dateFormat)
 	last, err := db.GetKeyValue(ctx, weeklyReportGuardKey)
@@ -316,7 +315,7 @@ func runWeeklyReport(ctx context.Context, db *store.Store, handle, password stri
 		return
 	}
 
-	r, ok := loadWeeklyReport(ctx, db, now, cycleMinutes)
+	r, ok := loadWeeklyReport(ctx, db, now)
 	if !ok {
 		return
 	}

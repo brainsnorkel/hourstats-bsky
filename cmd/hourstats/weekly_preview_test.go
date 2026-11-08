@@ -255,7 +255,7 @@ func TestRunWeeklyReportPreviewPostsToDiscord(t *testing.T) {
 	events := &fakeEventLogger{}
 	now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-	runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now, 60)
+	runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now)
 
 	if len(poster.contents) != 1 {
 		t.Fatalf("posted %d messages, want 1", len(poster.contents))
@@ -311,7 +311,7 @@ func TestRunWeeklyReportPreviewLogOnly(t *testing.T) {
 			events := &fakeEventLogger{}
 			now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-			runWeeklyReportPreview(ctx, db, tc.poster, events, testPreviewTarget, now, 60)
+			runWeeklyReportPreview(ctx, db, tc.poster, events, testPreviewTarget, now)
 
 			out := buf.String()
 			if !strings.Contains(out, `"msg":"weekly report preview"`) || !strings.Contains(out, `"discord":false`) {
@@ -339,7 +339,7 @@ func TestRunWeeklyReportPreviewFailureIsAnEvent(t *testing.T) {
 	events := &fakeEventLogger{}
 	now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-	runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now, 60)
+	runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now)
 
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"weekly report preview: discord post failed"`) || !strings.Contains(out, "status 500") {
@@ -352,7 +352,7 @@ func TestRunWeeklyReportPreviewFailureIsAnEvent(t *testing.T) {
 		t.Errorf("events = %q, want one %s for 2026-11-02", events.events, weeklyPreviewFailedEvent)
 	}
 	// With no collector the failure is still logged and nothing panics.
-	runWeeklyReportPreview(ctx, db, poster, nil, testPreviewTarget, now, 60)
+	runWeeklyReportPreview(ctx, db, poster, nil, testPreviewTarget, now)
 }
 
 // TestRunWeeklyReportPreviewEmptyWeek: a week with no rows is previewed as the
@@ -363,7 +363,7 @@ func TestRunWeeklyReportPreviewEmptyWeek(t *testing.T) {
 	poster := &fakePreviewPoster{}
 	now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-	runWeeklyReportPreview(context.Background(), db, poster, nil, testPreviewTarget, now, 60)
+	runWeeklyReportPreview(context.Background(), db, poster, nil, testPreviewTarget, now)
 
 	if len(poster.contents) != 1 || !strings.Contains(poster.contents[0], "Monday's run will skip: 0 daily rows (minimum 5)") {
 		t.Errorf("posted = %q", poster.contents)
@@ -411,7 +411,7 @@ func TestRunWeeklyReportPreviewUnreadWeekIsNotASkip(t *testing.T) {
 			events := &fakeEventLogger{}
 			now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-			runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now, 60)
+			runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now)
 
 			if len(poster.contents) != 1 {
 				t.Fatalf("posted %d messages, want 1", len(poster.contents))

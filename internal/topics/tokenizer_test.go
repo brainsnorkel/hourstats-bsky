@@ -403,6 +403,10 @@ func TestTokenize_NoBreakInsideSentence(t *testing.T) {
 		{"the U.S. economy slows", []string{"economy_slows"}, nil},
 		{"breaking:volcano erupts", []string{"breaking_volcano"}, nil},
 		{"tired of it. Lakers lost", []string{"lakers_lost"}, []string{"tired_lakers"}},
+		// "no." is an abbreviation only before a digit: No. 1 keeps the
+		// sentence whole, "says no. The" ends it.
+		{"ranked No. 1 nationally today", []string{"ranked_nationally"}, nil},
+		{"White House says no. The white house", []string{"white_house"}, []string{"says_white"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {

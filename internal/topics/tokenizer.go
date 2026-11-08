@@ -28,10 +28,12 @@ var (
 // periodAbbreviations are the words a "." follows without ending a sentence:
 // "Lakers vs. Celtics", "Sen. Warren". A single letter before the "." (the
 // last letter of "U.S." or "e.g.", or an initial) does not end one either.
+// "no" is not here: "No. 1" is an abbreviation only before a digit, while
+// "says no. The" ends a sentence (abbreviationBefore).
 var periodAbbreviations = map[string]bool{
 	"vs": true, "sen": true, "rep": true, "gov": true, "gen": true, "col": true,
 	"sgt": true, "mr": true, "mrs": true, "ms": true, "dr": true, "st": true,
-	"jr": true, "no": true, "inc": true,
+	"jr": true, "inc": true,
 }
 
 // segmentBoundary replaces every removed URL, mention and emoji, so the words
@@ -140,12 +142,13 @@ func segmentWords(text string) [][]string {
 }
 
 // splitSegments splits lowercased text at every segmentBreak match, except a
-// lone "." after a periodAbbreviations word or a single letter.
+// lone "." after a periodAbbreviations word, a single letter, or a "no"
+// followed by a digit.
 func splitSegments(text string) []string {
 	var segs []string
 	start := 0
 	for _, m := range segmentBreak.FindAllStringIndex(text, -1) {
-		if strings.TrimSpace(text[m[0]:m[1]]) == "." && abbreviationBefore(text[:m[0]]) {
+		if strings.TrimSpace(text[m[0]:m[1]]) == "." && abbreviationBefore(text[:m[0]], text[m[1]:]) {
 			continue
 		}
 		segs = append(segs, text[start:m[0]])
@@ -155,13 +158,17 @@ func splitSegments(text string) []string {
 }
 
 // abbreviationBefore reports whether the text ends in a word whose following
-// "." does not end a sentence: a periodAbbreviations word or a single letter.
-func abbreviationBefore(text string) bool {
+// "." does not end a sentence: a periodAbbreviations word, a single letter,
+// or "no" when the text after the break starts with a digit ("No. 1").
+func abbreviationBefore(text, after string) bool {
 	i := len(text)
 	for i > 0 && text[i-1] >= 'a' && text[i-1] <= 'z' {
 		i--
 	}
 	word := text[i:]
+	if word == "no" {
+		return after != "" && after[0] >= '0' && after[0] <= '9'
+	}
 	return len(word) == 1 || periodAbbreviations[word]
 }
 

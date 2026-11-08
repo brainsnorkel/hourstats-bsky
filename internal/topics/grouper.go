@@ -52,6 +52,9 @@ const (
 	// AttemptInvalid is a call that answered but every cluster failed output
 	// validation.
 	AttemptInvalid = "invalid"
+	// AttemptLabelYear is a call that answered and passed validation, but the
+	// label year rule dropped every cluster.
+	AttemptLabelYear = "label_year"
 	// AttemptNoTime is a fallback skipped because under minFallbackTime was
 	// left before the total deadline.
 	AttemptNoTime = "no_time"
@@ -350,17 +353,24 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 	}
 	clusters = normalizeClusterKeywords(validated, terms)
 	// The year rule needs the normalised keywords and their scores (a past
-	// year in a label stands only when a dominant keyword carries it), and it
-	// runs after the merge, whose label can come from a bridging bigram that
-	// was never year-checked. The caller's own MergeSimilarClusters is then a
+	// year in a label stands only when the top keyword carries it). It runs
+	// before the merge, so the merge picks among labels already judged, and
+	// again after it, because a merged cluster's keyword union can have a
+	// different top term. The caller's own MergeSimilarClusters is then a
 	// no-op on these clusters.
+	//
+	// An answer that validation or the year rule empties is deliberately not
+	// retried on the fallback model: the fallback is for a call that failed
+	// (isRetryable), and this one answered. The caller suppresses the post,
+	// or tries the offline fallback when TOPICS_OFFLINE_FALLBACK is set; the
+	// attempt class (invalid or label_year) says which check emptied it.
+	n := len(clusters)
+	clusters, _, _ = applyLabelYearRule(clusters, terms, now)
 	clusters = MergeSimilarClusters(clusters, terms)
-	if n := len(clusters); n > 0 {
-		clusters, _, _ = applyLabelYearRule(clusters, terms, now)
-		if len(clusters) == 0 {
-			attempts[len(attempts)-1].Class = AttemptInvalid
-			return nil, fmt.Errorf("%w: all %d clusters dropped by the label year rule", ErrTopicsUnavailable, n)
-		}
+	clusters, _, _ = applyLabelYearRule(clusters, terms, now)
+	if n > 0 && len(clusters) == 0 {
+		attempts[len(attempts)-1].Class = AttemptLabelYear
+		return nil, fmt.Errorf("%w: all %d clusters dropped by the label year rule", ErrTopicsUnavailable, n)
 	}
 
 	for _, c := range clusters {
@@ -439,7 +449,10 @@ func validateCluster(c TopicCluster) (TopicCluster, string) {
 	// A label opening on a coordinating conjunction is a phrase fragment
 	// ("and vote today"); one such word is cut and the rest judged as the
 	// label. Articles and prepositions stay: "The Bear", "A Minecraft Movie"
-	// and "For All Mankind" are titles.
+	// and "For All Mankind" are titles. The cost is accepted: a title that
+	// does open on a conjunction loses its first word ("And Just Like That"
+	// is published as "Just Like That"). The meme prompt asks only that a
+	// label not start with a conjunction, matching this rule.
 	if first, rest, _ := strings.Cut(c.Label, " "); labelLeadWords[strings.ToLower(first)] {
 		c.Label = strings.TrimSpace(rest)
 		if c.Label == "" || (!strings.Contains(c.Label, " ") && countLetters(c.Label) < 3) {
@@ -926,7 +939,7 @@ func buildPrompt(terms []TermScore, headlines []string, pc promptContext) string
 		for _, p := range phrases {
 			fmt.Fprintf(&b, "- \"%s\" (from terms: %s)\n", p.Phrase, strings.Join(p.Terms, " + "))
 		}
-		b.WriteString("These are likely viral phrases or meme formats being repeated across many posts. Each detected phrase should become a SINGLE topic. The phrase is evidence of a meme: set is_meme to true and give the topic a readable name, by its recognisable catchphrase or, for a copypasta, by its subject (e.g. 'Cybertruck Copypasta'); never start a label with a conjunction or preposition and never join two phrases into one label.\n")
+		b.WriteString("These are likely viral phrases or meme formats being repeated across many posts. Each detected phrase should become a SINGLE topic. The phrase is evidence of a meme: set is_meme to true and give the topic a readable name, by its recognisable catchphrase or, for a copypasta, by its subject (e.g. 'Cybertruck Copypasta'); never start a label with a conjunction such as and/but/or and never join two phrases into one label.\n")
 	}
 
 	b.WriteString("\nTOPIC QUALITY:\n")

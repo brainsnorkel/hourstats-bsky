@@ -21,7 +21,9 @@ func MergeSimilarClusters(clusters []TopicCluster, terms []TermScore) []TopicClu
 	}
 
 	bigrams := make(map[string]bool)
+	scores := make(map[string]float64, len(terms))
 	for _, t := range terms {
+		scores[strings.ToLower(t.Term)] = t.Score
 		if strings.Contains(t.Term, "_") {
 			bigrams[t.Term] = true
 		}
@@ -71,7 +73,7 @@ func MergeSimilarClusters(clusters []TopicCluster, terms []TermScore) []TopicClu
 			result = append(result, clusters[g.indices[0]])
 			continue
 		}
-		mc := buildMergedCluster(clusters, g.indices, bigrams)
+		mc := buildMergedCluster(clusters, g.indices, bigrams, scores)
 		var labels []string
 		for _, idx := range g.indices {
 			labels = append(labels, clusters[idx].Label)
@@ -103,7 +105,7 @@ func hasBigramBridge(kwsA, kwsB []string, bigrams map[string]bool) bool {
 
 // buildMergedCluster combines multiple clusters into one, unioning their
 // keywords and synonyms, adding bridging bigrams, and choosing the best label.
-func buildMergedCluster(clusters []TopicCluster, indices []int, bigrams map[string]bool) TopicCluster {
+func buildMergedCluster(clusters []TopicCluster, indices []int, bigrams map[string]bool, scores map[string]float64) TopicCluster {
 	kwSet := make(map[string]bool)
 	synSet := make(map[string]bool)
 	var descriptions []string
@@ -142,7 +144,7 @@ func buildMergedCluster(clusters []TopicCluster, indices []int, bigrams map[stri
 		}
 	}
 
-	label := pickMergedLabel(clusters, indices, bigrams)
+	label := pickMergedLabel(clusters, indices, bigrams, scores)
 
 	description := "Trending term"
 	if len(descriptions) > 0 {
@@ -164,10 +166,17 @@ func buildMergedCluster(clusters []TopicCluster, indices []int, bigrams map[stri
 	}
 }
 
-// pickMergedLabel selects the best label for a merged cluster by comparing
-// bridging bigram-derived labels against existing cluster labels, preferring
-// whichever has the most words (most specific).
-func pickMergedLabel(clusters []TopicCluster, indices []int, bigrams map[string]bool) string {
+// pickMergedLabel selects the label for a merged cluster.
+//
+// The member cluster whose keywords carry the highest summed TF-IDF score
+// names the subject: a bridge can join "2026 Midterm Results" to an election
+// cluster labelled for another year, and the longer label is not the more
+// relevant one. The bridging bigram's label replaces that winner only when
+// it has more words and contains every word of it, which is the name split
+// the merge exists for ("Kristi" + "Noem" via kristi_noem is "Kristi Noem").
+// When two or more members tie on the top score, the most-words rule decides
+// among the bigram label and every member label (longer string on a tie).
+func pickMergedLabel(clusters []TopicCluster, indices []int, bigrams map[string]bool, scores map[string]float64) string {
 	// Find the longest bridging bigram between any two merged clusters.
 	var bestBigram string
 	for i := 0; i < len(indices); i++ {
@@ -185,31 +194,64 @@ func pickMergedLabel(clusters []TopicCluster, indices []int, bigrams map[string]
 			}
 		}
 	}
+	bigramLabel := ""
+	if bestBigram != "" {
+		bigramLabel = bigramToLabel(bestBigram)
+	}
+
+	winner, winnerScore, tied := -1, 0.0, false
+	for _, idx := range indices {
+		sum := 0.0
+		for _, k := range clusters[idx].Keywords {
+			sum += scores[strings.ToLower(k)]
+		}
+		switch {
+		case winner < 0 || sum > winnerScore:
+			winner, winnerScore, tied = idx, sum, false
+		case sum == winnerScore:
+			tied = true
+		}
+	}
+	if !tied {
+		label := clusters[winner].Label
+		if bigramLabel != "" && len(strings.Fields(bigramLabel)) > len(strings.Fields(label)) && containsAllWords(bigramLabel, label) {
+			return bigramLabel
+		}
+		return label
+	}
 
 	bestLabel := ""
 	bestWordCount := 0
-
-	// Bigram-derived label candidate.
-	if bestBigram != "" {
-		label := bigramToLabel(bestBigram)
-		wc := len(strings.Fields(label))
-		if wc > bestWordCount || (wc == bestWordCount && len(label) > len(bestLabel)) {
-			bestLabel = label
-			bestWordCount = wc
-		}
-	}
-
-	// Existing cluster labels.
+	candidates := []string{bigramLabel}
 	for _, idx := range indices {
-		label := clusters[idx].Label
+		candidates = append(candidates, clusters[idx].Label)
+	}
+	for _, label := range candidates {
+		if label == "" {
+			continue
+		}
 		wc := len(strings.Fields(label))
 		if wc > bestWordCount || (wc == bestWordCount && len(label) > len(bestLabel)) {
 			bestLabel = label
 			bestWordCount = wc
 		}
 	}
-
 	return bestLabel
+}
+
+// containsAllWords reports whether every word of sub, case-folded, is a word
+// of s.
+func containsAllWords(s, sub string) bool {
+	words := make(map[string]bool)
+	for _, w := range strings.Fields(strings.ToLower(s)) {
+		words[w] = true
+	}
+	for _, w := range strings.Fields(strings.ToLower(sub)) {
+		if !words[w] {
+			return false
+		}
+	}
+	return true
 }
 
 // bigramToLabel converts a bigram like "kristi_noem" to "Kristi Noem".

@@ -185,10 +185,12 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 	// hydration writes, not on the unfiltered count: after a restart or a
 	// lossy hydration the count can pass while the engaged rows are a few
 	// dozen, and TF-IDF on those yields nothing, which would turn a quiet
-	// skip into ErrTopicsUnavailable. The count is kept for the log only.
+	// skip into ErrTopicsUnavailable. The count is kept for the log only, so
+	// a failed count is logged as -1 rather than failing the cycle.
 	count, err := a.store.CountTopicTokensSince(ctx, tokenCutoff)
 	if err != nil {
-		return "", fmt.Errorf("count tokens: %w", err)
+		slog.Warn("topics: count tokens failed", "error", err)
+		count = -1
 	}
 	if len(rows) < MinCorpusSize {
 		// Not a failure: there genuinely isn't enough material this window.
@@ -225,7 +227,10 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 		// giving up; only suppress the post if even that yields nothing.
 		// The offline labels are built from firehose tokens, so they get the
 		// same output validation the model's labels do (hs-ws2.3).
-		clusters, _, _ = applyLabelYearRule(MergeSimilarClusters(validateClusters(AlgorithmicGroup(rows, terms)), terms), terms, a.grouper.now().UTC())
+		// The year rule runs before and after the merge, as in GroupAndLabel.
+		now := a.grouper.now().UTC()
+		clusters, _, _ = applyLabelYearRule(validateClusters(AlgorithmicGroup(rows, terms)), terms, now)
+		clusters, _, _ = applyLabelYearRule(MergeSimilarClusters(clusters, terms), terms, now)
 		if len(clusters) == 0 {
 			return "", fmt.Errorf("%w: grouping failed and offline fallback empty: %w", ErrTopicsUnavailable, err)
 		}
@@ -236,8 +241,9 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%w: grouping produced no clusters from %d terms", ErrTopicsUnavailable, len(terms))
 	}
 
-	// Both grouping paths merge similar clusters before the label year rule
-	// (GroupAndLabel and the offline call above), so no merge runs here.
+	// Both grouping paths merge similar clusters between two passes of the
+	// label year rule (GroupAndLabel and the offline call above), so no merge
+	// runs here.
 	ranked := RankTopics(clusters, rows)
 	if len(ranked) == 0 {
 		return "", fmt.Errorf("%w: ranking produced no topics from %d clusters", ErrTopicsUnavailable, len(clusters))

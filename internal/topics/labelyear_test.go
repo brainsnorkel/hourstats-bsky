@@ -3,6 +3,7 @@ package topics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -106,6 +107,8 @@ func TestApplyLabelYearRule(t *testing.T) {
 		{name: "an unbacked past year is stripped", label: "2024 US Presidential Election", keywords: []string{"election", "president"}, scores: map[string]float64{"election": 9, "president": 8}, want: "US Presidential Election"},
 		{name: "a top keyword carrying the year keeps the label", label: "2024 US Presidential Election", keywords: []string{"2024_election", "president"}, scores: map[string]float64{"2024_election": 9, "president": 5}, want: "2024 US Presidential Election"},
 		{name: "a past-year keyword under a current-year one is a comparison", label: "2024 US Presidential Election", keywords: []string{"2026_midterms", "midterms", "2024_election"}, scores: map[string]float64{"midterms": 9, "2026_midterms": 7, "2024_election": 5}, want: "US Presidential Election"},
+		{name: "a past-year keyword under the top keyword does not back it, with no current-year keyword either", label: "2024 US Presidential Election", keywords: []string{"midterms", "election", "2024_election", "vote"}, scores: map[string]float64{"midterms": 10, "election": 8, "2024_election": 6, "vote": 5}, want: "US Presidential Election"},
+		{name: "a past-year keyword tied with the top keyword backs it", label: "2024 US Presidential Election", keywords: []string{"election", "2024_election"}, scores: map[string]float64{"election": 9, "2024_election": 9}, want: "2024 US Presidential Election"},
 		{name: "a past-year keyword under half the top score does not back it", label: "2024 Election Fraud Claims", keywords: []string{"fraud", "2024_election"}, scores: map[string]float64{"fraud": 9, "2024_election": 4}, want: "Election Fraud Claims"},
 		{name: "a past-year keyword without a score does not back it", label: "2024 US Presidential Election", keywords: []string{"2024_election", "president"}, want: "US Presidential Election"},
 		{name: "a dominant past-year keyword keeps an album title", label: "1989 (Taylor's Version)", keywords: []string{"1989_taylor", "taylor", "version"}, scores: map[string]float64{"1989_taylor": 9, "taylor": 6, "version": 4}, want: "1989 (Taylor's Version)"},
@@ -247,5 +250,65 @@ func TestGroupAndLabel_DatesPromptAndStripsYear(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Label != "US Presidential Election" {
 		t.Errorf("clusters = %+v, want one labelled %q", got, "US Presidential Election")
+	}
+}
+
+// TestGroupAndLabel_MergeKeepsTheScoredSubject: a midterm cluster bridged to
+// an election cluster labelled for 2024 keeps its own label. Before, the merge
+// ran first and took the longer 2024 label, which the year rule then cut to
+// "US Presidential Election": the wrong subject, with no year left to guard.
+func TestGroupAndLabel_MergeKeepsTheScoredSubject(t *testing.T) {
+	withoutHeadlines(t)
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "2026 Midterm Results", Description: "d", Keywords: []string{"midterm"}, Justification: "j"},
+		{Label: "2024 US Presidential Election", Description: "d", Keywords: []string{"elections", "president"}, Justification: "j"},
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	g.SetClock(func() time.Time { return time.Date(2026, time.November, 9, 0, 0, 0, 0, time.UTC) })
+	got, err := g.GroupAndLabel(context.Background(), []TermScore{
+		{Term: "midterm", Score: 10}, {Term: "midterm_elections", Score: 6},
+		{Term: "elections", Score: 4}, {Term: "president", Score: 3},
+	})
+	if err != nil {
+		t.Fatalf("GroupAndLabel: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "2026 Midterm Results" {
+		t.Fatalf("clusters = %+v, want one merged cluster labelled %q", got, "2026 Midterm Results")
+	}
+	if !slices.Contains(got[0].Keywords, "elections") {
+		t.Errorf("keywords = %v, want the election cluster merged in", got[0].Keywords)
+	}
+}
+
+// TestGroupAndLabel_YearRuleDroppingEveryClusterIsLabelYear: an answer the
+// year rule empties is an error whose attempt class names the year rule, not
+// Gemini, and the fallback model is not tried.
+func TestGroupAndLabel_YearRuleDroppingEveryClusterIsLabelYear(t *testing.T) {
+	withoutHeadlines(t)
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "2024/25 Season", Description: "d", Keywords: []string{"season"}, Justification: "j"},
+	}))
+	defer srv.Close()
+	fallbackCalls := 0
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fallback.Close()
+
+	g := NewGrouperWithEndpoints("test-key", srv.URL, fallback.URL)
+	g.SetClock(func() time.Time { return time.Date(2026, time.November, 9, 0, 0, 0, 0, time.UTC) })
+	got, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "season", Score: 5}})
+	if !errors.Is(err, ErrTopicsUnavailable) {
+		t.Fatalf("err = %v (clusters %+v), want ErrTopicsUnavailable", err, got)
+	}
+	attempts := g.LastAttempts()
+	if len(attempts) != 1 || attempts[0].Class != AttemptLabelYear {
+		t.Errorf("attempts = %+v, want one primary attempt classed %q", attempts, AttemptLabelYear)
+	}
+	if fallbackCalls != 0 {
+		t.Errorf("fallback called %d times, want 0", fallbackCalls)
 	}
 }

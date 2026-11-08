@@ -16,6 +16,7 @@ import (
 type mockAnalyzerStore struct {
 	tokens     []store.TopicTokenRow
 	tokenCount int64
+	countErr   error
 	snapshots  []store.TopicSnapshotRow
 	identities []store.TopicIdentityRow
 
@@ -33,7 +34,7 @@ func (m *mockAnalyzerStore) GetTopicTokensSinceLimit(_ context.Context, _ string
 	return m.tokens, nil
 }
 func (m *mockAnalyzerStore) CountTopicTokensSince(_ context.Context, _ string) (int64, error) {
-	return m.tokenCount, nil
+	return m.tokenCount, m.countErr
 }
 func (m *mockAnalyzerStore) PurgeTopicTokens(_ context.Context, _ string) (int64, error) {
 	m.purgedTokens = true
@@ -100,6 +101,7 @@ func buildTestTokens() []store.TopicTokenRow {
 }
 
 func TestRunAnalysisCycle_Success(t *testing.T) {
+	withoutHeadlines(t)
 	clusters := []TopicCluster{
 		{Label: "US Politics", Description: "Political discussion", Keywords: []string{"trump", "election"}, Synonyms: []string{}},
 		{Label: "Weather", Description: "Weather talk", Keywords: []string{"weather", "rain"}, Synonyms: []string{}},
@@ -149,6 +151,7 @@ func TestRunAnalysisCycle_Success(t *testing.T) {
 }
 
 func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
+	withoutHeadlines(t)
 	ms := &mockAnalyzerStore{tokenCount: 50}
 	a := &Analyzer{
 		store:    ms,
@@ -173,6 +176,7 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 // read, not the unfiltered token count: 150 token rows in the window but only
 // 30 with engagement is a quiet skip, not ErrTopicsUnavailable.
 func TestRunAnalysisCycle_FewEngagedRows(t *testing.T) {
+	withoutHeadlines(t)
 	ms := &mockAnalyzerStore{tokens: buildTestTokens()[:30], tokenCount: 150}
 	a := &Analyzer{
 		store:    ms,
@@ -391,5 +395,30 @@ func TestTokenCorpusRange(t *testing.T) {
 					gotMin, gotMedian, gotMax, tc.wantMin, tc.wantMedian, tc.wantMax)
 			}
 		})
+	}
+}
+
+// TestRunAnalysisCycle_CountFailureIsNotFatal: the token count only feeds a
+// log line, so a failed count must not cost the hour its topics.
+func TestRunAnalysisCycle_CountFailureIsNotFatal(t *testing.T) {
+	withoutHeadlines(t)
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "Rainy Weather", Description: "d", Keywords: []string{"weather", "rain"}, Justification: "j"},
+	}))
+	defer srv.Close()
+
+	tokens := buildTestTokens()
+	ms := &mockAnalyzerStore{tokens: tokens, countErr: fmt.Errorf("database is locked")}
+	a := &Analyzer{
+		store:    ms,
+		grouper:  NewGrouperWithEndpoint("test-key", srv.URL),
+		tracker:  NewTracker(ms),
+		hydrator: NewExemplarHydrator(ms),
+	}
+	if _, err := a.RunAnalysisCycle(context.Background()); err != nil {
+		t.Fatalf("RunAnalysisCycle: %v", err)
+	}
+	if len(ms.insertedSnapshots) == 0 {
+		t.Error("expected snapshots despite the failed count")
 	}
 }
