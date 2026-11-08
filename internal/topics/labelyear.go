@@ -32,14 +32,19 @@ func LabelYearFloor(now time.Time) int {
 	return floor
 }
 
-// labelYearMatch is one past year in a label: the byte span of the year text
-// (the match minus its prefix character, range tail included), the text as
-// written, and the four-digit years it carries, for the keyword exemption.
+// labelYearMatch is one past year in a label: the byte span to cut when it
+// is stripped (the match minus its prefix character, the whole tail included
+// even when it is not a range, plus a following "-NN" date part), the year
+// text as written, and the four-digit years it carries, for the backing test.
 type labelYearMatch struct {
 	start, end int
 	shown      string
 	years      []string
 }
+
+// labelDatePartPattern is the day of a date after a year-month match:
+// "2024-11" matched, "-05" follows.
+var labelDatePartPattern = regexp.MustCompile(`^[-–/]\d{1,2}\b`)
 
 // pastLabelYearMatches returns every year in label that ends before
 // LabelYearFloor(now), in label order, repeats included.
@@ -54,10 +59,11 @@ func pastLabelYearMatches(label string, now time.Time) []labelYearMatch {
 		year, _ := strconv.Atoi(start)
 		shown := start
 		years := []string{start}
+		isRange := false
 		if end, _ := strconv.Atoi(tail); len(tail) == 4 {
 			// A range running backwards ("2026-1999") is not a range.
 			if end >= year {
-				year, shown = end, label[idx[4]:idx[1]]
+				year, shown, isRange = end, label[idx[4]:idx[1]], true
 				years = append(years, tail)
 			}
 		} else if tail != "" {
@@ -70,11 +76,20 @@ func pastLabelYearMatches(label string, now time.Time) []labelYearMatch {
 				end += 100
 			}
 			if end <= year+30 {
-				year, shown = end, label[idx[4]:idx[1]]
+				year, shown, isRange = end, label[idx[4]:idx[1]], true
 			}
 		}
 		if year < floor {
-			out = append(out, labelYearMatch{start: idx[4], end: idx[4] + len(shown), shown: shown, years: years})
+			// The cut covers the whole match, so a tail that is not a range
+			// ("2024-12", "2020-51", "2024-2020") goes with its year rather
+			// than being left behind as "-12 Recap", and so does a date's day.
+			end := idx[1]
+			if tail != "" && !isRange {
+				if d := labelDatePartPattern.FindStringIndex(label[end:]); d != nil {
+					end += d[1]
+				}
+			}
+			out = append(out, labelYearMatch{start: idx[4], end: end, shown: shown, years: years})
 		}
 	}
 	return out
@@ -100,39 +115,79 @@ func PastLabelYears(label string, now time.Time) []string {
 // when they follow it, longest first.
 var labelYearSeparators = []string{": ", " - ", " – ", " / ", "'s "}
 
-// labelEndWords are function words a label may not end on once a year is
-// stripped: "Class of 2024" without its year is "Class of".
-var labelEndWords = map[string]bool{
-	"and": true, "of": true, "in": true, "for": true, "the": true, "to": true, "with": true,
-	"at": true, "on": true, "from": true, "by": true, "a": true, "an": true,
-}
+// labelStartWords and labelEndWords are the words a label may not start or
+// end on once a year is stripped: "2024 and Beyond" without its year is "and
+// Beyond", "Class of 2024" is "Class of". Such a label is dropped, not
+// repaired: what it was about went with the year.
+var (
+	labelStartWords = map[string]bool{
+		"and": true, "or": true, "vs": true, "&": true, "of": true, "in": true,
+		"from": true, "to": true, "for": true,
+	}
+	labelEndWords = map[string]bool{
+		"and": true, "of": true, "in": true, "for": true, "the": true, "to": true, "with": true,
+		"at": true, "on": true, "from": true, "by": true, "a": true, "an": true,
+		"vs": true, "&": true, "versus": true,
+	}
+	// labelGenericNouns are what "2024/25 Season" or "Election (2024)" leave
+	// behind: a label naming no subject once its year is gone.
+	labelGenericNouns = map[string]bool{
+		"season": true, "year": true, "election": true, "elections": true,
+		"recap": true, "review": true, "results": true,
+	}
+	// labelEmptyPairs are the brackets and quotes a stripped year can leave
+	// empty: "Taylor Swift (1989)" becomes "Taylor Swift ()".
+	labelEmptyPairs = regexp.MustCompile(`\(\s*\)|\[\s*\]|"\s*"|“\s*”|'\s*'`)
+)
 
-// applyLabelYearRule strips past years the cluster's keywords do not back
+// applyLabelYearRule strips the past years a cluster's top terms do not back
 // from every label, and drops a cluster whose label is unusable without them.
+// It runs after MergeSimilarClusters, whose merged label can come from a
+// bridging bigram the model never saw.
 //
-// A label naming a past year (PastLabelYears) is kept unchanged when any
-// keyword, split on "_", is one of those years written in four digits:
-// people do post about "1989" or "2024 YR4". Otherwise each past year is cut
-// out with one attached separator, and the cluster is re-validated; it is
-// dropped when that fails, when the label now ends on a function word, or
-// when fewer than three letters are left. The current year is never
-// substituted: a date the terms do not carry is a guess.
-func applyLabelYearRule(clusters []TopicCluster, now time.Time) (kept []TopicCluster, stripped, dropped int) {
+// For each cluster, in order:
+//  1. A label naming no past year (pastLabelYearMatches) is kept as is.
+//  2. Each past year is judged on its own (yearBacked). It is backed only by
+//     a keyword carrying that exact year whose TF-IDF score is at least that
+//     of every keyword carrying the current or a later year, and at least
+//     half the cluster's top keyword score; a keyword with no score backs
+//     nothing. When every past year is backed the cluster is kept unchanged:
+//     "1989 (Taylor's Version)" with 1989_taylor on top is about that year,
+//     while a 2024_election under 2026_midterms is a comparison.
+//  3. Only the unbacked years are cut out, each with one attached separator,
+//     and emptied brackets and quotes go with them (stripLabelYears).
+//  4. The result is dropped, not repaired, when it still names an unbacked
+//     past year, starts on a conjunction or preposition, ends on a function
+//     word, has fewer than two words of three letters or more, or is only a
+//     generic noun such as "Season" (strippedLabelProblem).
+//  5. Otherwise it is re-validated (validateCluster) and kept if that passes.
+//
+// The current year is never substituted: a date the terms do not carry is a
+// guess.
+func applyLabelYearRule(clusters []TopicCluster, terms []TermScore, now time.Time) (kept []TopicCluster, stripped, dropped int) {
+	scores := make(map[string]float64, len(terms))
+	for _, t := range terms {
+		scores[strings.ToLower(t.Term)] = t.Score
+	}
+	floor := LabelYearFloor(now)
 	kept = make([]TopicCluster, 0, len(clusters))
 	for _, c := range clusters {
-		matches := pastLabelYearMatches(c.Label, now)
-		if len(matches) == 0 || keywordsBackYear(c.Keywords, matches) {
+		var unbacked []labelYearMatch
+		for _, m := range pastLabelYearMatches(c.Label, now) {
+			if !yearBacked(m, c.Keywords, scores, floor) {
+				unbacked = append(unbacked, m)
+			}
+		}
+		if len(unbacked) == 0 {
 			kept = append(kept, c)
 			continue
 		}
 		original := c.Label
-		c.Label = stripLabelYears(c.Label, matches)
-		validated, reason := validateCluster(c)
-		if reason == "" && endsOnFunctionWord(validated.Label) {
-			reason = "function_word_end"
-		}
-		if reason == "" && countLetters(validated.Label) < 3 {
-			reason = "too_few_letters"
+		c.Label = stripLabelYears(c.Label, unbacked)
+		validated := c
+		reason := strippedLabelProblem(c.Label, c.Keywords, scores, floor, now)
+		if reason == "" {
+			validated, reason = validateCluster(c)
 		}
 		if reason != "" {
 			dropped++
@@ -143,30 +198,96 @@ func applyLabelYearRule(clusters []TopicCluster, now time.Time) (kept []TopicClu
 		slog.Debug("topics: label year rule stripped label", "label", original, "stripped_label", validated.Label)
 		kept = append(kept, validated)
 	}
+	// Logged on every call, 0/0 included: the zero line is a deliberate
+	// heartbeat, so the strip and drop rates can be tracked per cycle.
 	slog.Info("topics: label year rule", "label_year_stripped", stripped, "label_year_dropped", dropped)
 	return kept, stripped, dropped
 }
 
-// keywordsBackYear reports whether any keyword part is one of the matched
-// four-digit years.
-func keywordsBackYear(keywords []string, matches []labelYearMatch) bool {
+// strippedLabelProblem names why a label left by stripLabelYears is
+// unusable, or returns "" (step 4 of applyLabelYearRule).
+func strippedLabelProblem(label string, keywords []string, scores map[string]float64, floor int, now time.Time) string {
+	for _, m := range pastLabelYearMatches(label, now) {
+		if !yearBacked(m, keywords, scores, floor) {
+			return "past_year_remains"
+		}
+	}
+	words := strings.Fields(label)
+	if len(words) == 0 {
+		return "empty"
+	}
+	if labelStartWords[strings.ToLower(words[0])] {
+		return "function_word_start"
+	}
+	if labelEndWords[strings.ToLower(words[len(words)-1])] {
+		return "function_word_end"
+	}
+	long := 0
+	for _, w := range words {
+		if countLetters(w) >= 3 {
+			long++
+		}
+	}
+	if long < 2 {
+		return "too_few_words"
+	}
+	if labelGenericNouns[strings.ToLower(label)] {
+		return "generic_noun"
+	}
+	return ""
+}
+
+// yearBacked reports whether a keyword carrying one of m's four-digit years
+// is the cluster's dominant year term: scored at least as high as every
+// keyword carrying a year at or after floor, and at least half the cluster's
+// top keyword score. A keyword with no score backs nothing.
+func yearBacked(m labelYearMatch, keywords []string, scores map[string]float64, floor int) bool {
+	top, current := 0.0, 0.0
 	for _, k := range keywords {
-		for _, part := range strings.Split(k, "_") {
-			for _, m := range matches {
-				if slices.Contains(m.years, part) {
-					return true
-				}
+		s, ok := scores[strings.ToLower(k)]
+		if !ok {
+			continue
+		}
+		top = max(top, s)
+		for _, y := range keywordYears(k) {
+			if y >= floor {
+				current = max(current, s)
+			}
+		}
+	}
+	for _, k := range keywords {
+		s, ok := scores[strings.ToLower(k)]
+		if !ok || s < current || s < top/2 {
+			continue
+		}
+		for _, y := range keywordYears(k) {
+			if slices.Contains(m.years, strconv.Itoa(y)) {
+				return true
 			}
 		}
 	}
 	return false
 }
 
+// keywordYears returns the four-digit years (19xx, 20xx) among a keyword's
+// "_"-separated parts.
+func keywordYears(keyword string) []int {
+	var years []int
+	for _, part := range strings.Split(keyword, "_") {
+		if len(part) == 4 && (strings.HasPrefix(part, "19") || strings.HasPrefix(part, "20")) {
+			if y, err := strconv.Atoi(part); err == nil {
+				years = append(years, y)
+			}
+		}
+	}
+	return years
+}
+
 // stripLabelYears removes each matched year with one attached separator: a
 // following ": ", " - ", " – ", " / " or "'s ", else a following space, else
 // a preceding one. Matches are cut last to first so earlier spans stay valid.
-// Whitespace is then collapsed and the ends trimmed of spaces and of a
-// separator left dangling ("Election -").
+// Emptied brackets and quotes are then removed, whitespace collapsed, and the
+// ends trimmed of spaces and of a separator left dangling ("Election -").
 func stripLabelYears(label string, matches []labelYearMatch) string {
 	for i := len(matches) - 1; i >= 0; i-- {
 		start, end := matches[i].start, matches[i].end
@@ -188,14 +309,8 @@ func stripLabelYears(label string, matches []labelYearMatch) string {
 		}
 		label = label[:start] + label[end:]
 	}
+	label = labelEmptyPairs.ReplaceAllString(label, " ")
 	return strings.Trim(strings.Join(strings.Fields(label), " "), " :-–/,")
-}
-
-// endsOnFunctionWord reports whether the label's last word is in
-// labelEndWords.
-func endsOnFunctionWord(label string) bool {
-	words := strings.Fields(label)
-	return len(words) > 0 && labelEndWords[strings.ToLower(words[len(words)-1])]
 }
 
 func countLetters(s string) int {

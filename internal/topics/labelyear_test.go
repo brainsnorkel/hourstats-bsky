@@ -99,16 +99,21 @@ func TestApplyLabelYearRule(t *testing.T) {
 		name     string
 		label    string
 		keywords []string
-		now      time.Time // zero: nov
-		want     string    // empty: dropped
+		scores   map[string]float64 // TF-IDF scores by term; a keyword absent here has none
+		now      time.Time          // zero: nov
+		want     string             // empty: dropped
 	}{
-		{name: "an unbacked past year is stripped", label: "2024 US Presidential Election", keywords: []string{"election", "president"}, want: "US Presidential Election"},
-		{name: "a keyword carrying the year keeps the label", label: "2024 US Presidential Election", keywords: []string{"2024_election", "president"}, want: "2024 US Presidential Election"},
+		{name: "an unbacked past year is stripped", label: "2024 US Presidential Election", keywords: []string{"election", "president"}, scores: map[string]float64{"election": 9, "president": 8}, want: "US Presidential Election"},
+		{name: "a top keyword carrying the year keeps the label", label: "2024 US Presidential Election", keywords: []string{"2024_election", "president"}, scores: map[string]float64{"2024_election": 9, "president": 5}, want: "2024 US Presidential Election"},
+		{name: "a past-year keyword under a current-year one is a comparison", label: "2024 US Presidential Election", keywords: []string{"2026_midterms", "midterms", "2024_election"}, scores: map[string]float64{"midterms": 9, "2026_midterms": 7, "2024_election": 5}, want: "US Presidential Election"},
+		{name: "a past-year keyword under half the top score does not back it", label: "2024 Election Fraud Claims", keywords: []string{"fraud", "2024_election"}, scores: map[string]float64{"fraud": 9, "2024_election": 4}, want: "Election Fraud Claims"},
+		{name: "a past-year keyword without a score does not back it", label: "2024 US Presidential Election", keywords: []string{"2024_election", "president"}, want: "US Presidential Election"},
+		{name: "a dominant past-year keyword keeps an album title", label: "1989 (Taylor's Version)", keywords: []string{"1989_taylor", "taylor", "version"}, scores: map[string]float64{"1989_taylor": 9, "taylor": 6, "version": 4}, want: "1989 (Taylor's Version)"},
+		{name: "a backed year stays while an unbacked one goes", label: "1989 Era Tour 2024", keywords: []string{"1989_taylor", "tour"}, scores: map[string]float64{"1989_taylor": 9, "tour": 5}, want: "1989 Era Tour"},
 		{name: "a later year is kept", label: "2028 Presidential Race", keywords: []string{"race"}, want: "2028 Presidential Race"},
 		{name: "a season ending this year is kept", label: "2025-26 NBA Season", keywords: []string{"nba"}, want: "2025-26 NBA Season"},
-		{name: "a past season range goes whole, leaving the weak but valid Season", label: "2024/25 Season", keywords: []string{"season"}, want: "Season"},
+		{name: "a past season range goes whole and the bare Season is dropped", label: "2024/25 Season", keywords: []string{"season"}},
 		{name: "a label invalid without its year is dropped", label: "1989 (Taylor's Version)", keywords: []string{"taylor", "version"}},
-		{name: "a year keyword keeps an album title", label: "1989 (Taylor's Version)", keywords: []string{"1989_taylor"}, want: "1989 (Taylor's Version)"},
 		{name: "a label ending on a function word is dropped", label: "Class of 2024", keywords: []string{"class"}},
 		{name: "a year takes its colon separator with it", label: "Election 2024: Results", keywords: []string{"election", "results"}, want: "Election Results"},
 		{name: "January keeps the year just ended", label: "2026 Year in Review", keywords: []string{"review"}, now: jan, want: "2026 Year in Review"},
@@ -116,9 +121,25 @@ func TestApplyLabelYearRule(t *testing.T) {
 		{name: "a compound label keeps its other subjects", label: "2024 US Election and Midterms", keywords: []string{"midterms"}, want: "US Election and Midterms"},
 		{name: "a possessive year goes with its 's", label: "2024's Biggest Moments", keywords: []string{"moments"}, want: "Biggest Moments"},
 		{name: "a label left with too few letters is dropped", label: "2024 UK", keywords: []string{"uk"}},
-		{name: "a dangling dash is trimmed", label: "Midterms - 2024", keywords: []string{"midterms"}, want: "Midterms"},
-		{name: "a keyword with a different year does not back it", label: "2024 Election", keywords: []string{"2026_midterms"}, want: "Election"},
-		{name: "every unbacked past year goes, even when it leaves a weak label", label: "2020 vs 2024 Turnout", keywords: []string{"turnout"}, want: "vs Turnout"},
+		{name: "a dangling dash is trimmed", label: "Midterm Turnout - 2024", keywords: []string{"midterms"}, want: "Midterm Turnout"},
+		{name: "a keyword with a different year does not back it", label: "2024 Election Results", keywords: []string{"2026_midterms"}, scores: map[string]float64{"2026_midterms": 9}, want: "Election Results"},
+		{name: "two unbacked past years leave a label starting on vs", label: "2020 vs 2024 Turnout", keywords: []string{"turnout"}},
+		{name: "a backed 2024 still leaves 2020 stripped and a label starting on vs", label: "2020 vs 2024 Turnout", keywords: []string{"2024_turnout", "turnout"}, scores: map[string]float64{"2024_turnout": 9, "turnout": 5}},
+
+		// A tail that is not a range goes with its year, and a date's day too.
+		{name: "a whole date goes, leaving one word", label: "2024-11-05 Vote", keywords: []string{"vote"}},
+		{name: "a backwards range goes whole, leaving one word", label: "2024-2020 Recap", keywords: []string{"recap"}},
+		{name: "a tail past thirty years goes with its year", label: "2020-51 Plan", keywords: []string{"plan"}},
+		{name: "a year-month goes whole", label: "Election 2024-12 Recap", keywords: []string{"election"}, want: "Election Recap"},
+		{name: "a year-month at the start goes whole", label: "2024-12 Budget Vote", keywords: []string{"budget"}, want: "Budget Vote"},
+
+		// What stripping leaves behind is dropped, not repaired.
+		{name: "an emptied bracket leaves one word", label: "Election (2024)", keywords: []string{"election"}},
+		{name: "an emptied bracket is removed", label: "Taylor Swift (1989)", keywords: []string{"taylor_swift"}, want: "Taylor Swift"},
+		{name: "a label starting on and is dropped", label: "2024 and Beyond", keywords: []string{"beyond"}},
+		{name: "a label ending on vs is dropped", label: "Midterms vs 2024", keywords: []string{"midterms"}},
+		{name: "a leading The is a title, not a dangling word", label: "The 2024 Election", keywords: []string{"election"}, want: "The Election"},
+		{name: "a bare generic noun is dropped", label: "Year 2024", keywords: []string{"year"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,8 +147,12 @@ func TestApplyLabelYearRule(t *testing.T) {
 			if now.IsZero() {
 				now = nov
 			}
+			var terms []TermScore
+			for term, score := range tc.scores {
+				terms = append(terms, TermScore{Term: term, Score: score})
+			}
 			in := []TopicCluster{{Label: tc.label, Keywords: tc.keywords, Description: "d", Justification: "j"}}
-			kept, stripped, dropped := applyLabelYearRule(in, now)
+			kept, stripped, dropped := applyLabelYearRule(in, terms, now)
 			if tc.want == "" {
 				if len(kept) != 0 || dropped != 1 || stripped != 0 {
 					t.Fatalf("kept %+v (stripped %d, dropped %d), want the cluster dropped", kept, stripped, dropped)
@@ -155,8 +180,12 @@ func TestBuildPrompt_DatesThePrompt(t *testing.T) {
 	prompt := buildPrompt([]TermScore{{Term: "midterms", Score: 5.0}}, nil, promptContext{Now: now})
 	lines := strings.Split(prompt, "\n")
 	want := "Today is 2026-11-09 (UTC). Do not put a year in a label unless one of the terms contains that year."
-	if len(lines) < 2 || lines[1] != want {
+	if len(lines) < 3 || lines[1] != want {
 		t.Fatalf("second line = %q, want %q", lines[1], want)
+	}
+	wantComparison := "A past-year term such as 2024_election in a cluster about current events is a comparison: name the current event and leave the past year out."
+	if lines[2] != wantComparison {
+		t.Errorf("third line = %q, want %q", lines[2], wantComparison)
 	}
 	year := regexp.MustCompile(`(19|20)\d\d`)
 	examples := 0
@@ -176,10 +205,21 @@ func TestBuildPrompt_DatesThePrompt(t *testing.T) {
 	}
 }
 
+// TestSetClock_NilRestoresTimeNow: a nil clock falls back to time.Now rather
+// than leaving the grouper to panic on its next call.
+func TestSetClock_NilRestoresTimeNow(t *testing.T) {
+	g := NewGrouperWithEndpoint("test-key", "http://127.0.0.1:0")
+	g.SetClock(nil)
+	if got := g.now(); time.Since(got) > time.Minute {
+		t.Errorf("now() = %v, want about time.Now", got)
+	}
+}
+
 // TestGroupAndLabel_DatesPromptAndStripsYear: the grouper's clock dates the
 // prompt it sends, and a label naming an unbacked past year comes back
 // without it.
 func TestGroupAndLabel_DatesPromptAndStripsYear(t *testing.T) {
+	withoutHeadlines(t)
 	var body []byte
 	clusters := []TopicCluster{{
 		Label: "2024 US Presidential Election", Description: "Election talk",

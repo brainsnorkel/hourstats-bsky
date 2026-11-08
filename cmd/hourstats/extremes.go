@@ -40,6 +40,9 @@ func weekExtremes(points []state.SentimentDataPoint, now time.Time) *topics.Week
 }
 
 // footerTopic is the stored top topic, or empty when it names a past year.
+// A past-year label the grouper kept because a dominant keyword backed the
+// year is still blanked here, and that is deliberate: a one-line caption
+// cannot show the backing, and a bare value beats a year that reads as a slip.
 func footerTopic(topic string, now time.Time) string {
 	if len(topics.PastLabelYears(topic, now)) > 0 {
 		return ""

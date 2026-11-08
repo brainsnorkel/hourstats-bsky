@@ -94,8 +94,9 @@ const weeklyTopicDroppedEvent = "weekly_report_topic_dropped"
 // week's first year, as written ("2024", "2024/25"), distinct and in label
 // order. A non-empty result costs the post its topic line
 // (buildWeeklyReportText) and the Sunday preview quotes the dropped label.
-// The rule is topics.PastLabelYears, which the grouper also applies to
-// fresh labels (hs-aqa.1); before that it labelled the 2026 midterms a 2024
+// The rule is topics.PastLabelYears: the grouper strips unbacked past years
+// with the same matcher; this check drops the line for any past year, backed
+// or not (hs-aqa.1). Before that the grouper labelled the 2026 midterms a 2024
 // election, and a label naming an earlier year is wrong far more often than
 // it is about that year. Later years are kept, since talk of 2028 the week
 // after the midterms is a real topic and the grouper's slips run backwards.

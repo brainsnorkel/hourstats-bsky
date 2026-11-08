@@ -233,8 +233,11 @@ func (g *Grouper) SetTotalTimeout(d time.Duration) {
 }
 
 // SetClock replaces the clock behind the prompt's date line and the label
-// year rule (for tests).
+// year rule (for tests). A nil fn restores time.Now.
 func (g *Grouper) SetClock(fn func() time.Time) {
+	if fn == nil {
+		fn = time.Now
+	}
 	g.now = fn
 }
 
@@ -346,10 +349,14 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 		return nil, fmt.Errorf("%w: all clusters failed output validation", ErrTopicsUnavailable)
 	}
 	clusters = normalizeClusterKeywords(validated, terms)
-	// The year rule needs the normalised keywords: a past year in a label
-	// stands only when one of them carries it.
+	// The year rule needs the normalised keywords and their scores (a past
+	// year in a label stands only when a dominant keyword carries it), and it
+	// runs after the merge, whose label can come from a bridging bigram that
+	// was never year-checked. The caller's own MergeSimilarClusters is then a
+	// no-op on these clusters.
+	clusters = MergeSimilarClusters(clusters, terms)
 	if n := len(clusters); n > 0 {
-		clusters, _, _ = applyLabelYearRule(clusters, now)
+		clusters, _, _ = applyLabelYearRule(clusters, terms, now)
 		if len(clusters) == 0 {
 			attempts[len(attempts)-1].Class = AttemptInvalid
 			return nil, fmt.Errorf("%w: all %d clusters dropped by the label year rule", ErrTopicsUnavailable, n)
@@ -870,7 +877,8 @@ type promptContext struct {
 func buildPrompt(terms []TermScore, headlines []string, pc promptContext) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Group these %d TF-IDF terms from recent Bluesky posts into trending topics.\n", len(terms))
-	fmt.Fprintf(&b, "Today is %s (UTC). Do not put a year in a label unless one of the terms contains that year.\n\n", pc.Now.UTC().Format("2006-01-02"))
+	fmt.Fprintf(&b, "Today is %s (UTC). Do not put a year in a label unless one of the terms contains that year.\n", pc.Now.UTC().Format("2006-01-02"))
+	b.WriteString("A past-year term such as 2024_election in a cluster about current events is a comparison: name the current event and leave the past year out.\n\n")
 	b.WriteString(untrustedTermPreface)
 	b.WriteString("Terms (score):\n")
 	for _, t := range terms {
