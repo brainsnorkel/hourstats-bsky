@@ -268,8 +268,7 @@ func runJetstream(ctx context.Context, db *store.Store, trendingEnabled bool, co
 				CreatedAt: createdAt,
 			}
 			if trendingEnabled && rec.Reply == nil && !rec.HasAdultContent() {
-				hashtagCount := strings.Count(rec.Text, "#")
-				if hashtagCount <= 1 && !topics.IsRepetitive(rec.Text) {
+				if topics.Eligible(rec.Text) {
 					toks := topics.Tokenize(rec.Text)
 					if len(toks) > 0 {
 						tokJSON, _ := json.Marshal(toks)

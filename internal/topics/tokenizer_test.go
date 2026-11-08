@@ -319,7 +319,17 @@ func TestTokenize_SegmentBoundaries(t *testing.T) {
 		reject string
 		keep   []string
 	}{
-		{"full_stop", "getting canned. Post vehicle", "canned_post", []string{"canned", "vehicle", "getting_canned", "post_vehicle"}},
+		{"full_stop", "truck canned. Post vehicle", "canned_post", []string{"canned", "vehicle", "truck_canned", "post_vehicle"}},
+		{"end_start", "the season is over at the end. Start again", "end_start", nil},
+		{"colon_space", "breaking: volcano erupts", "breaking_volcano", []string{"volcano_erupts"}},
+		{"ellipsis_unicode", "Taylor Swift… Travis Kelce", "swift_travis", []string{"taylor_swift", "travis_kelce"}},
+		{"ellipsis_ascii", "Taylor Swift...Travis Kelce", "swift_travis", []string{"taylor_swift", "travis_kelce"}},
+		{"em_dash", "Big Story — NYT", "story_nyt", nil},
+		{"bullet", "volcano • tsunami", "volcano_tsunami", nil},
+		{"pipe", "volcano | tsunami", "volcano_tsunami", nil},
+		{"ideographic_stop", "volcano。tsunami", "volcano_tsunami", nil},
+		{"fullwidth_exclamation", "volcano！tsunami", "volcano_tsunami", nil},
+		{"fullwidth_question", "volcano？tsunami", "volcano_tsunami", nil},
 		{"exclamation", "volcano erupts! Tsunami warning", "erupts_tsunami", []string{"volcano_erupts", "tsunami_warning"}},
 		{"newline", "volcano eruption\ntsunami warning", "eruption_tsunami", []string{"tsunami_warning"}},
 		{"semicolon", "volcano eruption; tsunami warning", "eruption_tsunami", nil},
@@ -376,15 +386,177 @@ func TestTokenize_Years(t *testing.T) {
 	}
 }
 
+func TestTokenize_NoBreakInsideSentence(t *testing.T) {
+	tests := []struct {
+		text   string
+		want   []string
+		reject []string
+	}{
+		{"Lakers vs. Celtics tonight", []string{"lakers_celtics"}, nil},
+		{"Sen. Warren grills Hegseth", []string{"sen_warren", "warren_grills", "grills_hegseth"}, nil},
+		{"Gov. Newsom signs", []string{"gov_newsom"}, nil},
+		{"Dr. Fauci testifies", []string{"fauci_testifies"}, nil},
+		{"iOS 26.1 update", []string{"ios_update"}, nil},
+		{"rally at 8:00pm downtown", []string{"rally_00pm", "00pm_downtown"}, nil},
+		{"rally at 8:00 downtown", []string{"rally_downtown"}, nil},
+		{"senators, e.g. Warren, object", []string{"senators_warren"}, nil},
+		{"the U.S. economy slows", []string{"economy_slows"}, nil},
+		{"breaking:volcano erupts", []string{"breaking_volcano"}, nil},
+		{"tired of it. Lakers lost", []string{"lakers_lost"}, []string{"tired_lakers"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := Tokenize(tt.text)
+			for _, w := range tt.want {
+				if !contains(got, w) {
+					t.Errorf("Tokenize(%q) = %v, want %s", tt.text, got, w)
+				}
+			}
+			for _, r := range tt.reject {
+				if contains(got, r) {
+					t.Errorf("Tokenize(%q) = %v, must not contain %s", tt.text, got, r)
+				}
+			}
+		})
+	}
+}
+
+func TestTokenize_Contractions(t *testing.T) {
+	tests := []struct {
+		text   string
+		want   []string
+		reject []string
+	}{
+		{"Democrats won't fund ICE", []string{"democrats", "fund"}, []string{"democrats_won", "won_fund", "democrats_wont", "wont_fund", "wont", "won"}},
+		{"Democrats won’t fund ICE", nil, []string{"democrats_won", "won_fund"}},
+		{"voters don't care", nil, []string{"voters_don", "voters_dont", "dont"}},
+		{"senators couldn't agree", nil, []string{"senators_couldnt", "couldnt_agree", "couldnt"}},
+		{"Mamdani won the race", []string{"mamdani_won", "won_race"}, []string{"won"}},
+		{"Mamdani lost the race", []string{"mamdani_lost", "lost_race"}, nil},
+		{"Don Lemon interview", []string{"don_lemon"}, []string{"don"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := Tokenize(tt.text)
+			for _, w := range tt.want {
+				if !contains(got, w) {
+					t.Errorf("Tokenize(%q) = %v, want %s", tt.text, got, w)
+				}
+			}
+			for _, r := range tt.reject {
+				if contains(got, r) {
+					t.Errorf("Tokenize(%q) = %v, must not contain %s", tt.text, got, r)
+				}
+			}
+		})
+	}
+}
+
+func TestTokenize_StopwordCompoundsFirst(t *testing.T) {
+	for pair := range stopwordCompounds {
+		a, b, _ := strings.Cut(pair, "_")
+		t.Run(pair, func(t *testing.T) {
+			if got := Tokenize(a + " " + b + " again"); !contains(got, pair) {
+				t.Errorf("Tokenize(%q) = %v, want %s", a+" "+b, got, pair)
+			}
+			if got := Tokenize(a + ". " + b); contains(got, pair) {
+				t.Errorf("Tokenize(%q) = %v, must not contain %s", a+". "+b, got, pair)
+			}
+		})
+	}
+	if got := Tokenize("white. house"); contains(got, "white_house") {
+		t.Errorf("white_house must not form across a boundary, got %v", got)
+	}
+}
+
+func TestTokenize_ClassMoves(t *testing.T) {
+	tests := []struct {
+		text   string
+		reject []string
+	}{
+		{"he admitted having the hall pass", []string{"admitted_having", "having_hall"}},
+		{"getting groceries", []string{"getting_groceries"}},
+		{"doing laundry", []string{"doing_laundry"}},
+		{"making pasta", []string{"making_pasta"}},
+		{"rain today", []string{"rain_today"}},
+		{"Celtics tonight", []string{"celtics_tonight"}},
+		{"storm tomorrow", []string{"storm_tomorrow"}},
+		{"earthquake yesterday", []string{"earthquake_yesterday"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := Tokenize(tt.text)
+			for _, r := range tt.reject {
+				if contains(got, r) {
+					t.Errorf("Tokenize(%q) = %v, must not contain %s", tt.text, got, r)
+				}
+			}
+		})
+	}
+}
+
+func TestTokenize_SkipThe(t *testing.T) {
+	tests := []struct {
+		text   string
+		want   []string
+		reject []string
+	}{
+		{"monitoring the results", []string{"monitoring_results"}, []string{"monitoring_the", "the_results"}},
+		{"beat the Lakers", []string{"beat_lakers"}, []string{"beat_the", "the_lakers"}},
+		{"The Lakers won", []string{"lakers_won"}, []string{"the_lakers", "the"}},
+		{"great game. The Lakers won", []string{"lakers_won"}, []string{"game_lakers", "the_lakers"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := Tokenize(tt.text)
+			for _, w := range tt.want {
+				if !contains(got, w) {
+					t.Errorf("Tokenize(%q) = %v, want %s", tt.text, got, w)
+				}
+			}
+			for _, r := range tt.reject {
+				if contains(got, r) {
+					t.Errorf("Tokenize(%q) = %v, must not contain %s", tt.text, got, r)
+				}
+			}
+		})
+	}
+}
+
+func TestEligible(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{"volcano erupts near the coast", true},
+		{"volcano erupts #breaking", true},
+		{"#3dart #3drender #pinup", false},
+		{"#aiart #nsfw", false},
+		{"TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN TRUMP EPSTEIN", false},
+	}
+	for _, tt := range tests {
+		if got := Eligible(tt.text); got != tt.want {
+			t.Errorf("Eligible(%q) = %v, want %v", tt.text, got, tt.want)
+		}
+	}
+}
+
+// v2ContractionWords are the joined "n't" forms tokenizer v2 produces that
+// the legacy tokenizer never saw (it split them at the apostrophe).
+var v2ContractionWords = map[string]bool{
+	"couldnt": true, "wouldnt": true, "shouldnt": true, "hasnt": true, "hadnt": true,
+	"aint": true, "mustnt": true,
+}
+
 // TestStopwordClasses_CoverLegacy checks that the two classes partition the
-// pre-v2 stopword list exactly: no word was dropped or added by the split,
-// and none is in both classes.
+// pre-v2 stopword list exactly: no word was dropped by the split, none was
+// added beyond the v2ContractionWords, and none is in both classes.
 func TestStopwordClasses_CoverLegacy(t *testing.T) {
 	for w := range functionWords {
 		if contentStopwords[w] {
 			t.Errorf("%q is both a function word and a content stopword", w)
 		}
-		if !legacyStopwords[w] {
+		if !legacyStopwords[w] && !v2ContractionWords[w] {
 			t.Errorf("function word %q was not a legacy stopword", w)
 		}
 	}

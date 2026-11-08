@@ -21,8 +21,15 @@ func TestTokenizerReplay(t *testing.T) {
 	if path == "" {
 		t.Skip("HS_TOKENIZER_REPLAY_JSONL not set")
 	}
-	texts := readReplayTexts(t, path)
-	t.Logf("posts: %d", len(texts))
+	all := readReplayTexts(t, path)
+	// Ingest tokenizes only the posts Eligible accepts, so the replay does too.
+	var texts []string
+	for _, text := range all {
+		if Eligible(text) {
+			texts = append(texts, text)
+		}
+	}
+	t.Logf("posts: %d, eligible for tokenizing: %d", len(all), len(texts))
 
 	type run struct {
 		name     string
@@ -32,6 +39,7 @@ func TestTokenizerReplay(t *testing.T) {
 	scores := make([][]TermScore, len(runs))
 	byDF := make([][]TermScore, len(runs))
 	bigramDF := make([][]TermScore, len(runs))
+	dfs := make([]map[string]int, len(runs))
 	for ri, r := range runs {
 		rows := make([]store.TopicTokenRow, 0, len(texts))
 		df := map[string]int{}
@@ -73,6 +81,7 @@ func TestTokenizerReplay(t *testing.T) {
 		scores[ri] = ComputeTFIDF(rows)
 		byDF[ri] = rankByDocFreq(df, false)
 		bigramDF[ri] = rankByDocFreq(df, true)
+		dfs[ri] = df
 		t.Logf("%s: bigram occurrences %d, with a function-word side %d (%d distinct), year bigrams %d, scored terms %d",
 			r.name, bigrams, funcSide, len(funcDistinct), yearBigrams, len(scores[ri]))
 	}
@@ -95,6 +104,26 @@ func TestTokenizerReplay(t *testing.T) {
 	sideBySide(t, fmt.Sprintf("top 50 by TF-IDF (MinDocFrequency=%d)", MinDocFrequency), scores)
 	sideBySide(t, "top 50 by document frequency (df >= 2)", byDF)
 	sideBySide(t, "top 50 bigrams by document frequency (df >= 2)", bigramDF)
+
+	var v2Only []TermScore
+	for term, n := range dfs[1] {
+		if strings.Contains(term, "_") && dfs[0][term] == 0 {
+			v2Only = append(v2Only, TermScore{Term: term, DocFreq: n})
+		}
+	}
+	sort.Slice(v2Only, func(i, j int) bool {
+		if v2Only[i].DocFreq != v2Only[j].DocFreq {
+			return v2Only[i].DocFreq > v2Only[j].DocFreq
+		}
+		return v2Only[i].Term < v2Only[j].Term
+	})
+	t.Logf("top 20 of %d v2-only bigrams (absent from legacy) by document frequency", len(v2Only))
+	for i, ts := range v2Only {
+		if i == 20 {
+			break
+		}
+		t.Logf("%-4d %s (%d)", i+1, ts.Term, ts.DocFreq)
+	}
 
 	for ri, r := range runs {
 		for _, in := range []struct {
