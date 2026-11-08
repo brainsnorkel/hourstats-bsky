@@ -31,14 +31,15 @@ sequenceDiagram
     TP->>DB: engaged tokens from last 2 h (cap 20k rows, min corpus 100 engaged rows)
     TP->>TP: TF-IDF → top 50 terms (≥10 docs, ≥3 authors)
     TP->>GG: headlines RSS (3 s, best effort)
-    TP->>GG: generateContent gemini-2.5-pro
+    TP->>GG: generateContent gemini-3.8-flash
     alt 429 / 5xx / empty
-      TP->>GG: generateContent gemini-2.5-flash (once)
+      TP->>GG: generateContent gemini-3.5-flash-lite (once)
     end
+    TP->>TP: validate → label year rule → merge similar → label year rule
     alt both fail
-      TP->>TP: offline co-occurrence clustering
+      TP->>TP: offline fallback only when TOPICS_OFFLINE_FALLBACK=true,<br/>else no snapshot (grouping_failed)
     end
-    TP->>TP: merge similar → rank → assign identities (7 d, Jaccard 0.3)
+    TP->>TP: rank → assign identities (7 d, Jaccard 0.3)
     TP->>DB: insert topic_snapshots at snapshotTime
     TP-->>CY: snapshotTime on channel
   and scoring, then the feature gate and summary below
