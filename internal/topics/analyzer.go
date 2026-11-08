@@ -236,8 +236,8 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%w: grouping produced no clusters from %d terms", ErrTopicsUnavailable, len(terms))
 	}
 
-	clusters = MergeSimilarClusters(clusters, terms)
-
+	// Both grouping paths merge similar clusters before the label year rule
+	// (GroupAndLabel and the offline call above), so no merge runs here.
 	ranked := RankTopics(clusters, rows)
 	if len(ranked) == 0 {
 		return "", fmt.Errorf("%w: ranking produced no topics from %d clusters", ErrTopicsUnavailable, len(clusters))

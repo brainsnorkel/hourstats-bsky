@@ -421,11 +421,12 @@ func validateClusters(clusters []TopicCluster) []TopicCluster {
 	return out
 }
 
-// labelLeadWords are the conjunctions and prepositions validateCluster cuts
-// from the start of a label, one at most.
+// labelLeadWords are the coordinating conjunctions validateCluster cuts from
+// the start of a label, one at most. Prepositions are not cut: "For All
+// Mankind", "To Kill a Mockingbird" and "Of Mice and Men" are titles, and a
+// fragment opening on one has not been seen in the published labels.
 var labelLeadWords = map[string]bool{
-	"and": true, "but": true, "or": true, "so": true, "for": true, "with": true,
-	"from": true, "to": true, "of": true, "nor": true, "yet": true,
+	"and": true, "but": true, "or": true, "nor": true, "yet": true,
 }
 
 // validateCluster returns one cluster with its prose normalised, or a
@@ -435,9 +436,10 @@ func validateCluster(c TopicCluster) (TopicCluster, string) {
 	// joined with a middle dot, or one the model wrote with smart quotes and an
 	// em dash, is normalised rather than rejected.
 	c.Label = foldPunctuation(strings.TrimSpace(c.Label))
-	// A label opening on a conjunction or preposition is a phrase fragment
+	// A label opening on a coordinating conjunction is a phrase fragment
 	// ("and vote today"); one such word is cut and the rest judged as the
-	// label. Articles stay: "The Bear" and "A Minecraft Movie" are titles.
+	// label. Articles and prepositions stay: "The Bear", "A Minecraft Movie"
+	// and "For All Mankind" are titles.
 	if first, rest, _ := strings.Cut(c.Label, " "); labelLeadWords[strings.ToLower(first)] {
 		c.Label = strings.TrimSpace(rest)
 		if c.Label == "" || (!strings.Contains(c.Label, " ") && countLetters(c.Label) < 3) {

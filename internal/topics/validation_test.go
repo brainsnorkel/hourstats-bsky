@@ -54,8 +54,9 @@ func TestValidateCluster_Labels(t *testing.T) {
 	}
 }
 
-// TestValidateCluster_StripsLeadingConjunction: one leading conjunction or
-// preposition is cut and the rest judged as the label; an article is a title.
+// TestValidateCluster_StripsLeadingConjunction: one leading coordinating
+// conjunction is cut and the rest judged as the label; articles and
+// prepositions open titles and stay.
 func TestValidateCluster_StripsLeadingConjunction(t *testing.T) {
 	cases := []struct {
 		label      string
@@ -63,13 +64,16 @@ func TestValidateCluster_StripsLeadingConjunction(t *testing.T) {
 		wantReason string
 	}{
 		{label: "and vote today", want: "vote today"},
-		{label: "For Cybertruck Owners", want: "Cybertruck Owners"},
+		{label: "but Vote Today", want: "Vote Today"},
 		{label: "and or Vote", want: "or Vote"}, // one word at most
 		{label: "The Bear", want: "The Bear"},
 		{label: "The Onion", want: "The Onion"},
 		{label: "A Minecraft Movie", want: "A Minecraft Movie"},
+		{label: "For All Mankind", want: "For All Mankind"}, // a preposition opens a title
+		{label: "To Kill a Mockingbird", want: "To Kill a Mockingbird"},
+		{label: "Of Mice and Men", want: "Of Mice and Men"},
 		{label: "Android Update", want: "Android Update"}, // a word, not a prefix
-		{label: "of", wantReason: "label_too_short"},
+		{label: "and", wantReason: "label_too_short"},
 		{label: "and UK", wantReason: "label_too_short"},
 		{label: "with #Politics", wantReason: "label_charset"},
 	}
