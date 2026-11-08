@@ -26,7 +26,7 @@ flowchart TB
     c3["Daily/yearly tick while a cycle runs"] --> c4["Wait ≤15 min for it, then run<br/>(without it on timeout); never two jobs at once"]
     c5["Hydration timeout 12 min,<br/>429/5xx, deleted posts"] --> c6["2 retries with backoff;<br/>unhydrated > 10% or posts < 500 → low_confidence:<br/>store sentiment, publish nothing"]
     c7["Gemini 429/5xx/empty"] --> c8["gemini-2.5-flash once → offline clustering → suppress<br/>150 calls per 24 h budget → gemini_budget_exhausted"]
-    c9["Topic outcome late"] --> c10["Sparkline waits ≤60 s, then posts;<br/>trending reply waits for the result"]
+    c9["Topic outcome late"] --> c10["Sparkline waits max(90 s, grouping timeout + 35 s),<br/>then posts;<br/>trending reply waits for the result"]
     c11["Post > 300 graphemes"] --> c12["Drop footer labels → footer → link → trailing topics"]
     c13["Quote-controlled or blocked #1 post"] --> c14["Summary without embed; check fails open"]
   end

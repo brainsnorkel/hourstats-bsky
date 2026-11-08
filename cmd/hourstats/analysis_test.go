@@ -1,17 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
+	"log/slog"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
+	"github.com/christophergentle/hourstats-bsky/internal/hydrator"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
@@ -262,7 +263,24 @@ func TestStartTopicAnalysis(t *testing.T) {
 	runner := &fakeTopicRunner{release: make(chan struct{}), started: make(chan struct{})}
 	rec := &fakeDurationRecorder{}
 
-	done := startTopicAnalysis(ctx, runner, fakeTopicGate{}, rec)
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	done := startTopicAnalysis(ctx, &hydrator.HydrateResult{Total: 1200, Hydrated: 1150}, runner, fakeTopicGate{}, rec)
+
+	var line struct {
+		Msg      string `json:"msg"`
+		Hydrated int    `json:"hydrated"`
+		Total    int    `json:"total"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+		t.Fatalf("start line %q is not one JSON record: %v", buf.String(), err)
+	}
+	if line.Msg != "topics: analysis goroutine started (after hydration)" || line.Hydrated != 1150 || line.Total != 1200 {
+		t.Errorf("start line = %+v, want the hydration result's hydrated=1150 total=1200", line)
+	}
 
 	select {
 	case <-runner.started:
@@ -296,101 +314,28 @@ func TestStartTopicAnalysis(t *testing.T) {
 	}
 }
 
-// TestTopicAnalysisStartsAfterHydration pins the call site in runAnalysisCycle
-// (hs-aqa.2). The cycle needs a live Bluesky login, so it cannot be run with
-// fakes; instead the source is parsed and the order of statements checked:
-// the topic corpus joins on engagement only hydration writes, so the analysis
-// must start after h.Hydrate returns and after its guard-abort check, and no
-// receive from its channel may precede the start.
-func TestTopicAnalysisStartsAfterHydration(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "analysis.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse analysis.go: %v", err)
-	}
-	var cycle *ast.FuncDecl
-	for _, d := range file.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "runAnalysisCycle" {
-			cycle = fd
+func TestTopicWaitBudget(t *testing.T) {
+	withTimeout := func(d time.Duration) *topics.Analyzer {
+		a := topics.NewAnalyzer(nil, "", "", "")
+		if d > 0 {
+			a.SetGroupingTotalTimeout(d)
 		}
+		return a
 	}
-	if cycle == nil {
-		t.Fatal("runAnalysisCycle not found in analysis.go")
+	tests := []struct {
+		name     string
+		analyzer *topics.Analyzer
+		want     time.Duration
+	}{
+		{"nil analyzer gets the floor", nil, 90 * time.Second},
+		{"default 55s grouping timeout", withTimeout(0), 90 * time.Second},
+		{"80s grouping timeout", withTimeout(80 * time.Second), 115 * time.Second},
 	}
-
-	var hydrateCall, guardAbortIfEnd token.Pos
-	var startCalls []token.Pos
-	var directRuns int
-	var doneRefs []token.Pos
-	ast.Inspect(cycle.Body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.IfStmt:
-			for _, st := range n.Body.List {
-				es, ok := st.(*ast.ExprStmt)
-				if !ok {
-					continue
-				}
-				if c, ok := es.X.(*ast.CallExpr); ok && isIdentCall(c, "logGuardAbort") && len(c.Args) == 1 {
-					if lit, ok := c.Args[0].(*ast.BasicLit); ok && lit.Value == `"hydration"` {
-						guardAbortIfEnd = n.End()
-					}
-				}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := topicWaitBudget(tc.analyzer); got != tc.want {
+				t.Errorf("topicWaitBudget = %v, want %v", got, tc.want)
 			}
-		case *ast.CallExpr:
-			if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
-				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "h" && sel.Sel.Name == "Hydrate" {
-					hydrateCall = n.Pos()
-				}
-				if sel.Sel.Name == "RunAnalysisCycle" || sel.Sel.Name == "SetExemplarGate" {
-					directRuns++
-				}
-			}
-			if isIdentCall(n, "startTopicAnalysis") {
-				startCalls = append(startCalls, n.Pos())
-			}
-		case *ast.Ident:
-			if n.Name == "topicAnalysisDone" {
-				doneRefs = append(doneRefs, n.Pos())
-			}
-		}
-		return true
-	})
-
-	if hydrateCall == token.NoPos {
-		t.Fatal("h.Hydrate call not found in runAnalysisCycle")
+		})
 	}
-	if guardAbortIfEnd == token.NoPos {
-		t.Fatal(`if-block calling logGuardAbort("hydration") not found in runAnalysisCycle`)
-	}
-	if len(startCalls) != 1 {
-		t.Fatalf("startTopicAnalysis called %d times in runAnalysisCycle, want 1", len(startCalls))
-	}
-	start := startCalls[0]
-	if start < hydrateCall || start < guardAbortIfEnd {
-		t.Errorf("startTopicAnalysis at %s precedes hydration (h.Hydrate at %s, guard-abort check ends %s)",
-			fset.Position(start), fset.Position(hydrateCall), fset.Position(guardAbortIfEnd))
-	}
-	if directRuns != 0 {
-		t.Errorf("runAnalysisCycle calls RunAnalysisCycle/SetExemplarGate directly %d times; it must go through startTopicAnalysis", directRuns)
-	}
-	// The first reference is the var declaration and the second the
-	// assignment from startTopicAnalysis; every later one is a receive or nil
-	// check and must follow the start.
-	if len(doneRefs) < 3 {
-		t.Fatalf("found %d references to topicAnalysisDone, want a declaration, an assignment and receives", len(doneRefs))
-	}
-	if doneRefs[0] < guardAbortIfEnd {
-		t.Errorf("topicAnalysisDone declared at %s, before hydration's guard-abort check ends at %s",
-			fset.Position(doneRefs[0]), fset.Position(guardAbortIfEnd))
-	}
-	for _, p := range doneRefs[2:] {
-		if p < start {
-			t.Errorf("topicAnalysisDone used at %s before startTopicAnalysis at %s", fset.Position(p), fset.Position(start))
-		}
-	}
-}
-
-func isIdentCall(c *ast.CallExpr, name string) bool {
-	id, ok := c.Fun.(*ast.Ident)
-	return ok && id.Name == name
 }

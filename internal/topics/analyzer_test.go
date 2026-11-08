@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -165,6 +166,38 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 	}
 	if snapshotTime != "" {
 		t.Errorf("snapshot time = %q, want empty so no trending post is published", snapshotTime)
+	}
+}
+
+// TestRunAnalysisCycle_FewEngagedRows pins the corpus gate on the engaged rows
+// read, not the unfiltered token count: 150 token rows in the window but only
+// 30 with engagement is a quiet skip, not ErrTopicsUnavailable.
+func TestRunAnalysisCycle_FewEngagedRows(t *testing.T) {
+	ms := &mockAnalyzerStore{tokens: buildTestTokens()[:30], tokenCount: 150}
+	a := &Analyzer{
+		store:    ms,
+		grouper:  NewGrouper("test", "", ""),
+		tracker:  NewTracker(ms),
+		hydrator: NewExemplarHydrator(ms),
+	}
+
+	snapshotTime, err := a.RunAnalysisCycle(context.Background())
+	if err != nil {
+		t.Fatalf("RunAnalysisCycle error = %v, want nil: too few engaged rows is a skip", err)
+	}
+	if snapshotTime != "" || len(ms.insertedSnapshots) != 0 {
+		t.Errorf("snapshot time = %q with %d snapshots, want none", snapshotTime, len(ms.insertedSnapshots))
+	}
+}
+
+func TestGroupingTotalTimeout(t *testing.T) {
+	a := NewAnalyzer(&mockAnalyzerStore{}, "", "", "")
+	if got := a.GroupingTotalTimeout(); got != DefaultGroupingTotalTimeout {
+		t.Errorf("default GroupingTotalTimeout = %v, want %v", got, DefaultGroupingTotalTimeout)
+	}
+	a.SetGroupingTotalTimeout(80 * time.Second)
+	if got := a.GroupingTotalTimeout(); got != 80*time.Second {
+		t.Errorf("GroupingTotalTimeout = %v, want 80s", got)
 	}
 }
 

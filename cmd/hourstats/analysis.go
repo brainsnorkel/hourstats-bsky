@@ -208,16 +208,33 @@ type topicAnalysisOutcome struct {
 	err          error
 }
 
-// topicWaitBeforeSparkline bounds how long the cycle waits for topic analysis
-// before rendering the sparkline. Topic analysis starts when hydration returns
-// (its corpus joins on the engagement only hydration writes), so it overlaps
-// only scoring, the feature gate and the summary post. On prod (2026-11-08
-// 20:55 UTC) the summary went out ~4.5 s after hydration ended, while
-// grouping takes ~5 s typically and up to GROUPING_TOTAL_TIMEOUT_SECONDS (55 s)
-// at worst, plus a few seconds of purge, token read, TF-IDF and tracker work.
-// 90 s covers that worst case; past it the sparkline goes out without this
-// cycle's topic in the week extremes and the trending reply follows later.
+// topicWaitBeforeSparkline is the floor on how long the cycle waits for topic
+// analysis before rendering the sparkline; topicWaitBudget raises it with the
+// grouping timeout. Topic analysis starts when hydration returns (its corpus
+// joins on the engagement only hydration writes), so it overlaps only scoring,
+// the feature gate and the summary post. Past the wait the sparkline goes out
+// without this cycle's topic in the week extremes and the trending reply
+// follows later.
 const topicWaitBeforeSparkline = 90 * time.Second
+
+// topicWaitOverGrouping is what the wait allows beyond the grouping timeout:
+// the purge, token read and TF-IDF before grouping and the tracker and
+// snapshot writes after it, a few seconds together. The headline fetch (~3 s)
+// already sits inside the grouping timeout. The goroutine also gets a head
+// start, since the wait counts from the summary post, which went out ~4.5 s
+// after hydration ended on prod (2026-11-08 20:55 UTC); the margin does not
+// lean on it, as it shrinks when scoring and the gate are quick.
+const topicWaitOverGrouping = 35 * time.Second
+
+// topicWaitBudget resolves the cycle's wait for topic analysis: the
+// grouping timeout (GROUPING_TOTAL_TIMEOUT_SECONDS) plus topicWaitOverGrouping,
+// never below topicWaitBeforeSparkline. A nil analyzer gets the floor.
+func topicWaitBudget(a *topics.Analyzer) time.Duration {
+	if a == nil {
+		return topicWaitBeforeSparkline
+	}
+	return max(topicWaitBeforeSparkline, a.GroupingTotalTimeout()+topicWaitOverGrouping)
+}
 
 // topicAnalysisRunner is the part of *topics.Analyzer the cycle starts.
 type topicAnalysisRunner interface {
@@ -234,9 +251,15 @@ type trendingDurationRecorder interface {
 // startTopicAnalysis binds this cycle's exemplar gate and runs topic analysis
 // in a goroutine, returning a channel that receives exactly one outcome. The
 // channel is buffered so the goroutine never blocks when the cycle abandons it.
-// The cycle calls it only after hydration, because the token corpus joins on
-// post engagement and only hydration writes engagement.
-func startTopicAnalysis(ctx context.Context, runner topicAnalysisRunner, gate topics.ExemplarGate, collector trendingDurationRecorder) <-chan topicAnalysisOutcome {
+// The token corpus joins on post engagement and only hydration writes
+// engagement, so the hydration result is a required argument: only code past
+// h.Hydrate can start the analysis. Its counts go on the start line so the log
+// shows the corpus the goroutine will find.
+func startTopicAnalysis(ctx context.Context, hydrated *hydrator.HydrateResult, runner topicAnalysisRunner, gate topics.ExemplarGate, collector trendingDurationRecorder) <-chan topicAnalysisOutcome {
+	slog.Info("topics: analysis goroutine started (after hydration)",
+		"hydrated", hydrated.Hydrated,
+		"total", hydrated.Total,
+	)
 	runner.SetExemplarGate(gate)
 	ch := make(chan topicAnalysisOutcome, 1)
 	go func() {
@@ -425,20 +448,6 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 
-	// RunAnalysisCycle reads topic_tokens joined to post_buffer on non-zero
-	// engagement, which only hydration writes, so it starts here: started
-	// before hydration its corpus was the previous cycle's window (hs-aqa.2).
-	// It still overlaps scoring, the feature gate and the summary post. It
-	// hands back the snapshot time it wrote so the trending post can only
-	// publish this cycle's topics, never a stale snapshot.
-	var topicAnalysisDone <-chan topicAnalysisOutcome
-	if topicAnalyzer != nil {
-		// The gate is rebound each cycle: it needs viewer state, which only
-		// an authenticated client sees, and this cycle's client is the one
-		// that just authenticated.
-		topicAnalysisDone = startTopicAnalysis(cycleCtx, topicAnalyzer, newExemplarGate(bskyClient), collector)
-		slog.Info("topics: analysis goroutine started (after hydration)")
-	}
 	hydrationTimedOut := errors.Is(err, hydrator.ErrHydrationTimedOut)
 	if hydrationTimedOut {
 		slog.Error("hydration timed out",
@@ -462,6 +471,20 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		"retries", result.Retries,
 		"rate_limited", result.RateLimited,
 	)
+
+	// RunAnalysisCycle reads topic_tokens joined to post_buffer on non-zero
+	// engagement, which only hydration writes, so it starts here: started
+	// before hydration its corpus was the previous cycle's window (hs-aqa.2).
+	// It still overlaps scoring, the feature gate and the summary post. It
+	// hands back the snapshot time it wrote so the trending post can only
+	// publish this cycle's topics, never a stale snapshot.
+	var topicAnalysisDone <-chan topicAnalysisOutcome
+	if topicAnalyzer != nil {
+		// The gate is rebound each cycle: it needs viewer state, which only
+		// an authenticated client sees, and this cycle's client is the one
+		// that just authenticated.
+		topicAnalysisDone = startTopicAnalysis(cycleCtx, result, topicAnalyzer, newExemplarGate(bskyClient), collector)
+	}
 
 	// Sentiment covers the window minus the posts hydration attempted and
 	// could not return (deleted, taken down, adult-filtered, failed fetch).
@@ -768,17 +791,21 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		topicsCollected := false
 		if topicAnalysisDone != nil {
 			topicWait := time.Now()
-			outcome, topicsCollected = awaitTopicOutcome(ctx, topicAnalysisDone, topicWaitBeforeSparkline)
+			waitBudget := topicWaitBudget(topicAnalyzer)
+			outcome, topicsCollected = awaitTopicOutcome(ctx, topicAnalysisDone, waitBudget)
 			if topicsCollected {
 				slog.Info("timing: topic analysis goroutine collected",
 					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
+					"wait_budget", waitBudget.String(),
 					"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 				recordTopTopic(ctx, db, runID, outcome)
 			} else if ctx.Err() != nil {
-				slog.Info("shutdown during topic wait, this cycle's topic will not be named with the week extremes")
+				slog.Info("shutdown during topic wait, this cycle's topic will not be named with the week extremes",
+					"wait_budget", waitBudget.String())
 			} else {
 				slog.Warn("topic analysis still running, this cycle's topic will not be named with the week extremes",
-					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()))
+					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
+					"wait_budget", waitBudget.String())
 			}
 		}
 

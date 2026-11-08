@@ -110,6 +110,14 @@ func (a *Analyzer) SetGroupingTotalTimeout(d time.Duration) {
 	a.grouper.SetTotalTimeout(d)
 }
 
+// GroupingTotalTimeout is the bound on one grouping call, primary and
+// fallback model together: GROUPING_TOTAL_TIMEOUT_SECONDS, or
+// DefaultGroupingTotalTimeout when unset. The cycle sizes its wait for topic
+// analysis from it.
+func (a *Analyzer) GroupingTotalTimeout() time.Duration {
+	return a.grouper.totalTimeout
+}
+
 func (a *Analyzer) recordEvent(ctx context.Context, eventType, details string) {
 	if a.logEvent != nil {
 		a.logEvent(ctx, eventType, details)
@@ -134,7 +142,7 @@ const maxTFIDFRows = 20000
 // TF-IDF corpus, so the log shows which hour the topics describe. The store
 // returns rows created_at ascending, so the median is rows[len/2]. All three
 // are empty for an empty corpus.
-func tokenCorpusRange(rows []store.TopicTokenRow) (min, median, max string) {
+func tokenCorpusRange(rows []store.TopicTokenRow) (oldest, median, newest string) {
 	if len(rows) == 0 {
 		return "", "", ""
 	}
@@ -169,23 +177,28 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 	}
 
 	tokenCutoff := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
-	count, err := a.store.CountTopicTokensSince(ctx, tokenCutoff)
-	if err != nil {
-		return "", fmt.Errorf("count tokens: %w", err)
-	}
-	if count < int64(MinCorpusSize) {
-		// Not a failure: there genuinely isn't enough material this window.
-		slog.Info("topics: corpus too small, skipping", "count", count, "min", MinCorpusSize)
-		return "", nil
-	}
-
 	rows, err := a.store.GetTopicTokensSinceLimit(ctx, tokenCutoff, maxTFIDFRows)
 	if err != nil {
 		return "", fmt.Errorf("get tokens: %w", err)
 	}
-	createdMin, createdMedian, createdMax := tokenCorpusRange(rows)
+	// The gate is on the rows read, which join on the engagement only
+	// hydration writes, not on the unfiltered count: after a restart or a
+	// lossy hydration the count can pass while the engaged rows are a few
+	// dozen, and TF-IDF on those yields nothing, which would turn a quiet
+	// skip into ErrTopicsUnavailable. The count is kept for the log only.
+	count, err := a.store.CountTopicTokensSince(ctx, tokenCutoff)
+	if err != nil {
+		return "", fmt.Errorf("count tokens: %w", err)
+	}
+	if len(rows) < MinCorpusSize {
+		// Not a failure: there genuinely isn't enough material this window.
+		slog.Info("topics: corpus too small, skipping", "rows", len(rows), "total_available", count, "min", MinCorpusSize)
+		return "", nil
+	}
+
+	oldest, median, newest := tokenCorpusRange(rows)
 	slog.Info("topics: loaded tokens for TF-IDF", "rows", len(rows), "total_available", count,
-		"created_at_min", createdMin, "created_at_median", createdMedian, "created_at_max", createdMax)
+		"created_at_min", oldest, "created_at_median", median, "created_at_max", newest)
 
 	terms := ComputeTFIDF(rows)
 	if len(terms) == 0 {

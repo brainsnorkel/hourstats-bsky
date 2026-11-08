@@ -49,7 +49,7 @@ Both crashes: the cycle before was the day's largest (142,762 posts on 08-25; 11
 | SQLite page cache 4 × 20 MB + write + maint | `internal/store/store.go:139` | ~84 MB anonymous, outside Go | no |
 | `temp_store(MEMORY)` sorts | `internal/store/store.go:140`, `internal/store/topic_store.go:64-71,156-169` | ~14 MB each, up to 5 concurrent (exemplar queries full-scan `post_buffer`) | with table size |
 
-Go live set ≈ 240–290 MB at cycle start → heap goal ≈ 400–500 MB at GOGC=75. Add ~600 MB of SQLite memory and the sum is 1.0–1.1 GB against 985 MB. The topic goroutine is launched deliberately in parallel with hydration (`cmd/hourstats/analysis.go:54-65`), so the two largest allocators overlap.
+Go live set ≈ 240–290 MB at cycle start → heap goal ≈ 400–500 MB at GOGC=75. Add ~600 MB of SQLite memory and the sum is 1.0–1.1 GB against 985 MB. The topic goroutine is launched deliberately in parallel with hydration (`cmd/hourstats/analysis.go:54-65`), so the two largest allocators overlap. (2026-11-09, hs-aqa.2: the topic goroutine now starts after hydration returns, because its token corpus joins on the engagement only hydration writes and, started in parallel, it read the previous hour's window; it overlaps only scoring, the feature gate and the summary post, so the two allocators no longer coincide.)
 
 Cross-cycle retention in the Go heap was tested and ruled out: the scavenger returns pages between cycles. What ratchets is `heap_sys` (a permanent high-water mark), the never-closed read connections keeping their mmaps and caches hot, and the end-of-cycle purge of ~100 k rows re-dirtying pages right before the idle gap. The failure is floor-plus-burst: the previous large cycle raises the floor, the next cycle's burst crosses the line.
 

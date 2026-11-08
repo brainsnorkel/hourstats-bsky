@@ -113,7 +113,9 @@ func TestTopicTokens_EngagementJoin(t *testing.T) {
 		})
 	}
 
-	// The corpus-size gate counts without the join, so it sees every row.
+	// The count has no engagement join, so it sees every row, engaged or not.
+	// It is informational only (total_available on the topics log lines): the
+	// corpus-size gate is on the joined rows above, not on this count.
 	count, err := s.CountTopicTokensSince(ctx, cutoff)
 	if err != nil {
 		t.Fatalf("CountTopicTokensSince: %v", err)
