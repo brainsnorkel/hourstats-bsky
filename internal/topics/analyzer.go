@@ -130,6 +130,17 @@ func (a *Analyzer) currentDocFreq() *DocFreqStats {
 
 const maxTFIDFRows = 20000
 
+// tokenCorpusRange returns the oldest, median and newest created_at of the
+// TF-IDF corpus, so the log shows which hour the topics describe. The store
+// returns rows created_at ascending, so the median is rows[len/2]. All three
+// are empty for an empty corpus.
+func tokenCorpusRange(rows []store.TopicTokenRow) (min, median, max string) {
+	if len(rows) == 0 {
+		return "", "", ""
+	}
+	return rows[0].CreatedAt, rows[len(rows)/2].CreatedAt, rows[len(rows)-1].CreatedAt
+}
+
 // ErrTopicsUnavailable reports that a pipeline step genuinely failed to produce
 // topics this cycle. It is distinct from the legitimate "nothing to publish"
 // cases (corpus below MinCorpusSize), which return a nil error and an empty
@@ -172,7 +183,9 @@ func (a *Analyzer) RunAnalysisCycle(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get tokens: %w", err)
 	}
-	slog.Info("topics: loaded tokens for TF-IDF", "rows", len(rows), "total_available", count)
+	createdMin, createdMedian, createdMax := tokenCorpusRange(rows)
+	slog.Info("topics: loaded tokens for TF-IDF", "rows", len(rows), "total_available", count,
+		"created_at_min", createdMin, "created_at_median", createdMedian, "created_at_max", createdMax)
 
 	terms := ComputeTFIDF(rows)
 	if len(terms) == 0 {

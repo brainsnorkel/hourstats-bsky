@@ -209,10 +209,44 @@ type topicAnalysisOutcome struct {
 }
 
 // topicWaitBeforeSparkline bounds how long the cycle waits for topic analysis
-// before rendering the sparkline. Topic analysis overlaps hydration and in
-// production finishes minutes before this point, so the wait is normally
-// zero; the bound keeps a slow grouping call from ever delaying the chart.
-const topicWaitBeforeSparkline = 60 * time.Second
+// before rendering the sparkline. Topic analysis starts when hydration returns
+// (its corpus joins on the engagement only hydration writes), so it overlaps
+// only scoring, the feature gate and the summary post. On prod (2026-11-08
+// 20:55 UTC) the summary went out ~4.5 s after hydration ended, while
+// grouping takes ~5 s typically and up to GROUPING_TOTAL_TIMEOUT_SECONDS (55 s)
+// at worst, plus a few seconds of purge, token read, TF-IDF and tracker work.
+// 90 s covers that worst case; past it the sparkline goes out without this
+// cycle's topic in the week extremes and the trending reply follows later.
+const topicWaitBeforeSparkline = 90 * time.Second
+
+// topicAnalysisRunner is the part of *topics.Analyzer the cycle starts.
+type topicAnalysisRunner interface {
+	SetExemplarGate(g topics.ExemplarGate)
+	RunAnalysisCycle(ctx context.Context) (string, error)
+}
+
+// trendingDurationRecorder is the part of *stats.Collector the topic goroutine
+// reports to.
+type trendingDurationRecorder interface {
+	RecordTrendingDuration(ms int64)
+}
+
+// startTopicAnalysis binds this cycle's exemplar gate and runs topic analysis
+// in a goroutine, returning a channel that receives exactly one outcome. The
+// channel is buffered so the goroutine never blocks when the cycle abandons it.
+// The cycle calls it only after hydration, because the token corpus joins on
+// post engagement and only hydration writes engagement.
+func startTopicAnalysis(ctx context.Context, runner topicAnalysisRunner, gate topics.ExemplarGate, collector trendingDurationRecorder) <-chan topicAnalysisOutcome {
+	runner.SetExemplarGate(gate)
+	ch := make(chan topicAnalysisOutcome, 1)
+	go func() {
+		trendStart := time.Now()
+		snapshotTime, err := runner.RunAnalysisCycle(ctx)
+		collector.RecordTrendingDuration(time.Since(trendStart).Milliseconds())
+		ch <- topicAnalysisOutcome{snapshotTime: snapshotTime, err: err}
+	}()
+	return ch
+}
 
 // awaitTopicOutcome receives the topic analysis outcome, giving up after
 // timeout or when ctx is cancelled. The second result reports whether an
@@ -380,27 +414,6 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 
-	// RunAnalysisCycle reads topic_tokens (no dependency on hydration).
-	// Starting here overlaps Gemini latency with the hydration pipeline.
-	// It hands back the snapshot time it wrote so the trending post can only
-	// publish this cycle's topics, never a stale snapshot.
-	var topicAnalysisDone <-chan topicAnalysisOutcome
-	if topicAnalyzer != nil {
-		// Rebound each cycle: the gate needs viewer state, which only an
-		// authenticated client sees, and this cycle's client is the one that
-		// just authenticated.
-		topicAnalyzer.SetExemplarGate(newExemplarGate(bskyClient))
-		ch := make(chan topicAnalysisOutcome, 1)
-		topicAnalysisDone = ch
-		slog.Info("topics: analysis goroutine started (parallel with hydration)")
-		go func() {
-			trendStart := time.Now()
-			snapshotTime, err := topicAnalyzer.RunAnalysisCycle(cycleCtx)
-			collector.RecordTrendingDuration(time.Since(trendStart).Milliseconds())
-			ch <- topicAnalysisOutcome{snapshotTime: snapshotTime, err: err}
-		}()
-	}
-
 	fetcher, host := sharedHydrationFetcher()
 	if fetcher == nil {
 		fetcher = hydrator.NewBlueskyFetcher(bskyClient.APIClient())
@@ -410,6 +423,21 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 	if err != nil && cycleCtx.Err() != nil {
 		logGuardAbort("hydration")
 		return
+	}
+
+	// RunAnalysisCycle reads topic_tokens joined to post_buffer on non-zero
+	// engagement, which only hydration writes, so it starts here: started
+	// before hydration its corpus was the previous cycle's window (hs-aqa.2).
+	// It still overlaps scoring, the feature gate and the summary post. It
+	// hands back the snapshot time it wrote so the trending post can only
+	// publish this cycle's topics, never a stale snapshot.
+	var topicAnalysisDone <-chan topicAnalysisOutcome
+	if topicAnalyzer != nil {
+		// The gate is rebound each cycle: it needs viewer state, which only
+		// an authenticated client sees, and this cycle's client is the one
+		// that just authenticated.
+		topicAnalysisDone = startTopicAnalysis(cycleCtx, topicAnalyzer, newExemplarGate(bskyClient), collector)
+		slog.Info("topics: analysis goroutine started (after hydration)")
 	}
 	hydrationTimedOut := errors.Is(err, hydrator.ErrHydrationTimedOut)
 	if hydrationTimedOut {

@@ -324,3 +324,39 @@ func TestConvertFacets(t *testing.T) {
 		t.Error("expected link facet")
 	}
 }
+
+func TestTokenCorpusRange(t *testing.T) {
+	rows := func(times ...string) []store.TopicTokenRow {
+		out := make([]store.TopicTokenRow, len(times))
+		for i, ts := range times {
+			out[i] = store.TopicTokenRow{CreatedAt: ts}
+		}
+		return out
+	}
+	const (
+		t1 = "2026-11-09T07:55:00Z"
+		t2 = "2026-11-09T08:10:00Z"
+		t3 = "2026-11-09T08:25:00Z"
+		t4 = "2026-11-09T08:40:00Z"
+	)
+	tests := []struct {
+		name                         string
+		rows                         []store.TopicTokenRow
+		wantMin, wantMedian, wantMax string
+	}{
+		{"empty", nil, "", "", ""},
+		{"one row", rows(t1), t1, t1, t1},
+		{"two rows", rows(t1, t2), t1, t2, t2},
+		{"odd count", rows(t1, t2, t3), t1, t2, t3},
+		{"even count", rows(t1, t2, t3, t4), t1, t3, t4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotMin, gotMedian, gotMax := tokenCorpusRange(tc.rows)
+			if gotMin != tc.wantMin || gotMedian != tc.wantMedian || gotMax != tc.wantMax {
+				t.Errorf("tokenCorpusRange = (%q, %q, %q), want (%q, %q, %q)",
+					gotMin, gotMedian, gotMax, tc.wantMin, tc.wantMedian, tc.wantMax)
+			}
+		})
+	}
+}

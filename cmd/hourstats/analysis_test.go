@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
+	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
 
 func TestPostingSkipReason(t *testing.T) {
@@ -221,4 +226,171 @@ func TestWindowCapDecision(t *testing.T) {
 			}
 		})
 	}
+}
+
+type fakeTopicRunner struct {
+	release          chan struct{}
+	started          chan struct{}
+	gate             topics.ExemplarGate
+	gateSetBeforeRun bool
+	ctx              context.Context
+}
+
+func (f *fakeTopicRunner) SetExemplarGate(g topics.ExemplarGate) { f.gate = g }
+
+func (f *fakeTopicRunner) RunAnalysisCycle(ctx context.Context) (string, error) {
+	f.gateSetBeforeRun = f.gate != nil
+	f.ctx = ctx
+	close(f.started)
+	<-f.release
+	return "2026-11-09T09:00:00Z", errors.New("grouping failed")
+}
+
+type fakeTopicGate struct{}
+
+func (fakeTopicGate) Check(context.Context, string, []string) (map[string]bool, error) {
+	return nil, nil
+}
+
+type fakeDurationRecorder struct{ calls atomic.Int32 }
+
+func (f *fakeDurationRecorder) RecordTrendingDuration(int64) { f.calls.Add(1) }
+
+func TestStartTopicAnalysis(t *testing.T) {
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "cycle")
+	runner := &fakeTopicRunner{release: make(chan struct{}), started: make(chan struct{})}
+	rec := &fakeDurationRecorder{}
+
+	done := startTopicAnalysis(ctx, runner, fakeTopicGate{}, rec)
+
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("analyzer was not started")
+	}
+	select {
+	case <-done:
+		t.Fatal("outcome delivered before the analyzer returned")
+	default:
+	}
+	close(runner.release)
+
+	var outcome topicAnalysisOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no outcome after the analyzer returned")
+	}
+	if !runner.gateSetBeforeRun {
+		t.Error("exemplar gate was not bound before RunAnalysisCycle")
+	}
+	if runner.ctx.Value(ctxKey{}) != "cycle" {
+		t.Error("RunAnalysisCycle did not receive the cycle context")
+	}
+	if outcome.snapshotTime != "2026-11-09T09:00:00Z" || outcome.err == nil || outcome.err.Error() != "grouping failed" {
+		t.Errorf("outcome = %+v, want the runner's snapshot time and error", outcome)
+	}
+	if got := rec.calls.Load(); got != 1 {
+		t.Errorf("RecordTrendingDuration called %d times, want 1", got)
+	}
+}
+
+// TestTopicAnalysisStartsAfterHydration pins the call site in runAnalysisCycle
+// (hs-aqa.2). The cycle needs a live Bluesky login, so it cannot be run with
+// fakes; instead the source is parsed and the order of statements checked:
+// the topic corpus joins on engagement only hydration writes, so the analysis
+// must start after h.Hydrate returns and after its guard-abort check, and no
+// receive from its channel may precede the start.
+func TestTopicAnalysisStartsAfterHydration(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "analysis.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse analysis.go: %v", err)
+	}
+	var cycle *ast.FuncDecl
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "runAnalysisCycle" {
+			cycle = fd
+		}
+	}
+	if cycle == nil {
+		t.Fatal("runAnalysisCycle not found in analysis.go")
+	}
+
+	var hydrateCall, guardAbortIfEnd token.Pos
+	var startCalls []token.Pos
+	var directRuns int
+	var doneRefs []token.Pos
+	ast.Inspect(cycle.Body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.IfStmt:
+			for _, st := range n.Body.List {
+				es, ok := st.(*ast.ExprStmt)
+				if !ok {
+					continue
+				}
+				if c, ok := es.X.(*ast.CallExpr); ok && isIdentCall(c, "logGuardAbort") && len(c.Args) == 1 {
+					if lit, ok := c.Args[0].(*ast.BasicLit); ok && lit.Value == `"hydration"` {
+						guardAbortIfEnd = n.End()
+					}
+				}
+			}
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "h" && sel.Sel.Name == "Hydrate" {
+					hydrateCall = n.Pos()
+				}
+				if sel.Sel.Name == "RunAnalysisCycle" || sel.Sel.Name == "SetExemplarGate" {
+					directRuns++
+				}
+			}
+			if isIdentCall(n, "startTopicAnalysis") {
+				startCalls = append(startCalls, n.Pos())
+			}
+		case *ast.Ident:
+			if n.Name == "topicAnalysisDone" {
+				doneRefs = append(doneRefs, n.Pos())
+			}
+		}
+		return true
+	})
+
+	if hydrateCall == token.NoPos {
+		t.Fatal("h.Hydrate call not found in runAnalysisCycle")
+	}
+	if guardAbortIfEnd == token.NoPos {
+		t.Fatal(`if-block calling logGuardAbort("hydration") not found in runAnalysisCycle`)
+	}
+	if len(startCalls) != 1 {
+		t.Fatalf("startTopicAnalysis called %d times in runAnalysisCycle, want 1", len(startCalls))
+	}
+	start := startCalls[0]
+	if start < hydrateCall || start < guardAbortIfEnd {
+		t.Errorf("startTopicAnalysis at %s precedes hydration (h.Hydrate at %s, guard-abort check ends %s)",
+			fset.Position(start), fset.Position(hydrateCall), fset.Position(guardAbortIfEnd))
+	}
+	if directRuns != 0 {
+		t.Errorf("runAnalysisCycle calls RunAnalysisCycle/SetExemplarGate directly %d times; it must go through startTopicAnalysis", directRuns)
+	}
+	// The first reference is the var declaration and the second the
+	// assignment from startTopicAnalysis; every later one is a receive or nil
+	// check and must follow the start.
+	if len(doneRefs) < 3 {
+		t.Fatalf("found %d references to topicAnalysisDone, want a declaration, an assignment and receives", len(doneRefs))
+	}
+	if doneRefs[0] < guardAbortIfEnd {
+		t.Errorf("topicAnalysisDone declared at %s, before hydration's guard-abort check ends at %s",
+			fset.Position(doneRefs[0]), fset.Position(guardAbortIfEnd))
+	}
+	for _, p := range doneRefs[2:] {
+		if p < start {
+			t.Errorf("topicAnalysisDone used at %s before startTopicAnalysis at %s", fset.Position(p), fset.Position(start))
+		}
+	}
+}
+
+func isIdentCall(c *ast.CallExpr, name string) bool {
+	id, ok := c.Fun.(*ast.Ident)
+	return ok && id.Name == name
 }

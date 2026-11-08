@@ -47,6 +47,82 @@ func TestTopicTokens_InsertAndGetSince(t *testing.T) {
 	}
 }
 
+// TestTopicTokens_EngagementJoin pins the join the topic corpus depends on: a
+// token row is returned only once hydration has written non-zero engagement to
+// its post. Ingest stores zero likes, reposts and replies, so before hydration
+// a post's tokens are invisible, which is why topic analysis runs after
+// hydration (hs-aqa.2).
+func TestTopicTokens_EngagementJoin(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	ts := func(minAgo int) string { return now.Add(-time.Duration(minAgo) * time.Minute).Format(time.RFC3339) }
+
+	type seed struct {
+		uri                     string
+		minAgo                  int
+		hydrate                 bool
+		likes, reposts, replies int
+	}
+	seeds := []seed{
+		{"at://a/post/liked", 50, true, 2, 0, 0},
+		{"at://a/post/unhydrated", 40, false, 0, 0, 0},
+		{"at://a/post/reposted", 30, true, 0, 1, 0},
+		{"at://a/post/zero", 20, true, 0, 0, 0},
+		{"at://a/post/replied", 10, true, 0, 0, 4},
+	}
+	for _, sd := range seeds {
+		if err := s.InsertTopicTokens(ctx, sd.uri, `["tok"]`, ts(sd.minAgo)); err != nil {
+			t.Fatalf("insert tokens %s: %v", sd.uri, err)
+		}
+		if err := s.InsertPost(ctx, Post{URI: sd.uri, CID: "cid", Text: "t", AuthorDID: "did:plc:x", AuthorHandle: "x.test", CreatedAt: ts(sd.minAgo)}); err != nil {
+			t.Fatalf("insert post %s: %v", sd.uri, err)
+		}
+		if sd.hydrate {
+			if err := s.UpdatePostEngagement(ctx, sd.uri, sd.likes, sd.reposts, sd.replies, "x.test"); err != nil {
+				t.Fatalf("update engagement %s: %v", sd.uri, err)
+			}
+		}
+	}
+
+	cutoff := ts(120)
+	engaged := []string{"at://a/post/liked", "at://a/post/reposted", "at://a/post/replied"}
+	tests := []struct {
+		name  string
+		limit int
+		want  []string
+	}{
+		{"no limit", 0, engaged},
+		{"limit above engaged count", 10, engaged},
+		{"limit keeps newest engaged", 2, []string{"at://a/post/reposted", "at://a/post/replied"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := s.GetTopicTokensSinceLimit(ctx, cutoff, tc.limit)
+			if err != nil {
+				t.Fatalf("GetTopicTokensSinceLimit: %v", err)
+			}
+			got := make([]string, len(rows))
+			for i, r := range rows {
+				got[i] = r.PostURI
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("rows = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// The corpus-size gate counts without the join, so it sees every row.
+	count, err := s.CountTopicTokensSince(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("CountTopicTokensSince: %v", err)
+	}
+	if count != int64(len(seeds)) {
+		t.Errorf("CountTopicTokensSince = %d, want %d", count, len(seeds))
+	}
+}
+
 func TestTopicTokens_Count(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
