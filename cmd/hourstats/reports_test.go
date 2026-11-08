@@ -132,7 +132,7 @@ func TestBuildWeeklyReportText(t *testing.T) {
 		"Mood: +10.4% net positive, +0.6 vs the week before\n" +
 		"Happiest day: Sat 30 Aug, +12.1%\n" +
 		"Unhappiest day: Wed 27 Aug, +8.3%\n" +
-		"Stickiest topic: Taylor Swift engagement, trending 31 of 168 hours\n\n" +
+		"Top topic: Taylor Swift engagement, #1 for 31 of 168 hours\n\n" +
 		"13.1M English posts analysed"
 	if got != want {
 		t.Errorf("weekly text:\n%s\nwant:\n%s", got, want)
@@ -149,7 +149,7 @@ func TestBuildWeeklyReportText(t *testing.T) {
 	// No topic data and a thin previous week drop their lines, not the post.
 	r.TopicLabel, r.PrevDays = "", r.PrevDays[:3]
 	got = buildWeeklyReportText(r)
-	if strings.Contains(got, "Stickiest") || strings.Contains(got, "week before") {
+	if strings.Contains(got, "Top topic") || strings.Contains(got, "week before") {
 		t.Errorf("optional lines not omitted:\n%s", got)
 	}
 	if !strings.HasSuffix(got, "Unhappiest day: Wed 27 Aug, +8.3%\n\n13.1M English posts analysed") {
@@ -163,7 +163,7 @@ func TestBuildWeeklyReportText(t *testing.T) {
 	if n := postLength(got); n > blueskyPostLimit {
 		t.Errorf("long topic pushes text to %d runes", n)
 	}
-	if !strings.Contains(got, "Stickiest topic: Very long topic label") || !strings.Contains(got, "…, trending 31 of 168 hours") {
+	if !strings.Contains(got, "Top topic: Very long topic label") || !strings.Contains(got, "…, #1 for 31 of 168 hours") {
 		t.Errorf("long topic not truncated:\n%s", got)
 	}
 	if truncateRunes("abc", 3) != "abc" || truncateRunes("abcd", 3) != "ab…" {

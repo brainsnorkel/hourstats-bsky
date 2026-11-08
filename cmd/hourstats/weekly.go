@@ -44,17 +44,17 @@ type weeklyReport struct {
 	Days       []store.DailySentimentDataPoint // the week, ordered
 	PrevDays   []store.DailySentimentDataPoint // the week before, for the delta
 	TopicLabel string                          // "" when no topic data exists
-	TopicHours int                             // hours the topic trended, from cycle appearances
+	TopicHours int                             // hours the topic held rank 1, from its rank-1 cycles
 	TopPost    *store.Post                     // nil when no daily top post exists
 }
 
-// topicHours converts trending-cycle appearances to hours for the
-// configured analysis interval, capped at the hours in a week.
-func topicHours(appearances, cycleMinutes int) int {
+// topicHours converts rank-1 cycles to hours for the configured analysis
+// interval, capped at the hours in a week.
+func topicHours(cycles, cycleMinutes int) int {
 	if cycleMinutes <= 0 {
 		cycleMinutes = 60
 	}
-	h := int(math.Round(float64(appearances*cycleMinutes) / 60))
+	h := int(math.Round(float64(cycles*cycleMinutes) / 60))
 	return min(h, weekHours)
 }
 
@@ -82,7 +82,7 @@ func buildWeeklyReportText(r weeklyReport) string {
 	// rather than let the post exceed the limit.
 	label := truncateRunes(strings.Join(strings.Fields(r.TopicLabel), " "), maxTopicLabelRunes)
 	if label != "" && len(r.droppedTopicYears()) == 0 {
-		topic := fmt.Sprintf("Stickiest topic: %s, trending %d of %d hours", label, r.TopicHours, weekHours)
+		topic := fmt.Sprintf("%s%s, #1 for %d of %d hours", weeklyTopicPrefix, label, r.TopicHours, weekHours)
 		withTopic := strings.Join(append(append(head, topic), tail...), "\n")
 		if postLength(withTopic) <= blueskyPostLimit {
 			return withTopic
@@ -233,10 +233,15 @@ func loadWeeklyReport(ctx context.Context, db *store.Store, now time.Time, cycle
 		r.PrevDays = prev
 	}
 
-	if label, hours, err := db.GetTopTopicForRange(ctx, start.Format(dateFormat), end.Format(dateFormat)); err != nil {
+	// The subject with the most rank-1 cycles, shown under its modal label.
+	// When that label names a year before the week the line is dropped
+	// (droppedTopicYears) with no fallback to another spelling or to the
+	// runner-up: the runner-up of a mislabelled election week is an older
+	// election, which no year guard catches.
+	if label, cycles, err := db.GetTopRankOneSubjectForRange(ctx, start.Format(dateFormat), end.Format(dateFormat), topics.SubjectKey); err != nil {
 		slog.Warn("weekly report: top topic lookup failed, omitting topic line", "error", err)
 	} else {
-		r.TopicLabel, r.TopicHours = label, topicHours(hours, cycleMinutes)
+		r.TopicLabel, r.TopicHours = label, topicHours(cycles, cycleMinutes)
 	}
 
 	if top, err := db.GetTopPostForRange(ctx, start.Format(dateFormat), end.Format(dateFormat)); err != nil {

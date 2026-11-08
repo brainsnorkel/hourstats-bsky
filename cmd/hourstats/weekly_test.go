@@ -601,7 +601,7 @@ func TestBuildWeeklyReportTextDropsWrongYearTopic(t *testing.T) {
 				t.Errorf("droppedTopicYears = %v, want %v", got, tc.wantYears)
 			}
 			text := buildWeeklyReportText(r)
-			if got := strings.Contains(text, "Stickiest topic:"); got != tc.wantLine {
+			if got := strings.Contains(text, "Top topic:"); got != tc.wantLine {
 				t.Errorf("topic line present = %v, want %v:\n%s", got, tc.wantLine, text)
 			}
 			if !strings.Contains(text, "English posts analysed") || postLength(text) > blueskyPostLimit {
@@ -647,7 +647,7 @@ func TestRunWeeklyReportWarnsWhenTopicDropped(t *testing.T) {
 			t.Errorf("log lacks %s: %s", want, out)
 		}
 	}
-	if strings.Contains(out, "Stickiest topic") {
+	if strings.Contains(out, "Top topic") {
 		t.Errorf("the dry run previews the topic line the live post drops: %s", out)
 	}
 	if len(events.events) != 0 {

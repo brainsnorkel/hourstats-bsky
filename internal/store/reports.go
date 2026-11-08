@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -213,6 +214,99 @@ func (s *Store) topTopicBy(ctx context.Context, query, startDate, endDate string
 	}
 	r.found = true
 	return r, nil
+}
+
+// GetTopRankOneSubjectForRange returns the subject that held rank 1 in the
+// most published cycles between startDate and endDate inclusive (YYYY-MM-DD,
+// so the range runs from startDate 00:00 to endDate 24:00 UTC), and that
+// cycle count. It reads sentiment_history.top_topic, one row per cycle with
+// that cycle's rank-1 label, so the count is exact: a cycle is counted once
+// and only when the subject led it. topic_daily cannot give that figure: it
+// counts appearances at ranks 1-5 per fragmented topic ID or exact label.
+//
+// Labels are grouped by subjectKey (topics.SubjectKey in production, passed
+// in because internal/topics imports this package); a label whose key is
+// empty is grouped under its own lowercased spelling. The winner has the
+// most cycles, ties going to the key whose latest cycle is later, then to
+// the lexically smaller key. The label returned is the most frequent exact
+// spelling inside the winning key, ties going to the spelling seen most
+// recently. label is "" and cycles 0 when the range holds no labelled
+// cycle.
+func (s *Store) GetTopRankOneSubjectForRange(ctx context.Context, startDate, endDate string, subjectKey func(string) string) (label string, cycles int, err error) {
+	rows, err := s.readDB.QueryContext(ctx,
+		`SELECT top_topic, timestamp FROM sentiment_history
+		 WHERE timestamp >= ?1 AND timestamp < date(?2, '+1 day')
+		   AND top_topic IS NOT NULL AND top_topic != ''`, startDate, endDate)
+	if err != nil {
+		return "", 0, fmt.Errorf("rank-1 topics %s..%s: %w", startDate, endDate, err)
+	}
+	defer rows.Close()
+
+	type tally struct {
+		n      int
+		latest string // RFC3339 timestamps sort as strings
+	}
+	type subject struct {
+		tally
+		labels map[string]*tally
+	}
+	subjects := map[string]*subject{}
+	for rows.Next() {
+		var l, ts string
+		if err := rows.Scan(&l, &ts); err != nil {
+			return "", 0, fmt.Errorf("scan rank-1 topic: %w", err)
+		}
+		key := subjectKey(l)
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(l))
+		}
+		sub := subjects[key]
+		if sub == nil {
+			sub = &subject{labels: map[string]*tally{}}
+			subjects[key] = sub
+		}
+		sub.n++
+		sub.latest = max(sub.latest, ts)
+		lt := sub.labels[l]
+		if lt == nil {
+			lt = &tally{}
+			sub.labels[l] = lt
+		}
+		lt.n++
+		lt.latest = max(lt.latest, ts)
+	}
+	if err := rows.Err(); err != nil {
+		return "", 0, fmt.Errorf("rank-1 topics %s..%s: %w", startDate, endDate, err)
+	}
+
+	// beats reports whether a outranks b: more cycles, then a later latest
+	// cycle, then the lexically smaller name.
+	beats := func(a, b tally, aName, bName string) bool {
+		if a.n != b.n {
+			return a.n > b.n
+		}
+		if a.latest != b.latest {
+			return a.latest > b.latest
+		}
+		return aName < bName
+	}
+	var bestKey string
+	var best *subject
+	for key, sub := range subjects {
+		if best == nil || beats(sub.tally, best.tally, key, bestKey) {
+			bestKey, best = key, sub
+		}
+	}
+	if best == nil {
+		return "", 0, nil
+	}
+	var bestLabel *tally
+	for l, lt := range best.labels {
+		if bestLabel == nil || beats(*lt, *bestLabel, l, label) {
+			label, bestLabel = l, lt
+		}
+	}
+	return label, best.n, nil
 }
 
 // StoreDailyTopPost records the most engaged post of a date. A re-run only

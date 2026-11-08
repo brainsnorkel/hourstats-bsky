@@ -71,7 +71,7 @@ func buildWeeklyReportPreview(r weeklyReport, loadFailed, ok bool, days int, tar
 	default:
 		text = buildWeeklyReportText(r)
 		if label == "" {
-			flags = append(flags, "no topic label (no topic_daily rows for the week)")
+			flags = append(flags, "no topic label (no sentiment_history rank-1 topics for the week)")
 		}
 		switch years := r.droppedTopicYears(); {
 		case len(years) > 0:
@@ -79,7 +79,7 @@ func buildWeeklyReportPreview(r weeklyReport, loadFailed, ok bool, days int, tar
 			// shown here, as inline code: it is nowhere else in the message,
 			// and bare it would render as Discord markdown.
 			flags = append(flags, fmt.Sprintf("topic line dropped: the grouper is date-blind and the label `%s` names %s", strings.ReplaceAll(label, "`", "'"), strings.Join(years, ", ")))
-		case label != "" && !strings.Contains(text, "Stickiest topic:"):
+		case label != "" && !strings.Contains(text, weeklyTopicPrefix):
 			flags = append(flags, "topic line omitted: the post would exceed 300 graphemes with it")
 		case truncateRunes(label, maxTopicLabelRunes) != label:
 			flags = append(flags, fmt.Sprintf("topic label cut to %d runes", maxTopicLabelRunes))

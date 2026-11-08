@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -380,6 +381,103 @@ func TestGetTopTopicForRange_Ties(t *testing.T) {
 		label, n, err := s.GetTopTopicForRange(ctx, "2026-11-02", "2026-11-08")
 		if err != nil || label != "Midterm results" || n != 4 {
 			t.Errorf("top = %q, %d, %v; want Midterm results, 4", label, n, err)
+		}
+	})
+}
+
+// rankOne stores one sentiment_history cycle with its rank-1 label at an
+// RFC3339 timestamp.
+func rankOne(t *testing.T, s *Store, ts, label string) {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dp := SentimentDataPoint{RunID: "run-" + ts, Timestamp: at, TopTopic: label}
+	if err := s.StoreSentimentDataPoint(context.Background(), dp); err != nil {
+		t.Fatalf("store %s: %v", ts, err)
+	}
+}
+
+// lowerKey stands in for topics.SubjectKey, which this package cannot
+// import; reports_subject_test.go runs the real key.
+func lowerKey(l string) string { return strings.ToLower(l) }
+
+func TestGetTopRankOneSubjectForRange(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey); err != nil || label != "" || n != 0 {
+		t.Fatalf("empty range = %q, %d, %v", label, n, err)
+	}
+
+	// Election: 3 cycles in the week; Halloween: 2, plus unlabelled cycles,
+	// which are ignored however many there are, and cycles outside the week.
+	rankOne(t, s, "2026-11-02T00:55:00Z", "Election")
+	rankOne(t, s, "2026-11-05T12:55:00Z", "Election")
+	rankOne(t, s, "2026-11-08T23:55:00Z", "election")
+	rankOne(t, s, "2026-11-03T01:55:00Z", "Halloween")
+	rankOne(t, s, "2026-11-03T02:55:00Z", "Halloween")
+	for h := 3; h < 9; h++ {
+		rankOne(t, s, fmt.Sprintf("2026-11-03T%02d:55:00Z", h), "")
+	}
+	for _, ts := range []string{"2026-11-01T23:55:00Z", "2026-11-09T00:55:00Z", "2026-11-09T01:55:00Z"} {
+		rankOne(t, s, ts, "Halloween")
+	}
+
+	// Election's modal spelling is shown over its more recent lowercase one.
+	label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+	if err != nil || label != "Election" || n != 3 {
+		t.Errorf("week top = %q, %d, %v; want Election, 3", label, n, err)
+	}
+	label, n, _ = s.GetTopRankOneSubjectForRange(ctx, "2026-11-03", "2026-11-03", lowerKey)
+	if label != "Halloween" || n != 2 {
+		t.Errorf("day top = %q, %d; want Halloween, 2", label, n)
+	}
+}
+
+func TestGetTopRankOneSubjectForRange_Ties(t *testing.T) {
+	ctx := context.Background()
+	t.Run("equal cycles go to the later latest cycle", func(t *testing.T) {
+		s := newTestStore(t)
+		rankOne(t, s, "2026-11-02T00:55:00Z", "Alpha")
+		rankOne(t, s, "2026-11-06T00:55:00Z", "Alpha")
+		rankOne(t, s, "2026-11-03T00:55:00Z", "Zulu")
+		rankOne(t, s, "2026-11-07T00:55:00Z", "Zulu")
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+		if err != nil || label != "Zulu" || n != 2 {
+			t.Errorf("top = %q, %d, %v; want Zulu, 2", label, n, err)
+		}
+	})
+	t.Run("equal cycles and latest go to the smaller key", func(t *testing.T) {
+		s := newTestStore(t)
+		// Two rows share a timestamp under different run IDs.
+		for _, l := range []string{"Zulu", "Alpha"} {
+			at, _ := time.Parse(time.RFC3339, "2026-11-04T00:55:00Z")
+			if err := s.StoreSentimentDataPoint(ctx, SentimentDataPoint{RunID: "run-" + l, Timestamp: at, TopTopic: l}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+		if err != nil || label != "Alpha" || n != 1 {
+			t.Errorf("top = %q, %d, %v; want Alpha, 1", label, n, err)
+		}
+	})
+	t.Run("modal label, ties to the most recent spelling", func(t *testing.T) {
+		s := newTestStore(t)
+		rankOne(t, s, "2026-11-02T00:55:00Z", "Midterms")
+		rankOne(t, s, "2026-11-02T01:55:00Z", "MIDTERMS")
+		rankOne(t, s, "2026-11-02T02:55:00Z", "midterms")
+		rankOne(t, s, "2026-11-02T03:55:00Z", "Midterms")
+		rankOne(t, s, "2026-11-02T04:55:00Z", "midterms")
+		label, n, err := s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+		if err != nil || label != "midterms" || n != 5 {
+			t.Errorf("top = %q, %d, %v; want midterms, 5", label, n, err)
+		}
+		rankOne(t, s, "2026-11-02T05:55:00Z", "MIDTERMS")
+		rankOne(t, s, "2026-11-02T06:55:00Z", "MIDTERMS")
+		label, n, _ = s.GetTopRankOneSubjectForRange(ctx, "2026-11-02", "2026-11-08", lowerKey)
+		if label != "MIDTERMS" || n != 7 {
+			t.Errorf("top = %q, %d; want MIDTERMS, 7", label, n)
 		}
 	})
 }
