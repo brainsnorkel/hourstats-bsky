@@ -91,7 +91,7 @@ func buildWeeklyReportText(r weeklyReport) string {
 	return strings.Join(append(head, tail...), "\n")
 }
 
-// maxTopicLabelRunes bounds the stickiest-topic label in the weekly post.
+// maxTopicLabelRunes bounds the top-topic label in the weekly post.
 const maxTopicLabelRunes = 60
 
 // weeklyTopicDroppedEvent is the stats event written when the posted weekly

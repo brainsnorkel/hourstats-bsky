@@ -27,7 +27,7 @@ const (
 	// timed out on a slow hour.
 	groupingCallTimeout = 45 * time.Second
 	// DefaultGroupingTotalTimeout bounds a whole GroupAndLabel (headlines,
-	// primary and fallback) so it finishes inside the cycle's 60 s topic wait.
+	// primary and fallback) so it finishes inside the cycle's 90 s topic wait.
 	DefaultGroupingTotalTimeout = 55 * time.Second
 	// minFallbackTime is the least time left before the total deadline that
 	// is still worth spending on the fallback model.
