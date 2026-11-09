@@ -3,8 +3,13 @@ package topics
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/store"
 )
@@ -584,5 +589,110 @@ func TestHydrateExemplars_DroppedHandlerFiresWhenAllRejected(t *testing.T) {
 	}
 	if len(dropped) != 1 || dropped[0] != "Politics" || droppedCandidates != 2 {
 		t.Errorf("dropped handler = %v (%d candidates), want [Politics] with 2", dropped, droppedCandidates)
+	}
+}
+
+type recordedValidationEvent struct {
+	eventType string
+	details   string
+}
+
+// hydrateWithEvents runs one validation-path hydration for the Jordan
+// Binnington topic and returns the result and the events written.
+func hydrateWithEvents(t *testing.T, v ExemplarValidator) ([]IdentifiedTopic, []recordedValidationEvent) {
+	t.Helper()
+	s := &mockCandidateStore{
+		candidatesFn: func([]string) []store.ExemplarCandidate { return validationCandidates() },
+	}
+	hydrator := NewExemplarHydrator(s)
+	hydrator.SetValidator(v)
+	var events []recordedValidationEvent
+	hydrator.logEvent = func(_ context.Context, eventType, details string) {
+		events = append(events, recordedValidationEvent{eventType, details})
+	}
+
+	topics := []IdentifiedTopic{topicOf("Jordan Binnington",
+		[]string{"jordan_binnington", "canada", "hockey"})}
+	result, err := hydrator.HydrateExemplars(context.Background(), topics, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return result, events
+}
+
+func TestHydrateExemplars_ValidatorTimeoutWritesEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(hangingHandler))
+	defer srv.Close()
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	g.validationTimeout = 50 * time.Millisecond
+
+	result, events := hydrateWithEvents(t, g)
+
+	if result[0].ExemplarHandle != "first.bsky.social" {
+		t.Errorf("expected the top-ranked pick published unvalidated, got %q", result[0].ExemplarHandle)
+	}
+	if len(events) != 1 || events[0].eventType != "exemplar_validation_failed" {
+		t.Fatalf("events = %+v, want one exemplar_validation_failed", events)
+	}
+	d := events[0].details
+	if !regexp.MustCompile(`^class=timeout elapsed_ms=\d+ picks=1$`).MatchString(d) {
+		t.Errorf("details = %q, want class=timeout elapsed_ms=<n> picks=1", d)
+	}
+}
+
+func TestHydrateExemplars_UntypedValidatorErrorIsInvalid(t *testing.T) {
+	_, events := hydrateWithEvents(t, &mockValidator{err: fmt.Errorf("gemini down: Jordan Binnington")})
+
+	if len(events) != 1 || events[0].eventType != "exemplar_validation_failed" {
+		t.Fatalf("events = %+v, want one exemplar_validation_failed", events)
+	}
+	d := events[0].details
+	if d != "class=invalid elapsed_ms=0 picks=1" {
+		t.Errorf("details = %q, want %q", d, "class=invalid elapsed_ms=0 picks=1")
+	}
+	// The details carry neither the topic label nor the error text.
+	for _, leak := range []string{"Jordan", "Binnington", "gemini down"} {
+		if strings.Contains(d, leak) {
+			t.Errorf("details %q leak %q", d, leak)
+		}
+	}
+}
+
+func TestHydrateExemplars_StatusErrorEventCarriesNoBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "overloaded: Jordan Binnington")
+	}))
+	defer srv.Close()
+
+	_, events := hydrateWithEvents(t, NewGrouperWithEndpoint("test-key", srv.URL))
+
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want one", events)
+	}
+	d := events[0].details
+	if !regexp.MustCompile(`^class=status_5xx elapsed_ms=\d+ picks=1$`).MatchString(d) {
+		t.Errorf("details = %q, want class=status_5xx elapsed_ms=<n> picks=1", d)
+	}
+}
+
+func TestHydrateExemplars_ValidationSuccessWritesNoEvent(t *testing.T) {
+	_, events := hydrateWithEvents(t, &mockValidator{})
+	if len(events) != 0 {
+		t.Errorf("events = %+v, want none on a judged batch", events)
+	}
+}
+
+func TestAnalyzerSetEventLogger_ReachesHydrator(t *testing.T) {
+	ms := &mockAnalyzerStore{}
+	a := &Analyzer{store: ms, hydrator: NewExemplarHydrator(ms)}
+	var got string
+	a.SetEventLogger(func(_ context.Context, eventType, _ string) { got = eventType })
+	if a.hydrator.logEvent == nil {
+		t.Fatal("SetEventLogger did not hand the logger to the exemplar hydrator")
+	}
+	a.hydrator.logEvent(context.Background(), "probe", "")
+	if got != "probe" {
+		t.Errorf("hydrator logger reached %q, want probe", got)
 	}
 }

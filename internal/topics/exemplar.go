@@ -2,6 +2,7 @@ package topics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -47,6 +48,9 @@ type ExemplarHydrator struct {
 	// rejected and the topic is published without an exemplar, so the rate
 	// of that trade-off is measurable rather than inferred from logs.
 	onDropped func(topic string, candidates int)
+	// logEvent records the exemplar_validation_failed stats event; nil skips
+	// it. Analyzer.SetEventLogger installs it.
+	logEvent EventLogger
 }
 
 // SetDroppedHandler registers the callback fired when a topic loses its
@@ -412,11 +416,11 @@ func (h *ExemplarHydrator) validatePicks(ctx context.Context, result []Identifie
 
 	validated, err := h.validator.ValidateExemplars(ctx, pairs)
 	if err != nil {
-		h.keepUnvalidated(result, picks, err)
+		h.keepUnvalidated(ctx, result, picks, err)
 		return
 	}
 	if len(validated) != len(pairs) {
-		h.keepUnvalidated(result, picks, fmt.Errorf("validator returned %d verdicts for %d pairs", len(validated), len(pairs)))
+		h.keepUnvalidated(ctx, result, picks, fmt.Errorf("validator returned %d verdicts for %d pairs", len(validated), len(pairs)))
 		return
 	}
 
@@ -491,8 +495,10 @@ func (h *ExemplarHydrator) validatePicks(ctx context.Context, result []Identifie
 
 // keepUnvalidated publishes the top-ranked pick for every topic when the
 // validator could not judge the batch, and records how many picks went out
-// unchecked.
-func (h *ExemplarHydrator) keepUnvalidated(result []IdentifiedTopic, picks map[int][]rankedExemplar, reason error) {
+// unchecked as an exemplar_validation_failed event. The event carries the
+// attempt class and elapsed time of a *ValidationError, else class invalid
+// and elapsed_ms 0; never a label or the error text.
+func (h *ExemplarHydrator) keepUnvalidated(ctx context.Context, result []IdentifiedTopic, picks map[int][]rankedExemplar, reason error) {
 	unvalidated := 0
 	for i := range result {
 		topK, ok := picks[i]
@@ -504,4 +510,15 @@ func (h *ExemplarHydrator) keepUnvalidated(result []IdentifiedTopic, picks map[i
 			"handle", topK[0].Handle, "reason", reason)
 	}
 	slog.Warn("exemplar: validator unavailable, keeping top-ranked picks", "reason", reason, "unvalidated_picks", unvalidated)
+
+	if h.logEvent == nil {
+		return
+	}
+	class, elapsed := AttemptInvalid, int64(0)
+	var vErr *ValidationError
+	if errors.As(reason, &vErr) {
+		class, elapsed = vErr.Attempt.Class, vErr.Attempt.ElapsedMs
+	}
+	h.logEvent(ctx, "exemplar_validation_failed",
+		fmt.Sprintf("class=%s elapsed_ms=%d picks=%d", class, elapsed, unvalidated))
 }
