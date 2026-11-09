@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1243,6 +1244,8 @@ func TestValidateExemplars_SuccessLogsOKAttempt(t *testing.T) {
 	if _, ok := l["tier"]; ok {
 		t.Errorf("validator attempt line must not carry a tier: %v", l)
 	}
+	assertKeyOrder(t, rawLogLine(t, logs, "validator attempt"),
+		"model", "status", "elapsed_ms", "finish_reason", "thoughts_tokens", "output_tokens", "class")
 }
 
 func TestGroupAndLabel_AttemptLineKeepsTier(t *testing.T) {
@@ -1260,5 +1263,66 @@ func TestGroupAndLabel_AttemptLineKeepsTier(t *testing.T) {
 	lines := logLines(t, logs, "grouper attempt")
 	if len(lines) != 1 || lines[0]["tier"] != "primary" {
 		t.Fatalf("expected one grouper attempt line with tier primary, got %v", lines)
+	}
+	assertKeyOrder(t, rawLogLine(t, logs, "grouper attempt"),
+		"tier", "model", "status", "elapsed_ms", "finish_reason", "thoughts_tokens", "output_tokens", "class")
+}
+
+// rawLogLine returns the one raw JSON log line whose msg is msg.
+func rawLogLine(t *testing.T, buf *bytes.Buffer, msg string) string {
+	t.Helper()
+	var found []string
+	needle := `"msg":` + strconv.Quote(msg)
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, needle) {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected one %q line, got %d: %s", msg, len(found), buf.String())
+	}
+	return found[0]
+}
+
+// assertKeyOrder checks that the JSON keys appear in line in exactly this
+// order, after the msg key.
+func assertKeyOrder(t *testing.T, line string, keys ...string) {
+	t.Helper()
+	prev := strings.Index(line, `"msg":`)
+	for _, k := range keys {
+		i := strings.Index(line, `"`+k+`":`)
+		if i <= prev {
+			t.Fatalf("key %q out of order (at %d, previous at %d) in %s", k, i, prev, line)
+		}
+		prev = i
+	}
+}
+
+// TestValidateExemplars_BodyStallIsTimeout: the server sends 200 and its
+// headers, then stalls, so the deadline fires inside the body read.
+func TestValidateExemplars_BodyStallIsTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	g.validationTimeout = 50 * time.Millisecond
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+
+	_, err := g.ValidateExemplars(context.Background(), pairs)
+	var vErr *ValidationError
+	if !errors.As(err, &vErr) {
+		t.Fatalf("expected *ValidationError, got %T %v", err, err)
+	}
+	if vErr.Attempt.Class != AttemptTimeout || vErr.Attempt.Status != http.StatusOK {
+		t.Errorf("attempt = %+v, want class %q status 200", vErr.Attempt, AttemptTimeout)
+	}
+	if !errors.Is(err, ErrValidationUnavailable) {
+		t.Errorf("expected errors.Is ErrValidationUnavailable, got %v", err)
 	}
 }
