@@ -76,7 +76,7 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 				"✅ nothing suspect",
 				"built from 6 of 7 days; Sunday's rows land at 00:00 Monday",
 				"```\nWeek in review · 2–8 Nov\n",
-				"Stickiest topic: 2026 Midterm Elections, trending 40 of 168 hours",
+				"Top topic: 2026 Midterm Elections, #1 for 40 of 168 hours",
 				"reply (stored counts; the live run reads the gate view): Post of the week · 2–8 Nov  Most engaged post by @top.bsky.social: 9.8k likes, 1.2k reposts, 300 replies",
 			},
 			notContent: []string{"⚠️", "fly ssh console", "@here"},
@@ -104,7 +104,7 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 			name: "empty topic label", r: previewReport(6, ""), ok: true, days: 6,
 			wantFlags:   []string{"no topic label"},
 			wantContent: []string{wantSkipInstruction},
-			notContent:  []string{"Stickiest topic"},
+			notContent:  []string{"Top topic"},
 		},
 		{
 			// The posting path drops the line (buildWeeklyReportText), so the
@@ -112,7 +112,7 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 			name: "wrong-year label", r: previewReport(6, "2024 US Presidential Election"), ok: true, days: 6,
 			wantFlags:   []string{"topic line dropped: the grouper is date-blind and the label `2024 US Presidential Election` names 2024"},
 			wantContent: []string{"⚠️ topic line dropped", wantSkipInstruction, "```\nWeek in review · 2–8 Nov\n", "English posts analysed"},
-			notContent:  []string{"Stickiest topic", "topic line omitted", "SUSPECT"},
+			notContent:  []string{"Top topic", "topic line omitted", "SUSPECT"},
 		},
 		{
 			name: "a cross-year week keeps both of its years", ok: true, days: 6,
@@ -133,12 +133,12 @@ func TestBuildWeeklyReportPreview(t *testing.T) {
 			// than taking the post over the limit; the preview says so.
 			name: "long label cut", r: previewReport(6, strings.Repeat("Election ", 10)), ok: true, days: 6,
 			wantFlags:   []string{"topic label cut to 60 runes"},
-			wantContent: []string{"…, trending 40 of 168 hours", wantSkipInstruction},
+			wantContent: []string{"…, #1 for 40 of 168 hours", wantSkipInstruction},
 		},
 		{
 			// A backtick in the label would close the code fence early.
 			name: "backtick in label", r: previewReport(6, "The `rm -rf` Incident"), ok: true, days: 6,
-			wantContent: []string{"Stickiest topic: The 'rm -rf' Incident"},
+			wantContent: []string{"Top topic: The 'rm -rf' Incident"},
 		},
 		{
 			name: "no top post", ok: true, days: 6,
@@ -218,8 +218,8 @@ func (f *fakeEventLogger) LogEvent(_ context.Context, eventType, details string)
 }
 
 // seedPreviewWeek stores Monday to Saturday of the week starting 2 Nov 2026,
-// a top post on the Wednesday, and one trending snapshot that day carrying
-// label, rolled up into topic_daily as the daily job would have.
+// a top post on the Wednesday, and one cycle that day whose rank-1 topic
+// was label, as the analysis cycle records it on sentiment_history.
 func seedPreviewWeek(t *testing.T, ctx context.Context, db *store.Store, label string) {
 	t.Helper()
 	start := time.Date(2026, time.November, 2, 0, 0, 0, 0, time.UTC)
@@ -237,12 +237,9 @@ func seedPreviewWeek(t *testing.T, ctx context.Context, db *store.Store, label s
 	if err := db.StoreDailyTopPost(ctx, wed.Format(dateFormat), top); err != nil {
 		t.Fatalf("StoreDailyTopPost: %v", err)
 	}
-	snap := wed.Add(14 * time.Hour).Format(time.RFC3339)
-	if err := db.InsertTopicSnapshot(ctx, snap, 1, "topic-1", label, "", 50, "[]", "[]", "", "", false, ""); err != nil {
-		t.Fatalf("InsertTopicSnapshot: %v", err)
-	}
-	if _, err := db.RollupTopicDaily(ctx, wed.Format(dateFormat)); err != nil {
-		t.Fatalf("RollupTopicDaily: %v", err)
+	cycle := wed.Add(14 * time.Hour)
+	if err := db.StoreSentimentDataPoint(ctx, store.SentimentDataPoint{RunID: "run-cycle", Timestamp: cycle, TopTopic: label, TotalPosts: minPostsRequired}); err != nil {
+		t.Fatalf("StoreSentimentDataPoint: %v", err)
 	}
 }
 
@@ -258,7 +255,7 @@ func TestRunWeeklyReportPreviewPostsToDiscord(t *testing.T) {
 	events := &fakeEventLogger{}
 	now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-	runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now, 60)
+	runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now)
 
 	if len(poster.contents) != 1 {
 		t.Fatalf("posted %d messages, want 1", len(poster.contents))
@@ -277,7 +274,7 @@ func TestRunWeeklyReportPreviewPostsToDiscord(t *testing.T) {
 			t.Errorf("posted content lacks %q:\n%s", want, content)
 		}
 	}
-	if strings.Contains(content, "Stickiest topic") {
+	if strings.Contains(content, "Top topic") {
 		t.Errorf("posted content carries the topic line the posting path drops:\n%s", content)
 	}
 	out := buf.String()
@@ -314,7 +311,7 @@ func TestRunWeeklyReportPreviewLogOnly(t *testing.T) {
 			events := &fakeEventLogger{}
 			now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-			runWeeklyReportPreview(ctx, db, tc.poster, events, testPreviewTarget, now, 60)
+			runWeeklyReportPreview(ctx, db, tc.poster, events, testPreviewTarget, now)
 
 			out := buf.String()
 			if !strings.Contains(out, `"msg":"weekly report preview"`) || !strings.Contains(out, `"discord":false`) {
@@ -342,7 +339,7 @@ func TestRunWeeklyReportPreviewFailureIsAnEvent(t *testing.T) {
 	events := &fakeEventLogger{}
 	now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-	runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now, 60)
+	runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now)
 
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"weekly report preview: discord post failed"`) || !strings.Contains(out, "status 500") {
@@ -355,7 +352,7 @@ func TestRunWeeklyReportPreviewFailureIsAnEvent(t *testing.T) {
 		t.Errorf("events = %q, want one %s for 2026-11-02", events.events, weeklyPreviewFailedEvent)
 	}
 	// With no collector the failure is still logged and nothing panics.
-	runWeeklyReportPreview(ctx, db, poster, nil, testPreviewTarget, now, 60)
+	runWeeklyReportPreview(ctx, db, poster, nil, testPreviewTarget, now)
 }
 
 // TestRunWeeklyReportPreviewEmptyWeek: a week with no rows is previewed as the
@@ -366,7 +363,7 @@ func TestRunWeeklyReportPreviewEmptyWeek(t *testing.T) {
 	poster := &fakePreviewPoster{}
 	now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-	runWeeklyReportPreview(context.Background(), db, poster, nil, testPreviewTarget, now, 60)
+	runWeeklyReportPreview(context.Background(), db, poster, nil, testPreviewTarget, now)
 
 	if len(poster.contents) != 1 || !strings.Contains(poster.contents[0], "Monday's run will skip: 0 daily rows (minimum 5)") {
 		t.Errorf("posted = %q", poster.contents)
@@ -414,7 +411,7 @@ func TestRunWeeklyReportPreviewUnreadWeekIsNotASkip(t *testing.T) {
 			events := &fakeEventLogger{}
 			now := time.Date(2026, time.November, 8, 0, 20, 0, 0, time.UTC)
 
-			runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now, 60)
+			runWeeklyReportPreview(ctx, db, poster, events, testPreviewTarget, now)
 
 			if len(poster.contents) != 1 {
 				t.Fatalf("posted %d messages, want 1", len(poster.contents))

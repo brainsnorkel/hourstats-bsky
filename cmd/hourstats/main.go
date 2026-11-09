@@ -403,12 +403,12 @@ func main() {
 				// complete week exists, so a skipped Monday is caught up
 				// the next night instead of lost.
 				if reportsEnabled {
-					runWeeklyReport(ctx, db, handle, password, dryRun, time.Now(), analysisMinutes, collector)
+					runWeeklyReport(ctx, db, handle, password, dryRun, time.Now(), collector)
 				}
 				// Sunday: preview the week that ends tonight to Discord, so
 				// the operator can seed the guard before Monday's post.
 				if reportsEnabled && time.Now().UTC().Weekday() == time.Sunday {
-					runWeeklyReportPreview(ctx, db, alertNotifier, collector, previewTarget, time.Now(), analysisMinutes)
+					runWeeklyReportPreview(ctx, db, alertNotifier, collector, previewTarget, time.Now())
 				}
 			})
 			if !started {
@@ -437,13 +437,13 @@ func main() {
 				now := time.Now()
 				runReportRollups(ctx, db, now)
 				if startupWeekly {
-					runWeeklyReport(ctx, db, handle, password, dryRun, now, analysisMinutes, collector)
+					runWeeklyReport(ctx, db, handle, password, dryRun, now, collector)
 				}
 				if startupMonthly {
 					runMonthlyReport(ctx, db, handle, password, dryRun, now)
 				}
 				if startupPreview {
-					runWeeklyReportPreview(ctx, db, alertNotifier, collector, previewTarget, now, analysisMinutes)
+					runWeeklyReportPreview(ctx, db, alertNotifier, collector, previewTarget, now)
 				}
 			})
 			if !started {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -108,8 +109,9 @@ func (s *Store) GetTopicDaily(ctx context.Context, date string) ([]TopicDailyRow
 // relabelled ID above still credits 22 to a label it carried for 4), and it
 // does not touch the group's MIN(best_rank) or the label chosen. The by-id
 // axis needs no cap: appearances per (date, topic_id) is already a count of
-// distinct snapshot times. cmd/hourstats topicHours converts appearances to
-// hours with the analysis interval and caps the week at 168 hours.
+// distinct snapshot times. The weekly report no longer calls this (since
+// hs-aqa.6 it reads GetTopRankOneSubjectForRange); it is retained until two
+// Mondays after hs-aqa.6 deploys, as a comparison for the new figure.
 //
 // The label shown is the spelling on the group's latest-date row (by id, the
 // (date, topic_id) key makes that row unique; by label, ties on one date go
@@ -213,6 +215,129 @@ func (s *Store) topTopicBy(ctx context.Context, query, startDate, endDate string
 	}
 	r.found = true
 	return r, nil
+}
+
+// GetTopRankOneSubjectForRange returns the subject that held rank 1 in the
+// most clock hours between startDate and endDate inclusive (YYYY-MM-DD, so
+// the range runs from startDate 00:00 to endDate 24:00 UTC), and that number
+// of hours. It reads sentiment_history.top_topic, one row per cycle with that
+// cycle's rank-1 label, and counts distinct UTC clock hours of the cycles'
+// start, so the figure does not depend on the analysis interval: two
+// 30-minute cycles in one hour count that hour once. topic_daily cannot give
+// that figure: it counts appearances at ranks 1-5 per fragmented topic ID or
+// exact label.
+//
+// The hour is read from the run ID, "run-YYYYMMDD-HHMMSS" at the cycle's
+// start, not from timestamp, which is stamped when the sentiment is computed
+// after hydration and so drifts past the hour: on 2026-11-04 the 08:55 and
+// 09:55 cycles were stamped 09:00:13 and 09:59:35, one clock hour between
+// them. Rows with an older run ID format (unix nanoseconds, before February
+// 2026) fall back to the timestamp's hour.
+//
+// Only cycles with total_posts >= minPosts are counted. Callers pass the
+// posting floor (cmd/hourstats minPostsRequired), so the figure counts
+// analysed cycles that met the floor, which is close to but not literally
+// the cycles that published: a DRY_RUN cycle above the floor is counted, and
+// so is one skipped for another reason (a capped window, a memory guard
+// trip). A label that is empty or only whitespace is ignored.
+//
+// Labels are grouped by subjectKey (topics.SubjectKey in production, passed
+// in because internal/topics imports this package); a label whose key is
+// empty is grouped under its own lowercased spelling. The winner has the
+// most hours, ties going to the key whose latest cycle is later, then to the
+// lexically smaller key. The label returned is the exact spelling inside the
+// winning key that led in the most hours, ties going to the spelling seen
+// most recently. label is "" and hours 0 when the range holds no labelled
+// cycle.
+func (s *Store) GetTopRankOneSubjectForRange(ctx context.Context, startDate, endDate string, minPosts int, subjectKey func(string) string) (label string, hours int, err error) {
+	// One row per (label, start hour 'YYYY-MM-DDTHH'), with the hour's latest
+	// timestamp.
+	rows, err := s.readDB.QueryContext(ctx,
+		`SELECT top_topic,
+		        CASE WHEN run_id GLOB 'run-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]'
+		             THEN substr(run_id, 5, 4) || '-' || substr(run_id, 9, 2) || '-' || substr(run_id, 11, 2) || 'T' || substr(run_id, 14, 2)
+		             ELSE substr(timestamp, 1, 13) END AS hour,
+		        MAX(timestamp)
+		 FROM sentiment_history
+		 WHERE timestamp >= ?1 AND timestamp < date(?2, '+1 day')
+		   AND top_topic IS NOT NULL AND trim(top_topic) != ''
+		   AND total_posts >= ?3
+		 GROUP BY top_topic, hour`, startDate, endDate, minPosts)
+	if err != nil {
+		return "", 0, fmt.Errorf("rank-1 topics %s..%s: %w", startDate, endDate, err)
+	}
+	defer rows.Close()
+
+	type tally struct {
+		n      int    // distinct clock hours
+		latest string // RFC3339 timestamps sort as strings
+	}
+	type subject struct {
+		tally
+		hours  map[string]bool
+		labels map[string]*tally
+	}
+	subjects := map[string]*subject{}
+	for rows.Next() {
+		var l, hour, ts string
+		if err := rows.Scan(&l, &hour, &ts); err != nil {
+			return "", 0, fmt.Errorf("scan rank-1 topic: %w", err)
+		}
+		key := subjectKey(l)
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(l))
+		}
+		sub := subjects[key]
+		if sub == nil {
+			sub = &subject{hours: map[string]bool{}, labels: map[string]*tally{}}
+			subjects[key] = sub
+		}
+		// Two spellings of one subject in one hour count that hour once.
+		if !sub.hours[hour] {
+			sub.hours[hour] = true
+			sub.n++
+		}
+		sub.latest = max(sub.latest, ts)
+		lt := sub.labels[l]
+		if lt == nil {
+			lt = &tally{}
+			sub.labels[l] = lt
+		}
+		lt.n++ // the rows are already distinct per (label, hour)
+		lt.latest = max(lt.latest, ts)
+	}
+	if err := rows.Err(); err != nil {
+		return "", 0, fmt.Errorf("rank-1 topics %s..%s: %w", startDate, endDate, err)
+	}
+
+	// beats reports whether a outranks b: more hours, then a later latest
+	// cycle, then the lexically smaller name.
+	beats := func(a, b tally, aName, bName string) bool {
+		if a.n != b.n {
+			return a.n > b.n
+		}
+		if a.latest != b.latest {
+			return a.latest > b.latest
+		}
+		return aName < bName
+	}
+	var bestKey string
+	var best *subject
+	for key, sub := range subjects {
+		if best == nil || beats(sub.tally, best.tally, key, bestKey) {
+			bestKey, best = key, sub
+		}
+	}
+	if best == nil {
+		return "", 0, nil
+	}
+	var bestLabel *tally
+	for l, lt := range best.labels {
+		if bestLabel == nil || beats(*lt, *bestLabel, l, label) {
+			label, bestLabel = l, lt
+		}
+	}
+	return label, best.n, nil
 }
 
 // StoreDailyTopPost records the most engaged post of a date. A re-run only

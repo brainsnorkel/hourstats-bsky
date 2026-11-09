@@ -238,7 +238,7 @@ var alertingEvents = map[string]string{
 	// path posts to the same webhook at the next snapshot.
 	"weekly_report_preview_failed": SeverityWarn,
 	// weekly_report_topic_dropped is written by the Monday weekly report when
-	// its post went out without the stickiest-topic line because the label
+	// its post went out without the top-topic line because the label
 	// named a year before the week. The Sunday preview shows most of these in
 	// advance; this covers a topic that changed once Sunday's rows landed.
 	"weekly_report_topic_dropped": SeverityWarn,
@@ -266,11 +266,11 @@ var eventMeaning = map[string]string{
 	"consumer_restart":             "The firehose consumer exited outside its reconnect loop and was restarted. See the error on the event.",
 	"feature_gate_unavailable":     "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
 	"seq_floor_reset":              "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
-	"grouping_failed":              "Gemini grouping failed for the hour, so the trending reply was skipped and the sparkline footer shows no topic. The attempts are on the event. Two or more in a window means Gemini is slow or down.",
+	"grouping_failed":              "Topic grouping produced nothing for the hour, so the trending reply was skipped and the sparkline footer shows no topic. Written when every Gemini tier failed, or when output validation or the label year rule dropped every cluster; the attempt class says which (invalid, label_year, or a call failure such as timeout). Two or more call failures in a window means Gemini is slow or down.",
 	"hydration_ceiling_projected":  "The window is larger than hydration can cover in HYDRATION_TIMEOUT_MINUTES; the cycle will run out of budget about 25 minutes from now. Raise the timeout if the interval allows.",
 	"posting_skipped":              "The hour's cycle finished but published nothing: no summary, sparkline or trending reply. reason= on the event says why; window_posts vs hydrated vs ceiling_posts shows whether hydration ran out of budget (raise HYDRATION_TIMEOUT_MINUTES) or the hour was too small or flooded. Evaluated after each 30-minute snapshot, so this lands up to ~35 minutes after the cycle started.",
 	"weekly_report_preview_failed": "The Sunday preview of Monday's weekly report could not be posted to Discord, so the week is unreviewed. The preview text is in the process log (msg \"weekly report preview\"); seed weekly_report_last_week before 00:00 UTC Monday to skip the post.",
-	"weekly_report_topic_dropped":  "Monday's weekly report went out without its stickiest-topic line: the label named a year before the week, which the date-blind grouper gets wrong (years and label are on the event). Nothing to do for the post; if the label was right after all, that is the cost of the rule in cmd/hourstats/weekly.go.",
+	"weekly_report_topic_dropped":  "Monday's weekly report went out without its top-topic line: the label named a year before the week, which the date-blind grouper gets wrong (years and label are on the event). Nothing to do for the post; if the label was right after all, that is the cost of the rule in cmd/hourstats/weekly.go.",
 	"stall_detected":               "No posts have reached the bot for over five minutes. connected=false with reconnects means Jetstream itself is unreachable or refusing us; connected=true means a silent connection that has now been dropped. The hour's counts and sentiment will be short. Check the event's last_error and bsky.network status; JETSTREAM_LEGACY=true falls back to the v1 hosts.",
 }
 

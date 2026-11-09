@@ -28,6 +28,7 @@ func geminiMockHandler(clusters []TopicCluster) http.HandlerFunc {
 }
 
 func TestGroupAndLabel_Success(t *testing.T) {
+	withoutHeadlines(t)
 	expected := []TopicCluster{
 		{
 			Label:         "Donald Trump",
@@ -73,6 +74,7 @@ func TestGroupAndLabel_Success(t *testing.T) {
 }
 
 func TestGroupAndLabel_EmptyTerms(t *testing.T) {
+	withoutHeadlines(t)
 	g := NewGrouper("test-key", "", "")
 	clusters, err := g.GroupAndLabel(context.Background(), nil)
 	if err != nil {
@@ -84,6 +86,7 @@ func TestGroupAndLabel_EmptyTerms(t *testing.T) {
 }
 
 func TestGroupAndLabel_APIError(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("internal server error"))
@@ -106,6 +109,7 @@ func TestGroupAndLabel_APIError(t *testing.T) {
 }
 
 func TestGroupAndLabel_MalformedResponse(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := geminiResponse{
 			Candidates: []geminiCandidate{
@@ -131,6 +135,7 @@ func TestGroupAndLabel_MalformedResponse(t *testing.T) {
 }
 
 func TestGroupAndLabel_FallbackOnPrimary429(t *testing.T) {
+	withoutHeadlines(t)
 	expected := []TopicCluster{
 		{Label: "Donald Trump", Description: "Trump discussion", Keywords: []string{"trump"}, Justification: "j"},
 	}
@@ -164,6 +169,7 @@ func TestGroupAndLabel_FallbackOnPrimary429(t *testing.T) {
 }
 
 func TestGroupAndLabel_BothTiersFail(t *testing.T) {
+	withoutHeadlines(t)
 	fail := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("boom"))
@@ -186,6 +192,7 @@ func TestGroupAndLabel_BothTiersFail(t *testing.T) {
 }
 
 func TestGroupAndLabel_PrimarySuccessSkipsFallback(t *testing.T) {
+	withoutHeadlines(t)
 	expected := []TopicCluster{
 		{Label: "Weather", Description: "Weather discussion", Keywords: []string{"rain"}, Justification: "j"},
 	}
@@ -216,6 +223,7 @@ func TestGroupAndLabel_PrimarySuccessSkipsFallback(t *testing.T) {
 }
 
 func TestGroupAndLabel_RateLimit(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
 		{Label: "Test", Keywords: []string{"test"}, Synonyms: []string{}},
 	}))
@@ -323,36 +331,56 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 		{
 			name: "two overlapping bigrams",
 			terms: []TermScore{
-				{Term: "post_banger", Score: 5.0},
-				{Term: "banger_that", Score: 4.5},
+				{Term: "suspected_chinese", Score: 5.0},
+				{Term: "chinese_spy", Score: 4.5},
 				{Term: "trump", Score: 12.0},
 			},
 			wantPhrases:   1,
-			wantPhrase:    "post banger that",
+			wantPhrase:    "suspected chinese spy",
 			wantTermCount: 2,
 		},
 		{
 			name: "three-term chain",
 			terms: []TermScore{
-				{Term: "post_banger", Score: 5.0},
-				{Term: "banger_that", Score: 4.5},
-				{Term: "that_isnt", Score: 4.0},
+				{Term: "suspected_chinese", Score: 5.0},
+				{Term: "chinese_spy", Score: 4.5},
+				{Term: "spy_balloon", Score: 4.0},
 			},
 			wantPhrases:   1,
-			wantPhrase:    "post banger that isnt",
+			wantPhrase:    "suspected chinese spy balloon",
 			wantTermCount: 3,
 		},
 		{
 			// A reciprocal pair fed the walk back to itself forever before
 			// the chain tracked its own members (prod OOM, 2026-10-17).
+			// election_day cannot chain through the content stopword "day",
+			// so the walk that forms starts at day_election.
 			name: "reciprocal pair terminates",
 			terms: []TermScore{
 				{Term: "election_day", Score: 5.0},
 				{Term: "day_election", Score: 4.0},
 			},
 			wantPhrases:   1,
-			wantPhrase:    "election day election",
+			wantPhrase:    "day election day",
 			wantTermCount: 2,
+		},
+		{
+			name: "a content stopword does not join two bigrams",
+			terms: []TermScore{
+				{Term: "banger_post", Score: 5.0},
+				{Term: "post_office", Score: 4.5},
+				{Term: "election_day", Score: 4.0},
+				{Term: "day_parade", Score: 3.5},
+			},
+			wantPhrases: 0,
+		},
+		{
+			name: "a year does not join two bigrams",
+			terms: []TermScore{
+				{Term: "midterms_2026", Score: 5.0},
+				{Term: "2026_budget", Score: 4.5},
+			},
+			wantPhrases: 0,
 		},
 		{
 			name: "three-term cycle terminates",
@@ -373,10 +401,10 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 				{Term: "t6_t7", Score: 3}, {Term: "t7_t8", Score: 2}, {Term: "t8_t9", Score: 1},
 				{Term: "t9_t10", Score: 0.5},
 			},
-			// The bounded chain comes first; the two leftover terms form a
-			// second, short phrase.
-			wantPhrases:   2,
-			wantPhrase:    "t0 t1 t2 t3 t4 t5 t6 t7 t8",
+			// The bounded chain of four comes first; the leftover terms form
+			// a second chain of four and a third of two.
+			wantPhrases:   3,
+			wantPhrase:    "t0 t1 t2 t3 t4",
 			wantTermCount: maxPhraseChain,
 		},
 		{
@@ -415,6 +443,29 @@ func TestDetectOverlappingPhrases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBuildPrompt_DetectedPhrasesAreNamedMemes: a detected phrase is
+// evidence of a meme to be named, not text to be quoted as the label, and
+// the prompt's fragment example is one the tokenizer can still produce.
+func TestBuildPrompt_DetectedPhrasesAreNamedMemes(t *testing.T) {
+	prompt := buildPrompt([]TermScore{
+		{Term: "suspected_chinese", Score: 5}, {Term: "chinese_spy", Score: 4},
+	}, nil, promptContext{})
+	for _, want := range []string{
+		`- "suspected chinese spy" (from terms: suspected_chinese + chinese_spy)`,
+		"The phrase is evidence of a meme: set is_meme to true and give the topic a readable name, by its recognisable catchphrase or, for a copypasta, by its subject (e.g. 'Cybertruck Copypasta'); never start a label with a conjunction such as and/but/or and never join two phrases into one label.",
+		"(e.g. suspected_chinese + chinese_spy), they are fragments",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"Use the phrase", "banger_that"} {
+		if strings.Contains(prompt, gone) {
+			t.Errorf("prompt still carries %q", gone)
+		}
 	}
 }
 
@@ -716,6 +767,7 @@ func TestNormalizeClusterKeywords(t *testing.T) {
 // empty answer: returning (nil, nil) suppressed the trending post, where an
 // error lets RunAnalysisCycle fall through to the offline fallback.
 func TestGroupAndLabel_AllClustersFailValidationIsAnError(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
 		{Label: "Follow @evil.bsky.social", Keywords: []string{"trump"}},
 		{Label: "Visit", Description: "http://evil.example", Keywords: []string{"trump"}},
@@ -738,6 +790,7 @@ func TestGroupAndLabel_AllClustersFailValidationIsAnError(t *testing.T) {
 // An all-"__discard__" response keeps its old meaning: the model did answer and
 // judged every term too vague, which is not a validation failure.
 func TestGroupAndLabel_AllDiscardedIsNotAnError(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
 		{Label: "__discard__", Keywords: []string{"trump"}, Justification: "too vague"},
 	}))
@@ -754,6 +807,7 @@ func TestGroupAndLabel_AllDiscardedIsNotAnError(t *testing.T) {
 }
 
 func TestGroupAndLabel_DropsUnknownKeywords(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{{
 		Label:    "Donald Trump",
 		Keywords: []string{"Trump", "Fabricated"},
@@ -917,5 +971,27 @@ func TestFormatGroupingAttempts(t *testing.T) {
 func TestModelFromEndpoint(t *testing.T) {
 	if got := modelFromEndpoint(groupingEndpoint("gemini-2.5-pro")); got != "gemini-2.5-pro" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// TestGroupAndLabel_MergesBigramSplit: GroupAndLabel merges the clusters a
+// TF-IDF bigram bridges, since the caller no longer runs its own merge.
+func TestGroupAndLabel_MergesBigramSplit(t *testing.T) {
+	withoutHeadlines(t)
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "Kristi", Description: "d", Keywords: []string{"kristi"}, Justification: "j"},
+		{Label: "Noem", Description: "d", Keywords: []string{"noem"}, Justification: "j"},
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	got, err := g.GroupAndLabel(context.Background(), []TermScore{
+		{Term: "kristi", Score: 10}, {Term: "noem", Score: 9}, {Term: "kristi_noem", Score: 8},
+	})
+	if err != nil {
+		t.Fatalf("GroupAndLabel: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "Kristi Noem" {
+		t.Fatalf("clusters = %+v, want one merged cluster labelled %q", got, "Kristi Noem")
 	}
 }

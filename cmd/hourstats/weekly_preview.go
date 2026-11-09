@@ -71,7 +71,7 @@ func buildWeeklyReportPreview(r weeklyReport, loadFailed, ok bool, days int, tar
 	default:
 		text = buildWeeklyReportText(r)
 		if label == "" {
-			flags = append(flags, "no topic label (no topic_daily rows for the week)")
+			flags = append(flags, "no topic label (no sentiment_history rank-1 topics for the week)")
 		}
 		switch years := r.droppedTopicYears(); {
 		case len(years) > 0:
@@ -79,7 +79,7 @@ func buildWeeklyReportPreview(r weeklyReport, loadFailed, ok bool, days int, tar
 			// shown here, as inline code: it is nowhere else in the message,
 			// and bare it would render as Discord markdown.
 			flags = append(flags, fmt.Sprintf("topic line dropped: the grouper is date-blind and the label `%s` names %s", strings.ReplaceAll(label, "`", "'"), strings.Join(years, ", ")))
-		case label != "" && !strings.Contains(text, "Stickiest topic:"):
+		case label != "" && !strings.Contains(text, weeklyTopicPrefix):
 			flags = append(flags, "topic line omitted: the post would exceed 300 graphemes with it")
 		case truncateRunes(label, maxTopicLabelRunes) != label:
 			flags = append(flags, fmt.Sprintf("topic label cut to %d runes", maxTopicLabelRunes))
@@ -135,12 +135,12 @@ func buildWeeklyReportPreview(r weeklyReport, loadFailed, ok bool, days int, tar
 // could not be read (the daily read failed, or ctx was cancelled part-way,
 // as a SIGTERM during the Sunday job does) is posted as unavailable and
 // unreviewed rather than as one Monday will skip.
-func runWeeklyReportPreview(ctx context.Context, db *store.Store, poster weeklyPreviewPoster, events eventLogger, target weeklyPreviewTarget, now time.Time, cycleMinutes int) {
+func runWeeklyReportPreview(ctx context.Context, db *store.Store, poster weeklyPreviewPoster, events eventLogger, target weeklyPreviewTarget, now time.Time) {
 	start, _ := weeklyPreviewWeek(now)
 	weekKey := start.Format(dateFormat)
 	// loadWeeklyReport takes the run time and reads the week before it, so it
 	// is asked as of the Monday that follows the previewed week.
-	r, ok := loadWeeklyReport(ctx, db, start.AddDate(0, 0, 7), cycleMinutes)
+	r, ok := loadWeeklyReport(ctx, db, start.AddDate(0, 0, 7))
 	// loadWeeklyReport leaves Days nil only when the daily read failed. A
 	// context cancelled after that read makes the topic and top-post lookups
 	// fail and be omitted silently, so that week is unread too.

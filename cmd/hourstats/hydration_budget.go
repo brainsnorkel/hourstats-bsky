@@ -25,7 +25,7 @@ const (
 	warnHydrationRatePerMinute = 550
 
 	// hydrationCycleReserve is what the rest of a cycle needs inside its
-	// interval besides hydration: the window read, the 60s topic wait, the
+	// interval besides hydration: the window read, the 90s topic wait, the
 	// posting block and a margin.
 	hydrationCycleReserve = 10 * time.Minute
 )

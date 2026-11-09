@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
@@ -15,6 +16,7 @@ import (
 type mockAnalyzerStore struct {
 	tokens     []store.TopicTokenRow
 	tokenCount int64
+	countErr   error
 	snapshots  []store.TopicSnapshotRow
 	identities []store.TopicIdentityRow
 
@@ -32,7 +34,7 @@ func (m *mockAnalyzerStore) GetTopicTokensSinceLimit(_ context.Context, _ string
 	return m.tokens, nil
 }
 func (m *mockAnalyzerStore) CountTopicTokensSince(_ context.Context, _ string) (int64, error) {
-	return m.tokenCount, nil
+	return m.tokenCount, m.countErr
 }
 func (m *mockAnalyzerStore) PurgeTopicTokens(_ context.Context, _ string) (int64, error) {
 	m.purgedTokens = true
@@ -99,6 +101,7 @@ func buildTestTokens() []store.TopicTokenRow {
 }
 
 func TestRunAnalysisCycle_Success(t *testing.T) {
+	withoutHeadlines(t)
 	clusters := []TopicCluster{
 		{Label: "US Politics", Description: "Political discussion", Keywords: []string{"trump", "election"}, Synonyms: []string{}},
 		{Label: "Weather", Description: "Weather talk", Keywords: []string{"weather", "rain"}, Synonyms: []string{}},
@@ -148,6 +151,7 @@ func TestRunAnalysisCycle_Success(t *testing.T) {
 }
 
 func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
+	withoutHeadlines(t)
 	ms := &mockAnalyzerStore{tokenCount: 50}
 	a := &Analyzer{
 		store:    ms,
@@ -165,6 +169,39 @@ func TestRunAnalysisCycle_InsufficientCorpus(t *testing.T) {
 	}
 	if snapshotTime != "" {
 		t.Errorf("snapshot time = %q, want empty so no trending post is published", snapshotTime)
+	}
+}
+
+// TestRunAnalysisCycle_FewEngagedRows pins the corpus gate on the engaged rows
+// read, not the unfiltered token count: 150 token rows in the window but only
+// 30 with engagement is a quiet skip, not ErrTopicsUnavailable.
+func TestRunAnalysisCycle_FewEngagedRows(t *testing.T) {
+	withoutHeadlines(t)
+	ms := &mockAnalyzerStore{tokens: buildTestTokens()[:30], tokenCount: 150}
+	a := &Analyzer{
+		store:    ms,
+		grouper:  NewGrouper("test", "", ""),
+		tracker:  NewTracker(ms),
+		hydrator: NewExemplarHydrator(ms),
+	}
+
+	snapshotTime, err := a.RunAnalysisCycle(context.Background())
+	if err != nil {
+		t.Fatalf("RunAnalysisCycle error = %v, want nil: too few engaged rows is a skip", err)
+	}
+	if snapshotTime != "" || len(ms.insertedSnapshots) != 0 {
+		t.Errorf("snapshot time = %q with %d snapshots, want none", snapshotTime, len(ms.insertedSnapshots))
+	}
+}
+
+func TestGroupingTotalTimeout(t *testing.T) {
+	a := NewAnalyzer(&mockAnalyzerStore{}, "", "", "")
+	if got := a.GroupingTotalTimeout(); got != DefaultGroupingTotalTimeout {
+		t.Errorf("default GroupingTotalTimeout = %v, want %v", got, DefaultGroupingTotalTimeout)
+	}
+	a.SetGroupingTotalTimeout(80 * time.Second)
+	if got := a.GroupingTotalTimeout(); got != 80*time.Second {
+		t.Errorf("GroupingTotalTimeout = %v, want 80s", got)
 	}
 }
 
@@ -322,5 +359,66 @@ func TestConvertFacets(t *testing.T) {
 	}
 	if bskyFacets[1].Features[0].RichtextFacet_Link == nil {
 		t.Error("expected link facet")
+	}
+}
+
+func TestTokenCorpusRange(t *testing.T) {
+	rows := func(times ...string) []store.TopicTokenRow {
+		out := make([]store.TopicTokenRow, len(times))
+		for i, ts := range times {
+			out[i] = store.TopicTokenRow{CreatedAt: ts}
+		}
+		return out
+	}
+	const (
+		t1 = "2026-11-09T07:55:00Z"
+		t2 = "2026-11-09T08:10:00Z"
+		t3 = "2026-11-09T08:25:00Z"
+		t4 = "2026-11-09T08:40:00Z"
+	)
+	tests := []struct {
+		name                         string
+		rows                         []store.TopicTokenRow
+		wantMin, wantMedian, wantMax string
+	}{
+		{"empty", nil, "", "", ""},
+		{"one row", rows(t1), t1, t1, t1},
+		{"two rows", rows(t1, t2), t1, t2, t2},
+		{"odd count", rows(t1, t2, t3), t1, t2, t3},
+		{"even count", rows(t1, t2, t3, t4), t1, t3, t4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotMin, gotMedian, gotMax := tokenCorpusRange(tc.rows)
+			if gotMin != tc.wantMin || gotMedian != tc.wantMedian || gotMax != tc.wantMax {
+				t.Errorf("tokenCorpusRange = (%q, %q, %q), want (%q, %q, %q)",
+					gotMin, gotMedian, gotMax, tc.wantMin, tc.wantMedian, tc.wantMax)
+			}
+		})
+	}
+}
+
+// TestRunAnalysisCycle_CountFailureIsNotFatal: the token count only feeds a
+// log line, so a failed count must not cost the hour its topics.
+func TestRunAnalysisCycle_CountFailureIsNotFatal(t *testing.T) {
+	withoutHeadlines(t)
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{
+		{Label: "Rainy Weather", Description: "d", Keywords: []string{"weather", "rain"}, Justification: "j"},
+	}))
+	defer srv.Close()
+
+	tokens := buildTestTokens()
+	ms := &mockAnalyzerStore{tokens: tokens, countErr: fmt.Errorf("database is locked")}
+	a := &Analyzer{
+		store:    ms,
+		grouper:  NewGrouperWithEndpoint("test-key", srv.URL),
+		tracker:  NewTracker(ms),
+		hydrator: NewExemplarHydrator(ms),
+	}
+	if _, err := a.RunAnalysisCycle(context.Background()); err != nil {
+		t.Fatalf("RunAnalysisCycle: %v", err)
+	}
+	if len(ms.insertedSnapshots) == 0 {
+		t.Error("expected snapshots despite the failed count")
 	}
 }

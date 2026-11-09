@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -30,14 +29,6 @@ func TestReportRehearsal(t *testing.T) {
 		}
 		now = parsed.UTC()
 	}
-	cycleMinutes := 60
-	if v := os.Getenv("HS_REPORT_REHEARSAL_CYCLE_MINUTES"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 {
-			t.Fatalf("HS_REPORT_REHEARSAL_CYCLE_MINUTES %q: want a positive integer", v)
-		}
-		cycleMinutes = n
-	}
 	out := os.Getenv("HS_REPORT_REHEARSAL_OUT")
 	if out != "" {
 		if err := os.MkdirAll(out, 0o755); err != nil {
@@ -57,13 +48,13 @@ func TestReportRehearsal(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	t.Logf("rehearsal: now=%s cycle_minutes=%d db=%s", now.Format(time.RFC3339), cycleMinutes, src)
+	t.Logf("rehearsal: now=%s db=%s", now.Format(time.RFC3339), src)
 
 	// This week and the next, so the operator sees the post that is due and
 	// the one after it.
 	for _, at := range []time.Time{now, now.AddDate(0, 0, 7)} {
 		start, end := previousWeek(at)
-		r, ok := loadWeeklyReport(ctx, db, at, cycleMinutes)
+		r, ok := loadWeeklyReport(ctx, db, at)
 		t.Logf("weekly at %s: week %s – %s ok=%v days=%d prev_days=%d topic=%q topic_hours=%d has_top_post=%v",
 			at.Format(dateFormat), start.Format(dateFormat), end.Format(dateFormat), ok,
 			len(r.Days), len(r.PrevDays), r.TopicLabel, r.TopicHours, r.TopPost != nil)

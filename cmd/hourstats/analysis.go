@@ -208,11 +208,68 @@ type topicAnalysisOutcome struct {
 	err          error
 }
 
-// topicWaitBeforeSparkline bounds how long the cycle waits for topic analysis
-// before rendering the sparkline. Topic analysis overlaps hydration and in
-// production finishes minutes before this point, so the wait is normally
-// zero; the bound keeps a slow grouping call from ever delaying the chart.
-const topicWaitBeforeSparkline = 60 * time.Second
+// topicWaitBeforeSparkline is the floor on how long the cycle waits for topic
+// analysis before rendering the sparkline; topicWaitBudget raises it with the
+// grouping timeout. Topic analysis starts when hydration returns (its corpus
+// joins on the engagement only hydration writes), so it overlaps only scoring,
+// the feature gate and the summary post. Past the wait the sparkline goes out
+// without this cycle's topic in the week extremes and the trending reply
+// follows later.
+const topicWaitBeforeSparkline = 90 * time.Second
+
+// topicWaitOverGrouping is what the wait allows beyond the grouping timeout:
+// the purge, token read and TF-IDF before grouping and the tracker and
+// snapshot writes after it, a few seconds together. The headline fetch (~3 s)
+// already sits inside the grouping timeout. The goroutine also gets a head
+// start, since the wait counts from the summary post, which went out ~4.5 s
+// after hydration ended on prod (2026-11-08 20:55 UTC); the margin does not
+// lean on it, as it shrinks when scoring and the gate are quick.
+const topicWaitOverGrouping = 35 * time.Second
+
+// topicWaitBudget resolves the cycle's wait for topic analysis: the
+// grouping timeout (GROUPING_TOTAL_TIMEOUT_SECONDS) plus topicWaitOverGrouping,
+// never below topicWaitBeforeSparkline. A nil analyzer gets the floor.
+func topicWaitBudget(a *topics.Analyzer) time.Duration {
+	if a == nil {
+		return topicWaitBeforeSparkline
+	}
+	return max(topicWaitBeforeSparkline, a.GroupingTotalTimeout()+topicWaitOverGrouping)
+}
+
+// topicAnalysisRunner is the part of *topics.Analyzer the cycle starts.
+type topicAnalysisRunner interface {
+	SetExemplarGate(g topics.ExemplarGate)
+	RunAnalysisCycle(ctx context.Context) (string, error)
+}
+
+// trendingDurationRecorder is the part of *stats.Collector the topic goroutine
+// reports to.
+type trendingDurationRecorder interface {
+	RecordTrendingDuration(ms int64)
+}
+
+// startTopicAnalysis binds this cycle's exemplar gate and runs topic analysis
+// in a goroutine, returning a channel that receives exactly one outcome. The
+// channel is buffered so the goroutine never blocks when the cycle abandons it.
+// The token corpus joins on post engagement and only hydration writes
+// engagement, so the hydration result is a required argument: only code past
+// h.Hydrate can start the analysis. Its counts go on the start line so the log
+// shows the corpus the goroutine will find.
+func startTopicAnalysis(ctx context.Context, hydrated *hydrator.HydrateResult, runner topicAnalysisRunner, gate topics.ExemplarGate, collector trendingDurationRecorder) <-chan topicAnalysisOutcome {
+	slog.Info("topics: analysis goroutine started (after hydration)",
+		"hydrated", hydrated.Hydrated,
+		"total", hydrated.Total,
+	)
+	runner.SetExemplarGate(gate)
+	ch := make(chan topicAnalysisOutcome, 1)
+	go func() {
+		trendStart := time.Now()
+		snapshotTime, err := runner.RunAnalysisCycle(ctx)
+		collector.RecordTrendingDuration(time.Since(trendStart).Milliseconds())
+		ch <- topicAnalysisOutcome{snapshotTime: snapshotTime, err: err}
+	}()
+	return ch
+}
 
 // awaitTopicOutcome receives the topic analysis outcome, giving up after
 // timeout or when ctx is cancelled. The second result reports whether an
@@ -380,27 +437,6 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		return
 	}
 
-	// RunAnalysisCycle reads topic_tokens (no dependency on hydration).
-	// Starting here overlaps Gemini latency with the hydration pipeline.
-	// It hands back the snapshot time it wrote so the trending post can only
-	// publish this cycle's topics, never a stale snapshot.
-	var topicAnalysisDone <-chan topicAnalysisOutcome
-	if topicAnalyzer != nil {
-		// Rebound each cycle: the gate needs viewer state, which only an
-		// authenticated client sees, and this cycle's client is the one that
-		// just authenticated.
-		topicAnalyzer.SetExemplarGate(newExemplarGate(bskyClient))
-		ch := make(chan topicAnalysisOutcome, 1)
-		topicAnalysisDone = ch
-		slog.Info("topics: analysis goroutine started (parallel with hydration)")
-		go func() {
-			trendStart := time.Now()
-			snapshotTime, err := topicAnalyzer.RunAnalysisCycle(cycleCtx)
-			collector.RecordTrendingDuration(time.Since(trendStart).Milliseconds())
-			ch <- topicAnalysisOutcome{snapshotTime: snapshotTime, err: err}
-		}()
-	}
-
 	fetcher, host := sharedHydrationFetcher()
 	if fetcher == nil {
 		fetcher = hydrator.NewBlueskyFetcher(bskyClient.APIClient())
@@ -411,6 +447,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		logGuardAbort("hydration")
 		return
 	}
+
 	hydrationTimedOut := errors.Is(err, hydrator.ErrHydrationTimedOut)
 	if hydrationTimedOut {
 		slog.Error("hydration timed out",
@@ -434,6 +471,20 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		"retries", result.Retries,
 		"rate_limited", result.RateLimited,
 	)
+
+	// RunAnalysisCycle reads topic_tokens joined to post_buffer on non-zero
+	// engagement, which only hydration writes, so it starts here: started
+	// before hydration its corpus was the previous cycle's window (hs-aqa.2).
+	// It still overlaps scoring, the feature gate and the summary post. It
+	// hands back the snapshot time it wrote so the trending post can only
+	// publish this cycle's topics, never a stale snapshot.
+	var topicAnalysisDone <-chan topicAnalysisOutcome
+	if topicAnalyzer != nil {
+		// The gate is rebound each cycle: it needs viewer state, which only
+		// an authenticated client sees, and this cycle's client is the one
+		// that just authenticated.
+		topicAnalysisDone = startTopicAnalysis(cycleCtx, result, topicAnalyzer, newExemplarGate(bskyClient), collector)
+	}
 
 	// Sentiment covers the window minus the posts hydration attempted and
 	// could not return (deleted, taken down, adult-filtered, failed fetch).
@@ -740,17 +791,21 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 		topicsCollected := false
 		if topicAnalysisDone != nil {
 			topicWait := time.Now()
-			outcome, topicsCollected = awaitTopicOutcome(ctx, topicAnalysisDone, topicWaitBeforeSparkline)
+			waitBudget := topicWaitBudget(topicAnalyzer)
+			outcome, topicsCollected = awaitTopicOutcome(ctx, topicAnalysisDone, waitBudget)
 			if topicsCollected {
 				slog.Info("timing: topic analysis goroutine collected",
 					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
+					"wait_budget", waitBudget.String(),
 					"cycle_elapsed", fmt.Sprintf("%.1fs", time.Since(cycleStart).Seconds()))
 				recordTopTopic(ctx, db, runID, outcome)
 			} else if ctx.Err() != nil {
-				slog.Info("shutdown during topic wait, this cycle's topic will not be named with the week extremes")
+				slog.Info("shutdown during topic wait, this cycle's topic will not be named with the week extremes",
+					"wait_budget", waitBudget.String())
 			} else {
 				slog.Warn("topic analysis still running, this cycle's topic will not be named with the week extremes",
-					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()))
+					"waited", fmt.Sprintf("%.1fs", time.Since(topicWait).Seconds()),
+					"wait_budget", waitBudget.String())
 			}
 		}
 
@@ -788,7 +843,7 @@ func runAnalysisCycle(ctx context.Context, db *store.Store, handle, password str
 				// A standalone post also drops the week high/low footer: the
 				// figures only read as a caption on the chart above them.
 				trendRoot, trendRootCID, trendParent, trendParentCID := rootURI, rootCID, sparkURI, sparkCID
-				trendExtremes := weekExtremes(weekPoints)
+				trendExtremes := weekExtremes(weekPoints, cycleStart.UTC())
 				if sparkURI == "" || sparkCID == "" {
 					trendRoot, trendRootCID, trendParent, trendParentCID = "", "", "", ""
 					trendExtremes = nil

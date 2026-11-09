@@ -12,41 +12,97 @@ var (
 	mentionPattern = regexp.MustCompile(`@[\w.-]+`)
 	nonAlphaNum    = regexp.MustCompile(`[^a-z0-9]+`)
 	pureDigits     = regexp.MustCompile(`^\d+$`)
+	yearPattern    = regexp.MustCompile(`^(19|20)\d\d$`)
+	// segmentBreak matches sentence punctuation. "!", "?", ";", newlines,
+	// "|", the Unicode ellipsis, bullet and CJK/fullwidth stops always break;
+	// a run of two or more dots always breaks; an em dash breaks only with
+	// whitespace on both sides; a single "." or ":" breaks only before
+	// whitespace or the end of the text, so "26.1", "8:00" and "e.g" stay
+	// whole. splitSegments then keeps a lone "." after an abbreviation.
+	segmentBreak = regexp.MustCompile(`[!?;\n|\x{2026}\x{3002}\x{FF01}\x{FF1F}\x{2022}]+|\s+\x{2014}\s+|\.{2,}|[.:]+(?:\s|$)`)
+	// contraction joins "n't" to its word ("won't" -> "wont"), before
+	// nonAlphaNum would split it into "won" and "t".
+	contraction = regexp.MustCompile(`n['\x{2019}]t\b`)
 )
 
+// periodAbbreviations are the words a "." follows without ending a sentence:
+// "Lakers vs. Celtics", "Sen. Warren". A single letter before the "." (the
+// last letter of "U.S." or "e.g.", or an initial) does not end one either.
+// "no" is not here: "No. 1" is an abbreviation only before a digit, while
+// "says no. The" ends a sentence (abbreviationBefore).
+var periodAbbreviations = map[string]bool{
+	"vs": true, "sen": true, "rep": true, "gov": true, "gen": true, "col": true,
+	"sgt": true, "mr": true, "mrs": true, "ms": true, "dr": true, "st": true,
+	"jr": true, "inc": true,
+}
+
+// segmentBoundary replaces every removed URL, mention and emoji, so the words
+// on either side of one land in different segments and never form a bigram.
+const segmentBoundary = "\n"
+
+// wordClass decides whether a word may be a unigram and whether it may be one
+// side of a bigram.
+type wordClass int
+
+const (
+	// classPlain: a unigram, and a bigram side with any non-function word.
+	classPlain wordClass = iota
+	// classFunction (functionWords): never a unigram, never a bigram side.
+	classFunction
+	// classContent (contentStopwords): never a unigram; a bigram side only
+	// next to a plain word, so white_house and halftime_show survive.
+	classContent
+	// classYear (^(19|20)\d\d$): never a unigram; a bigram side only next
+	// to a plain word, so 2026_midterms reaches the grouper.
+	classYear
+	// classDigits: any other pure-digit word, dropped entirely.
+	classDigits
+)
+
+func classify(word string) wordClass {
+	switch {
+	case functionWords[word]:
+		return classFunction
+	case contentStopwords[word]:
+		return classContent
+	case word == "" || word[0] < '0' || word[0] > '9':
+		return classPlain
+	case yearPattern.MatchString(word):
+		return classYear
+	case pureDigits.MatchString(word):
+		return classDigits
+	}
+	return classPlain
+}
+
+// Tokenize returns a post's unigrams followed by its bigrams. Bigrams are
+// built only between adjacent words of one segment (see segmentWords). A pair
+// is kept when it is one of the stopwordCompounds, or when neither side is a
+// function word and at least one side is a plain word. Pure-digit words other
+// than years are dropped before pairing, and "the" is skipped over like the
+// one- and two-letter words already are, so "State of the Union" still yields
+// state_union.
 func Tokenize(text string) []string {
-	text = urlPattern.ReplaceAllString(text, "")
-	text = bareDomainPat.ReplaceAllString(text, "")
-	text = mentionPattern.ReplaceAllString(text, "")
-	text = stripEmoji(text)
-	text = strings.ToLower(text)
-	text = nonAlphaNum.ReplaceAllString(text, " ")
-
-	// Bigrams must be built before stopword filtering so that compound
-	// terms like "halftime_show" survive even when one part is a stopword.
-	var candidates []string
-	for _, word := range strings.Fields(text) {
-		if len(word) < 3 {
-			continue
-		}
-		if pureDigits.MatchString(word) {
-			continue
-		}
-		candidates = append(candidates, word)
-	}
-
-	var bigrams []string
-	for i := 0; i < len(candidates)-1; i++ {
-		a, b := candidates[i], candidates[i+1]
-		if !stopwords[a] || !stopwords[b] {
-			bigrams = append(bigrams, a+"_"+b)
-		}
-	}
-
-	var unigrams []string
-	for _, word := range candidates {
-		if !stopwords[word] {
-			unigrams = append(unigrams, word)
+	var unigrams, bigrams []string
+	for _, seg := range segmentWords(text) {
+		prev, prevClass := "", classFunction
+		for _, word := range seg {
+			class := classify(word)
+			if class == classDigits || word == "the" {
+				continue
+			}
+			if class == classPlain {
+				unigrams = append(unigrams, word)
+			}
+			if prev != "" {
+				pair := prev + "_" + word
+				if stopwordCompounds[pair] ||
+					(class != classFunction && prevClass != classFunction &&
+						(class == classPlain || prevClass == classPlain)) {
+					bigrams = append(bigrams, pair)
+				}
+			}
+			prev, prevClass = word, class
 		}
 	}
 
@@ -56,11 +112,71 @@ func Tokenize(text string) []string {
 	return tokens
 }
 
+// segmentWords lowercases the text and splits it into segments at sentence
+// punctuation (see segmentBreak and splitSegments) and at every URL, bare
+// domain, mention and emoji, returning each segment's words of three or more
+// characters. URLs and mentions are removed before lowercasing and splitting,
+// since they contain dots and colons themselves. "n't" is joined to its word
+// first, so "won't" is "wont" rather than "won".
+func segmentWords(text string) [][]string {
+	text = urlPattern.ReplaceAllString(text, segmentBoundary)
+	text = bareDomainPat.ReplaceAllString(text, segmentBoundary)
+	text = mentionPattern.ReplaceAllString(text, segmentBoundary)
+	text = stripEmoji(text)
+	text = strings.ToLower(text)
+	text = contraction.ReplaceAllString(text, "nt")
+
+	var segments [][]string
+	for _, seg := range splitSegments(text) {
+		var words []string
+		for _, word := range strings.Fields(nonAlphaNum.ReplaceAllString(seg, " ")) {
+			if len(word) >= 3 {
+				words = append(words, word)
+			}
+		}
+		if len(words) > 0 {
+			segments = append(segments, words)
+		}
+	}
+	return segments
+}
+
+// splitSegments splits lowercased text at every segmentBreak match, except a
+// lone "." after a periodAbbreviations word, a single letter, or a "no"
+// followed by a digit.
+func splitSegments(text string) []string {
+	var segs []string
+	start := 0
+	for _, m := range segmentBreak.FindAllStringIndex(text, -1) {
+		if strings.TrimSpace(text[m[0]:m[1]]) == "." && abbreviationBefore(text[:m[0]], text[m[1]:]) {
+			continue
+		}
+		segs = append(segs, text[start:m[0]])
+		start = m[1]
+	}
+	return append(segs, text[start:])
+}
+
+// abbreviationBefore reports whether the text ends in a word whose following
+// "." does not end a sentence: a periodAbbreviations word, a single letter,
+// or "no" when the text after the break starts with a digit ("No. 1").
+func abbreviationBefore(text, after string) bool {
+	i := len(text)
+	for i > 0 && text[i-1] >= 'a' && text[i-1] <= 'z' {
+		i--
+	}
+	word := text[i:]
+	if word == "no" {
+		return after != "" && after[0] >= '0' && after[0] <= '9'
+	}
+	return len(word) == 1 || periodAbbreviations[word]
+}
+
 func stripEmoji(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if isEmoji(r) {
-			b.WriteRune(' ')
+			b.WriteString(segmentBoundary)
 		} else {
 			b.WriteRune(r)
 		}
@@ -145,6 +261,12 @@ func IsRepetitive(text string) bool {
 	return false
 }
 
+// Eligible reports whether a post's text is tokenized for trending topics at
+// ingest: at most one hashtag and not keyword-stuffed.
+func Eligible(text string) bool {
+	return strings.Count(text, "#") <= 1 && !IsRepetitive(text)
+}
+
 // stripWordPunctuation removes leading/trailing punctuation from a word,
 // keeping internal characters like hyphens and apostrophes intact.
 func stripWordPunctuation(word string) string {
@@ -153,7 +275,12 @@ func stripWordPunctuation(word string) string {
 	})
 }
 
-var stopwords = map[string]bool{
+// functionWords never carry a topic and never name one in combination:
+// determiners, pronouns, conjunctions, prepositions, auxiliaries, contraction
+// fragments, adverbial filler and interjections. They are neither unigrams
+// nor either side of a bigram, so and_vote, the_cybertruck, monitoring_the
+// and banger_that are never built.
+var functionWords = map[string]bool{
 	// pronouns & determiners
 	"the": true, "this": true, "that": true, "these": true, "those": true,
 	"you": true, "your": true, "yours": true, "yourself": true,
@@ -161,9 +288,14 @@ var stopwords = map[string]bool{
 	"she": true, "they": true, "them": true, "their": true, "theirs": true, "themselves": true,
 	"its": true, "itself": true, "our": true, "ours": true, "ourselves": true,
 	"who": true, "whom": true, "whose": true, "which": true, "what": true,
-	"one": true, "ones": true, "someone": true, "anyone": true, "everyone": true,
+	"ones": true, "someone": true, "anyone": true, "everyone": true,
 	"something": true, "anything": true, "everything": true, "nothing": true, "nobody": true,
 	"myself": true, "mine": true,
+
+	// quantifiers
+	"all": true, "any": true, "some": true, "such": true, "each": true, "every": true,
+	"other": true, "another": true, "more": true, "most": true, "much": true, "many": true,
+	"least": true, "less": true, "enough": true,
 
 	// conjunctions & prepositions
 	"and": true, "but": true, "for": true, "nor": true, "yet": true,
@@ -173,12 +305,78 @@ var stopwords = map[string]bool{
 	"without": true, "within": true, "during": true, "toward": true, "towards": true,
 	"against": true, "among": true, "upon": true, "along": true, "across": true, "around": true,
 	"under": true, "behind": true, "above": true, "below": true, "beside": true, "beyond": true,
+	"via": true, "since": true, "until": true, "ago": true,
+	"today": true, "tonight": true, "tomorrow": true, "yesterday": true,
+	"out": true, "off": true, "away": true,
 
-	// common verbs / auxiliaries
-	"are": true, "was": true, "were": true, "been": true, "being": true,
-	"not": true, "all": true, "any": true, "could": true, "would": true, "should": true,
+	// auxiliaries
+	"are": true, "was": true, "were": true, "been": true, "being": true, "not": true,
+	"could": true, "would": true, "should": true, "might": true, "can": true,
 	"had": true, "has": true, "have": true, "will": true, "may": true,
-	"did": true, "does": true, "let": true, "say": true, "said": true,
+	"did": true, "does": true, "having": true, "getting": true, "doing": true, "making": true,
+	"going": true, "gonna": true, "gotta": true, "wanna": true,
+
+	// contractions: "n't" is joined to its word before splitting ("won't"
+	// -> "wont"); the fragments cover other apostrophes and typed spaces.
+	// "won" and "don" are content stopwords (mamdani_won, don_lemon).
+	"didn": true, "doesn": true, "isn": true, "wasn": true,
+	"aren": true, "weren": true, "wouldn": true, "couldn": true,
+	"shouldn": true, "hasn": true, "hadn": true, "haven": true, "ain": true,
+	"dont": true, "doesnt": true, "cant": true, "wont": true, "didnt": true,
+	"isnt": true, "wasnt": true, "arent": true, "werent": true, "havent": true,
+	"couldnt": true, "wouldnt": true, "shouldnt": true, "hasnt": true, "hadnt": true,
+	"aint": true, "mustnt": true,
+
+	// adverbial filler
+	"too": true, "very": true, "also": true, "just": true, "even": true,
+	"only": true, "now": true, "still": true, "well": true,
+	"how": true, "when": true, "where": true, "then": true, "here": true, "there": true,
+	"never": true, "always": true, "already": true, "ever": true, "else": true,
+	"why": true, "while": true, "again": true, "finally": true, "randomly": true,
+	"probably": true, "maybe": true, "perhaps": true, "almost": true, "quite": true,
+	"especially": true, "basically": true, "honestly": true, "clearly": true,
+	"apparently": true, "definitely": true, "absolutely": true, "completely": true,
+	"exactly": true, "simply": true, "seriously": true,
+	"literally": true, "actually": true, "really": true,
+
+	// interjections & discourse markers
+	"lol": true, "lmao": true, "omg": true, "wtf": true, "tbh": true,
+	"imo": true, "smh": true, "idk": true, "ngl": true, "bruh": true,
+	"like": true, "yeah": true, "yes": true, "nah": true,
+	"sure": true, "okay": true, "thank": true, "thanks": true,
+	"please": true, "sorry": true,
+}
+
+// stopwordCompounds are names the class rules would reject: both halves
+// stopwords of either class (white_house, game_over, new_jersey), or one half
+// a function word (will_smith, theresa_may). Tokenize consults it before any
+// class rule, so it is the one escape hatch for such names; it still applies
+// only within one segment.
+var stopwordCompounds = map[string]bool{
+	"white_house":  true,
+	"black_friday": true,
+	"new_year":     true,
+	"will_smith":   true,
+	"theresa_may":  true,
+	"game_over":    true,
+	"new_jersey":   true,
+	"head_start":   true,
+	"big_ten":      true,
+	"one_piece":    true,
+	"good_friday":  true,
+}
+
+// contentStopwords are content words too common to be a topic on their own
+// but part of many names: never a unigram, and a bigram side only next to a
+// plain word (white_house, new_york, world_cup, fox_news, first_amendment,
+// real_madrid, election_day, halftime_show, game_thrones, call_duty,
+// state_union, gov_newsom, post_banger).
+var contentStopwords = map[string]bool{
+	"one": true,
+	"won": true, "don": true,
+
+	// common verbs
+	"let": true, "say": true, "said": true,
 	"get": true, "got": true, "see": true, "saw": true, "use": true, "used": true,
 	"make": true, "made": true, "take": true, "took": true, "give": true, "gave": true,
 	"come": true, "came": true, "keep": true, "kept": true, "put": true,
@@ -188,26 +386,16 @@ var stopwords = map[string]bool{
 	"try": true, "tried": true, "turn": true, "run": true, "move": true, "call": true,
 	"start": true, "started": true, "help": true,
 
-	// adverbs & adjectives
-	"too": true, "very": true, "also": true, "just": true, "even": true,
-	"only": true, "more": true, "most": true, "much": true, "many": true,
-	"some": true, "such": true, "each": true, "every": true, "other": true,
-	"new": true, "now": true, "old": true, "long": true, "still": true,
-	"well": true, "same": true, "down": true, "own": true, "real": true,
+	// adjectives & adverbs with a content sense
+	"new": true, "old": true, "long": true, "own": true, "real": true, "same": true,
 	"right": true, "good": true, "best": true, "big": true, "little": true, "last": true,
-	"how": true, "when": true, "where": true, "then": true, "here": true, "there": true,
-	"never": true, "always": true, "already": true,
-	"why": true, "while": true, "again": true, "next": true, "hard": true, "easy": true,
-	"high": true, "low": true, "full": true, "whole": true, "able": true, "least": true,
-	"less": true, "close": true, "open": true, "early": true, "late": true,
-	"free": true, "true": true, "wrong": true, "different": true, "probably": true,
-	"maybe": true, "perhaps": true, "almost": true, "quite": true, "pretty": true,
-	"especially": true, "basically": true, "honestly": true, "clearly": true,
-	"apparently": true, "definitely": true, "absolutely": true, "completely": true,
-	"entire": true, "exactly": true, "simply": true, "seriously": true,
+	"down": true, "next": true, "hard": true, "easy": true, "pretty": true,
+	"high": true, "low": true, "full": true, "whole": true, "able": true,
+	"close": true, "open": true, "early": true, "late": true,
+	"free": true, "true": true, "wrong": true, "different": true, "entire": true,
 
 	// common filler nouns
-	"way": true, "out": true, "back": true, "time": true, "year": true, "years": true,
+	"way": true, "back": true, "time": true, "year": true, "years": true,
 	"day": true, "days": true, "night": true, "morning": true, "evening": true,
 	"week": true, "weeks": true, "month": true, "months": true, "hour": true, "hours": true,
 	"first": true, "second": true, "third": true, "thing": true, "things": true,
@@ -221,13 +409,13 @@ var stopwords = map[string]bool{
 	"money": true, "power": true, "human": true, "reason": true, "question": true,
 	"answer": true, "problem": true, "idea": true, "story": true, "word": true, "words": true,
 	"name": true, "line": true, "type": true, "form": true,
-	"details": true, "via": true, "news": true, "information": true,
+	"details": true, "news": true, "information": true,
 	"group": true, "level": true, "area": true, "system": true, "order": true,
 	"result": true, "moment": true, "course": true, "example": true, "view": true,
 	"half": true, "kind": true, "sort": true, "sense": true, "mind": true,
 	"job": true, "jobs": true, "stuff": true, "bit": true, "piece": true,
 	"set": true, "video": true, "videos": true, "music": true, "photo": true, "photos": true,
-	"support": true, "another": true, "game": true, "team": true, "season": true, "episode": true,
+	"support": true, "game": true, "team": true, "season": true, "episode": true,
 
 	// generic descriptors (race/color/gender — too common as general language to be topical)
 	"black": true, "white": true, "color": true, "colors": true,
@@ -243,22 +431,8 @@ var stopwords = map[string]bool{
 	"friday": true, "saturday": true, "sunday": true,
 	"weekend": true,
 
-	// contraction fragments (apostrophe stripped by nonAlphaNum)
-	"don": true, "didn": true, "doesn": true, "isn": true, "wasn": true,
-	"aren": true, "weren": true, "won": true, "wouldn": true, "couldn": true,
-	"shouldn": true, "hasn": true, "hadn": true, "haven": true, "can": true,
-	"ain": true, "gonna": true, "gotta": true, "wanna": true,
-
-	// social media filler
-	"lol": true, "lmao": true, "omg": true, "wtf": true, "tbh": true,
-	"imo": true, "smh": true, "idk": true, "ngl": true, "bruh": true,
-	"literally": true, "actually": true, "really": true,
-	"like": true, "going": true, "yeah": true, "yes": true, "nah": true,
-	"sure": true, "okay": true, "thank": true, "thanks": true,
-	"please": true, "sorry": true, "great": true,
-
 	// generic sentiment / reaction words (always present, never topical)
-	"love": true, "hate": true, "happy": true, "sad": true, "hope": true,
+	"love": true, "hate": true, "happy": true, "sad": true, "hope": true, "great": true,
 	"fuck": true, "shit": true, "fucking": true, "damn": true, "ass": true,
 	"hell": true, "crap": true, "suck": true, "sucks": true, "stupid": true,
 	"bad": true, "worse": true, "worst": true, "better": true,
@@ -279,8 +453,7 @@ var stopwords = map[string]bool{
 	"work": true, "working": true, "stop": true, "wait": true, "talk": true, "talking": true,
 	"remember": true, "believe": true, "understand": true, "happen": true, "happened": true,
 	"change": true, "live": true, "win": true, "lost": true, "lose": true,
-	"doing": true, "getting": true, "having": true, "making": true, "trying": true,
-	"looking": true, "saying": true, "coming": true,
+	"trying": true, "looking": true, "saying": true, "coming": true,
 	"taking": true, "giving": true, "telling": true, "thinking": true, "feeling": true,
 	"leaving": true, "running": true, "putting": true, "keeping": true, "calling": true,
 	"asking": true, "using": true, "seeing": true, "hearing": true, "starting": true,
@@ -305,12 +478,7 @@ var stopwords = map[string]bool{
 	"limited": true, "edition": true, "authentic": true, "replica": true, "wholesale": true,
 
 	// misc high-frequency filler
-	"dont": true, "doesnt": true, "cant": true, "wont": true, "didnt": true,
-	"isnt": true, "wasnt": true, "arent": true, "werent": true, "havent": true,
-	"off": true, "finally": true, "tonight": true, "today": true, "tomorrow": true,
-	"yesterday": true, "ago": true, "since": true, "until": true,
-	"ever": true, "away": true, "enough": true, "else": true,
 	"fun": true, "friends": true, "friend": true, "care": true, "needs": true,
-	"might": true, "check": true, "face": true, "art": true, "media": true,
-	"house": true, "goes": true, "gone": true, "random": true, "randomly": true,
+	"check": true, "face": true, "art": true, "media": true,
+	"house": true, "goes": true, "gone": true, "random": true,
 }

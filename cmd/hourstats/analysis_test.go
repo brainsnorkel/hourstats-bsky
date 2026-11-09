@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/christophergentle/hourstats-bsky/internal/analyzer"
+	"github.com/christophergentle/hourstats-bsky/internal/hydrator"
 	"github.com/christophergentle/hourstats-bsky/internal/store"
+	"github.com/christophergentle/hourstats-bsky/internal/topics"
 )
 
 func TestPostingSkipReason(t *testing.T) {
@@ -218,6 +224,117 @@ func TestWindowCapDecision(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := windowCapDecision(tt.available, tt.limit); got != tt.want {
 				t.Errorf("windowCapDecision(%d, %d) = %v, want %v", tt.available, tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+type fakeTopicRunner struct {
+	release          chan struct{}
+	started          chan struct{}
+	gate             topics.ExemplarGate
+	gateSetBeforeRun bool
+	ctx              context.Context
+}
+
+func (f *fakeTopicRunner) SetExemplarGate(g topics.ExemplarGate) { f.gate = g }
+
+func (f *fakeTopicRunner) RunAnalysisCycle(ctx context.Context) (string, error) {
+	f.gateSetBeforeRun = f.gate != nil
+	f.ctx = ctx
+	close(f.started)
+	<-f.release
+	return "2026-11-09T09:00:00Z", errors.New("grouping failed")
+}
+
+type fakeTopicGate struct{}
+
+func (fakeTopicGate) Check(context.Context, string, []string) (map[string]bool, error) {
+	return nil, nil
+}
+
+type fakeDurationRecorder struct{ calls atomic.Int32 }
+
+func (f *fakeDurationRecorder) RecordTrendingDuration(int64) { f.calls.Add(1) }
+
+func TestStartTopicAnalysis(t *testing.T) {
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "cycle")
+	runner := &fakeTopicRunner{release: make(chan struct{}), started: make(chan struct{})}
+	rec := &fakeDurationRecorder{}
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	done := startTopicAnalysis(ctx, &hydrator.HydrateResult{Total: 1200, Hydrated: 1150}, runner, fakeTopicGate{}, rec)
+
+	var line struct {
+		Msg      string `json:"msg"`
+		Hydrated int    `json:"hydrated"`
+		Total    int    `json:"total"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+		t.Fatalf("start line %q is not one JSON record: %v", buf.String(), err)
+	}
+	if line.Msg != "topics: analysis goroutine started (after hydration)" || line.Hydrated != 1150 || line.Total != 1200 {
+		t.Errorf("start line = %+v, want the hydration result's hydrated=1150 total=1200", line)
+	}
+
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("analyzer was not started")
+	}
+	select {
+	case <-done:
+		t.Fatal("outcome delivered before the analyzer returned")
+	default:
+	}
+	close(runner.release)
+
+	var outcome topicAnalysisOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no outcome after the analyzer returned")
+	}
+	if !runner.gateSetBeforeRun {
+		t.Error("exemplar gate was not bound before RunAnalysisCycle")
+	}
+	if runner.ctx.Value(ctxKey{}) != "cycle" {
+		t.Error("RunAnalysisCycle did not receive the cycle context")
+	}
+	if outcome.snapshotTime != "2026-11-09T09:00:00Z" || outcome.err == nil || outcome.err.Error() != "grouping failed" {
+		t.Errorf("outcome = %+v, want the runner's snapshot time and error", outcome)
+	}
+	if got := rec.calls.Load(); got != 1 {
+		t.Errorf("RecordTrendingDuration called %d times, want 1", got)
+	}
+}
+
+func TestTopicWaitBudget(t *testing.T) {
+	withTimeout := func(d time.Duration) *topics.Analyzer {
+		a := topics.NewAnalyzer(nil, "", "", "")
+		if d > 0 {
+			a.SetGroupingTotalTimeout(d)
+		}
+		return a
+	}
+	tests := []struct {
+		name     string
+		analyzer *topics.Analyzer
+		want     time.Duration
+	}{
+		{"nil analyzer gets the floor", nil, 90 * time.Second},
+		{"default 55s grouping timeout", withTimeout(0), 90 * time.Second},
+		{"80s grouping timeout", withTimeout(80 * time.Second), 115 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := topicWaitBudget(tc.analyzer); got != tc.want {
+				t.Errorf("topicWaitBudget = %v, want %v", got, tc.want)
 			}
 		})
 	}

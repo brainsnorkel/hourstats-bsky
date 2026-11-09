@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -88,6 +90,7 @@ func TestRunTrendingPost_UnknownSnapshotTimeSuppresses(t *testing.T) {
 // surfaces as ErrTopicsUnavailable rather than a silent nil, which used to let
 // the caller go on and republish the previous window.
 func TestRunAnalysisCycle_NoTermsIsError(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -130,6 +133,7 @@ func TestRunAnalysisCycle_NoTermsIsError(t *testing.T) {
 // own, a reason to suppress. The offline co-occurrence fallback must still
 // yield a snapshot the caller can publish as current.
 func TestRunAnalysisCycle_OfflineFallbackStillProducesSnapshot(t *testing.T) {
+	withoutHeadlines(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -167,6 +171,7 @@ type recordedEvent struct{ eventType, details string }
 // offline fallback off (the default), a grouping failure writes no snapshot,
 // so no trending reply and no top topic, and records grouping_failed.
 func TestRunAnalysisCycle_GroupingFailureSuppressesByDefault(t *testing.T) {
+	withoutHeadlines(t)
 	fail := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
@@ -207,6 +212,7 @@ func TestRunAnalysisCycle_GroupingFailureSuppressesByDefault(t *testing.T) {
 // TestRunAnalysisCycle_FallbackModelSuccessIsRecorded covers the
 // grouping_fallback_model event: the hour was served, but by the second tier.
 func TestRunAnalysisCycle_FallbackModelSuccessIsRecorded(t *testing.T) {
+	withoutHeadlines(t)
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
@@ -237,5 +243,62 @@ func TestRunAnalysisCycle_FallbackModelSuccessIsRecorded(t *testing.T) {
 	}
 	if d := events[0].details; !strings.Contains(d, ":status_429:") || !strings.Contains(d, ":ok:") || strings.Contains(d, "US Election") {
 		t.Errorf("details = %q, want a 429 primary, an ok fallback and no label", d)
+	}
+}
+
+// TestRunAnalysisCycle_OfflineFallbackMerges: the offline path merges the
+// communities a TF-IDF bigram bridges before the snapshot is written. kristi
+// and noem never share a post, so co-occurrence puts them in separate
+// communities; the kristi_noem bigram joins them.
+func TestRunAnalysisCycle_OfflineFallbackMerges(t *testing.T) {
+	withoutHeadlines(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	var rows []store.TopicTokenRow
+	add := func(n int, prefix string, tokens ...string) {
+		b, _ := json.Marshal(tokens)
+		for i := 0; i < n; i++ {
+			rows = append(rows, store.TopicTokenRow{
+				PostURI: fmt.Sprintf("at://%s/%d", prefix, i), Tokens: string(b),
+				CreatedAt: "2026-01-01T00:00:00Z", AuthorDID: fmt.Sprintf("did:plc:%s%d", prefix, i),
+			})
+		}
+	}
+	add(40, "k", "kristi")
+	add(40, "n", "noem")
+	add(30, "kn", "kristi_noem")
+	add(40, "w", "weather", "rain", "weather_rain")
+	ms := &mockAnalyzerStore{tokens: rows, tokenCount: int64(len(rows))}
+	a := &Analyzer{
+		store:           ms,
+		grouper:         NewGrouperWithEndpoint("test-key", srv.URL),
+		tracker:         NewTracker(ms),
+		hydrator:        NewExemplarHydrator(ms),
+		offlineFallback: true,
+	}
+
+	if _, err := a.RunAnalysisCycle(context.Background()); err != nil {
+		t.Fatalf("RunAnalysisCycle: %v", err)
+	}
+	var labels []string
+	merged := false
+	for _, s := range ms.insertedSnapshots {
+		labels = append(labels, s.Label)
+		var kws []string
+		if err := json.Unmarshal([]byte(s.Keywords), &kws); err != nil {
+			t.Fatalf("snapshot keywords %q: %v", s.Keywords, err)
+		}
+		if slices.Contains(kws, "kristi") && slices.Contains(kws, "noem") {
+			merged = true
+		}
+		if s.Label == "Kristi" || s.Label == "Noem" {
+			t.Errorf("snapshot %q is an unmerged half of the split", s.Label)
+		}
+	}
+	if !merged {
+		t.Errorf("snapshots %v, want one cluster carrying both kristi and noem", labels)
 	}
 }

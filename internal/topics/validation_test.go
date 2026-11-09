@@ -54,6 +54,42 @@ func TestValidateCluster_Labels(t *testing.T) {
 	}
 }
 
+// TestValidateCluster_StripsLeadingConjunction: one leading coordinating
+// conjunction is cut and the rest judged as the label; articles and
+// prepositions open titles and stay.
+func TestValidateCluster_StripsLeadingConjunction(t *testing.T) {
+	cases := []struct {
+		label      string
+		want       string
+		wantReason string
+	}{
+		{label: "and vote today", want: "vote today"},
+		{label: "but Vote Today", want: "Vote Today"},
+		{label: "and or Vote", want: "or Vote"}, // one word at most
+		{label: "The Bear", want: "The Bear"},
+		{label: "The Onion", want: "The Onion"},
+		{label: "A Minecraft Movie", want: "A Minecraft Movie"},
+		{label: "For All Mankind", want: "For All Mankind"}, // a preposition opens a title
+		{label: "To Kill a Mockingbird", want: "To Kill a Mockingbird"},
+		{label: "Of Mice and Men", want: "Of Mice and Men"},
+		{label: "Android Update", want: "Android Update"}, // a word, not a prefix
+		{label: "and", wantReason: "label_too_short"},
+		{label: "and UK", wantReason: "label_too_short"},
+		{label: "with #Politics", wantReason: "label_charset"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			got, reason := validateCluster(TopicCluster{Label: tc.label, Description: "d", Justification: "j"})
+			if reason != tc.wantReason {
+				t.Fatalf("validateCluster(%q) reason = %q, want %q", tc.label, reason, tc.wantReason)
+			}
+			if reason == "" && got.Label != tc.want {
+				t.Errorf("validateCluster(%q) label = %q, want %q", tc.label, got.Label, tc.want)
+			}
+		})
+	}
+}
+
 // A blocked term must only match a whole word: scunthorpe-style false
 // positives would silently delete real topics.
 func TestValidateCluster_BlockedTermMatchesWholeWordsOnly(t *testing.T) {
@@ -283,7 +319,7 @@ func TestBuildValidationPrompt_UntrustedDataFraming(t *testing.T) {
 }
 
 func TestBuildPrompt_UntrustedTermFraming(t *testing.T) {
-	prompt := buildPrompt([]TermScore{{Term: "hockey", Score: 5.0}}, nil)
+	prompt := buildPrompt([]TermScore{{Term: "hockey", Score: 5.0}}, nil, promptContext{})
 
 	if !strings.Contains(prompt, untrustedTermPreface) {
 		t.Error("grouping prompt should frame the term list as untrusted data")

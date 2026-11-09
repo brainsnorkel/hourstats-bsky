@@ -226,7 +226,7 @@ func TestRunWeeklyReportFirstEnableWaitsForNextWeek(t *testing.T) {
 	now := time.Date(2026, time.November, 4, 0, 5, 0, 0, time.UTC)
 	wantKey, _ := previousWeek(now)
 
-	runWeeklyReport(ctx, db, "", "", true, now, 60, nil)
+	runWeeklyReport(ctx, db, "", "", true, now, nil)
 
 	got, err := db.GetKeyValue(ctx, weeklyReportGuardKey)
 	if err != nil {
@@ -249,7 +249,7 @@ func TestRunWeeklyReportFirstEnableWaitsForNextWeek(t *testing.T) {
 	seedWeekDays(t, ctx, db, start)
 	buf.Reset()
 
-	runWeeklyReport(ctx, db, "", "", true, later, 60, nil)
+	runWeeklyReport(ctx, db, "", "", true, later, nil)
 
 	out = buf.String()
 	if !strings.Contains(out, "DRY_RUN: would post weekly report") {
@@ -320,7 +320,7 @@ func TestRunWeeklyReportDryRunAppliesReplyLimit(t *testing.T) {
 			}
 			buf := captureLogs(t)
 
-			runWeeklyReport(ctx, db, "", "", true, now, 60, nil)
+			runWeeklyReport(ctx, db, "", "", true, now, nil)
 
 			out := buf.String()
 			if !strings.Contains(out, `"msg":"DRY_RUN: would post weekly report"`) {
@@ -429,7 +429,7 @@ func TestArmWeeklyReportGuardSundayDeploy(t *testing.T) {
 	buf.Reset()
 
 	monday := time.Date(2026, time.November, 9, 0, 5, 0, 0, time.UTC)
-	runWeeklyReport(ctx, db, "", "", true, monday, 60, nil)
+	runWeeklyReport(ctx, db, "", "", true, monday, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"DRY_RUN: would post weekly report"`) {
@@ -464,7 +464,7 @@ func TestArmWeeklyReportGuardMondayDeploy(t *testing.T) {
 	buf := captureLogs(t)
 
 	tuesday := time.Date(2026, time.November, 10, 0, 5, 0, 0, time.UTC)
-	runWeeklyReport(ctx, db, "", "", true, tuesday, 60, nil)
+	runWeeklyReport(ctx, db, "", "", true, tuesday, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"weekly report already posted"`) || !strings.Contains(out, `"week_start":"2026-11-02"`) {
@@ -518,7 +518,7 @@ func TestRunWeeklyReportSkipsWhenGuardUnreadable(t *testing.T) {
 	cancel()
 	now := time.Date(2026, time.November, 4, 0, 5, 0, 0, time.UTC)
 
-	runWeeklyReport(cancelled, db, "", "", true, now, 60, nil)
+	runWeeklyReport(cancelled, db, "", "", true, now, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"msg":"weekly report: guard key unreadable, skipping this run"`) {
@@ -601,7 +601,7 @@ func TestBuildWeeklyReportTextDropsWrongYearTopic(t *testing.T) {
 				t.Errorf("droppedTopicYears = %v, want %v", got, tc.wantYears)
 			}
 			text := buildWeeklyReportText(r)
-			if got := strings.Contains(text, "Stickiest topic:"); got != tc.wantLine {
+			if got := strings.Contains(text, "Top topic:"); got != tc.wantLine {
 				t.Errorf("topic line present = %v, want %v:\n%s", got, tc.wantLine, text)
 			}
 			if !strings.Contains(text, "English posts analysed") || postLength(text) > blueskyPostLimit {
@@ -635,7 +635,7 @@ func TestRunWeeklyReportWarnsWhenTopicDropped(t *testing.T) {
 	buf := captureLogs(t)
 	events := &fakeEventLogger{}
 
-	runWeeklyReport(ctx, db, "", "", true, time.Date(2026, time.November, 9, 0, 5, 0, 0, time.UTC), 60, events)
+	runWeeklyReport(ctx, db, "", "", true, time.Date(2026, time.November, 9, 0, 5, 0, 0, time.UTC), events)
 
 	out := buf.String()
 	for _, want := range []string{
@@ -647,10 +647,76 @@ func TestRunWeeklyReportWarnsWhenTopicDropped(t *testing.T) {
 			t.Errorf("log lacks %s: %s", want, out)
 		}
 	}
-	if strings.Contains(out, "Stickiest topic") {
+	if strings.Contains(out, "Top topic") {
 		t.Errorf("the dry run previews the topic line the live post drops: %s", out)
 	}
 	if len(events.events) != 0 {
 		t.Errorf("a dry run wrote %v; the event is for a post that went out", events.events)
 	}
+}
+
+// TestWeeklyReportTopTopicEndToEnd: the topic line reads sentiment_history
+// rank-1 labels through topics.SubjectKey, counts distinct clock hours among
+// cycles at or above the posting floor, and prints the modal spelling.
+func TestWeeklyReportTopTopicEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.November, 9, 0, 30, 0, 0, time.UTC)
+	start, _ := previousWeek(now)
+	cycle := func(t *testing.T, db *store.Store, at time.Time, label string, posts int) {
+		t.Helper()
+		dp := store.SentimentDataPoint{RunID: "run-" + at.Format(time.RFC3339), Timestamp: at, TopTopic: label, TotalPosts: posts}
+		if err := db.StoreSentimentDataPoint(ctx, dp); err != nil {
+			t.Fatalf("StoreSentimentDataPoint: %v", err)
+		}
+	}
+	at := func(day, h, m int) time.Time {
+		return start.AddDate(0, 0, day).Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute)
+	}
+	topicLine := func(t *testing.T, db *store.Store, want string) {
+		t.Helper()
+		r, ok := loadWeeklyReport(ctx, db, now)
+		if !ok {
+			t.Fatal("loadWeeklyReport not ok")
+		}
+		if got := buildWeeklyReportText(r); !slices.Contains(strings.Split(got, "\n"), want) {
+			t.Errorf("text lacks line %q:\n%s", want, got)
+		}
+	}
+
+	t.Run("hourly cycles, two spellings of one subject", func(t *testing.T) {
+		db := newTestStore(t)
+		seedWeekDays(t, ctx, db, start)
+		cycle(t, db, at(0, 10, 55), "2026 US Midterm Elections", minPostsRequired)
+		cycle(t, db, at(1, 14, 55), "2026 US Midterm Elections", minPostsRequired)
+		cycle(t, db, at(2, 9, 55), "2026 Midterm Elections", minPostsRequired)
+		cycle(t, db, at(3, 9, 55), "Halloween Costumes", minPostsRequired)
+		// Under the floor: nothing was published, so these are not counted.
+		cycle(t, db, at(4, 9, 55), "Halloween Costumes", minPostsRequired-1)
+		cycle(t, db, at(4, 10, 55), "Halloween Costumes", 0)
+		cycle(t, db, at(4, 11, 55), "Halloween Costumes", 0)
+		topicLine(t, db, "Top topic: 2026 US Midterm Elections, #1 for 3 of 168 hours")
+	})
+
+	t.Run("30-minute cycles count a clock hour once", func(t *testing.T) {
+		db := newTestStore(t)
+		seedWeekDays(t, ctx, db, start)
+		// Midterms leads both cycles of 10:00 and of 11:00 (4 cycles, 2
+		// hours); Halloween leads 3 cycles in 3 different hours.
+		for _, ts := range []time.Time{at(0, 10, 25), at(0, 10, 55), at(0, 11, 25), at(0, 11, 55)} {
+			cycle(t, db, ts, "2026 US Midterm Elections", minPostsRequired)
+		}
+		for _, h := range []int{13, 15, 17} {
+			cycle(t, db, at(0, h, 25), "Halloween Costumes", minPostsRequired)
+		}
+		topicLine(t, db, "Top topic: Halloween Costumes, #1 for 3 of 168 hours")
+
+		// A second spelling inside an hour Midterms already led adds nothing;
+		// two cycles in a new hour add one, so Midterms leads 10, 11 and 18
+		// (3 hours from 7 cycles) and wins the tie with Halloween's 3 on its
+		// later latest cycle.
+		cycle(t, db, at(0, 11, 40), "2026 Midterm Elections", minPostsRequired)
+		cycle(t, db, at(0, 18, 25), "2026 Midterm Elections", minPostsRequired)
+		cycle(t, db, at(0, 18, 55), "2026 US Midterm Elections", minPostsRequired)
+		topicLine(t, db, "Top topic: 2026 US Midterm Elections, #1 for 3 of 168 hours")
+	})
 }
