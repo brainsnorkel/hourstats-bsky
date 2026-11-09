@@ -226,7 +226,10 @@ var alertingEvents = map[string]string{
 	"feature_gate_unavailable": SeverityWarn,
 	"seq_floor_reset":          SeverityWarn,
 	"grouping_failed":          SeverityWarn,
-	"stall_detected":           SeverityError,
+	// exemplar_validation_failed is written when the exemplar validation
+	// call failed and the hour's top-ranked picks went out unchecked.
+	"exemplar_validation_failed": SeverityWarn,
+	"stall_detected":             SeverityError,
 	// hydration_ceiling_projected is written at the start of a cycle whose
 	// window is larger than hydration can cover; posting_skipped at its end
 	// when the hour published nothing. Alerts evaluate after each 30-minute
@@ -267,6 +270,7 @@ var eventMeaning = map[string]string{
 	"feature_gate_unavailable":     "The privacy gate could not reach Bluesky twice, so the hour's summary went out with no top posts, by design. Check Bluesky API status.",
 	"seq_floor_reset":              "A reconnect landed on a different Jetstream instance; the dedup floor was reset and ingest continued. The half hour's counts may be duplicated.",
 	"grouping_failed":              "Topic grouping produced nothing for the hour, so the trending reply was skipped and the sparkline footer shows no topic. Written when every Gemini tier failed, or when output validation or the label year rule dropped every cluster; the attempt class says which (invalid, label_year, or a call failure such as timeout). Two or more call failures in a window means Gemini is slow or down.",
+	"exemplar_validation_failed":   "The hour's trending exemplars went out unvalidated: the exemplar validation call failed, so the top-ranked pick per topic was published unchecked. class= on the event says why (timeout, status_NNN, parse, invalid, budget); two or more in a window means Gemini is slow or the daily call budget is spent.",
 	"hydration_ceiling_projected":  "The window is larger than hydration can cover in HYDRATION_TIMEOUT_MINUTES; the cycle will run out of budget about 25 minutes from now. Raise the timeout if the interval allows.",
 	"posting_skipped":              "The hour's cycle finished but published nothing: no summary, sparkline or trending reply. reason= on the event says why; window_posts vs hydrated vs ceiling_posts shows whether hydration ran out of budget (raise HYDRATION_TIMEOUT_MINUTES) or the hour was too small or flooded. Evaluated after each 30-minute snapshot, so this lands up to ~35 minutes after the cycle started.",
 	"weekly_report_preview_failed": "The Sunday preview of Monday's weekly report could not be posted to Discord, so the week is unreviewed. The preview text is in the process log (msg \"weekly report preview\"); seed weekly_report_last_week before 00:00 UTC Monday to skip the post.",
@@ -288,6 +292,7 @@ var eventOrder = []string{
 	"feature_gate_unavailable",
 	"seq_floor_reset",
 	"grouping_failed",
+	"exemplar_validation_failed",
 	"weekly_report_preview_failed",
 	"weekly_report_topic_dropped",
 	"stall_detected",

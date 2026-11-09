@@ -419,6 +419,43 @@ func TestEvaluate_HydrationCeilingProjected(t *testing.T) {
 	}
 }
 
+// TestEvaluate_ExemplarValidationFailed: unvalidated exemplars are a warn
+// that does not page, listed right after grouping_failed.
+func TestEvaluate_ExemplarValidationFailed(t *testing.T) {
+	events := []store.StatsEvent{
+		{EventType: "exemplar_validation_failed", Details: "class=timeout elapsed_ms=20001 picks=3"},
+		{EventType: "grouping_failed", Details: "attempts=1 primary=gemini-3.8-flash:timeout:45001ms"},
+	}
+	conds := Evaluate(&store.StatsSnapshot{}, nil, events, ConsumerReport{}, testThresholds())
+	if got := names(conds); len(got) != 2 || got[0] != "grouping_failed" || got[1] != "exemplar_validation_failed" {
+		t.Fatalf("conditions = %v, want [grouping_failed exemplar_validation_failed]", got)
+	}
+	c, _ := conditionNamed(conds, "exemplar_validation_failed")
+	if c.Severity != SeverityWarn || c.Actionable {
+		t.Errorf("severity = %q actionable = %v, want warn and not actionable", c.Severity, c.Actionable)
+	}
+	if !strings.Contains(c.Message, "class=timeout elapsed_ms=20001 picks=3") || !strings.Contains(c.Message, "unvalidated") {
+		t.Errorf("message = %q, want the details and the meaning", c.Message)
+	}
+}
+
+// TestEventMaps_Consistent: every alerting event has a meaning and a place
+// in the report order.
+func TestEventMaps_Consistent(t *testing.T) {
+	inOrder := make(map[string]bool, len(eventOrder))
+	for _, name := range eventOrder {
+		inOrder[name] = true
+	}
+	for name := range alertingEvents {
+		if !inOrder[name] {
+			t.Errorf("%s missing from eventOrder", name)
+		}
+		if eventMeaning[name] == "" {
+			t.Errorf("%s missing from eventMeaning", name)
+		}
+	}
+}
+
 // TestEvaluate_RSSDisabledWithoutAMachineSize covers the case where nothing in
 // the environment describes the machine: a percentage of an unknown total is
 // not a threshold, so the condition must not fire.
