@@ -25,7 +25,7 @@ One Gemini call per cycle, in the posting path after the sparkline
 `validatePicks` at `exemplar.go:381` → `Grouper.ValidateExemplars` at
 `grouper.go:1151`).
 
-- Input: up to 9 pairs (`TopTopics × exemplarTopK`, round-robin by rank so
+- Input: up to 9 pairs (`maxPostedTopics × exemplarTopK`, round-robin by rank so
   every topic's first candidate is judged before any second), each pair a
   topic label and the post text cut to 300 runes. Candidates have already
   passed the feature gate, so no gated-out user's text reaches Gemini.

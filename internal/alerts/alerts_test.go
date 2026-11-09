@@ -454,6 +454,16 @@ func TestEventMaps_Consistent(t *testing.T) {
 			t.Errorf("%s missing from eventMeaning", name)
 		}
 	}
+	for _, name := range eventOrder {
+		if _, ok := alertingEvents[name]; !ok {
+			t.Errorf("eventOrder entry %s missing from alertingEvents", name)
+		}
+	}
+	for name := range eventMeaning {
+		if _, ok := alertingEvents[name]; !ok {
+			t.Errorf("eventMeaning entry %s missing from alertingEvents", name)
+		}
+	}
 }
 
 // TestEvaluate_RSSDisabledWithoutAMachineSize covers the case where nothing in
