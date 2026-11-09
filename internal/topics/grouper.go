@@ -32,6 +32,13 @@ const (
 	// minFallbackTime is the least time left before the total deadline that
 	// is still worth spending on the fallback model.
 	minFallbackTime = 5 * time.Second
+	// DefaultValidationTimeout bounds one exemplar validation call, inside the
+	// 45 s client timeout. At thinkingLevel low a batch answers in a few
+	// seconds; the default (medium) thinking ran 45-61 s about one hour in 20.
+	DefaultValidationTimeout = 20 * time.Second
+	// validationThinkingLevel is the thinking level of the validation request
+	// only; the grouping request keeps its thinking budget.
+	validationThinkingLevel = "low"
 )
 
 // Grouping attempt classes, as logged on "grouper attempt" and written into
@@ -58,6 +65,9 @@ const (
 	// AttemptNoTime is a fallback skipped because under minFallbackTime was
 	// left before the total deadline.
 	AttemptNoTime = "no_time"
+	// AttemptBudget is a validation call not made because the daily call
+	// budget was spent. It is never logged as an attempt line.
+	AttemptBudget = "budget"
 )
 
 // GroupingAttempt describes one grouping call (or one skipped fallback). It
@@ -99,6 +109,9 @@ type Grouper struct {
 	// now is the clock behind the prompt's date line and the label year
 	// rule; time.Now outside tests (SetClock).
 	now func() time.Time
+	// validationTimeout bounds one ValidateExemplars call
+	// (DefaultValidationTimeout outside tests).
+	validationTimeout time.Duration
 }
 
 // groupingEndpoint builds the Gemini generateContent URL for a model name.
@@ -119,9 +132,10 @@ func NewGrouper(apiKey, model, fallbackModel string) *Grouper {
 		httpClient: &http.Client{
 			Timeout: groupingCallTimeout,
 		},
-		lastReset:    time.Now(),
-		totalTimeout: DefaultGroupingTotalTimeout,
-		now:          time.Now,
+		lastReset:         time.Now(),
+		totalTimeout:      DefaultGroupingTotalTimeout,
+		validationTimeout: DefaultValidationTimeout,
+		now:               time.Now,
 	}
 	if fallbackModel != "" && fallbackModel != model {
 		g.fallbackEndpoint = groupingEndpoint(fallbackModel)
@@ -137,9 +151,10 @@ func NewGrouperWithEndpoint(apiKey, endpoint string) *Grouper {
 		httpClient: &http.Client{
 			Timeout: groupingCallTimeout,
 		},
-		lastReset:    time.Now(),
-		totalTimeout: DefaultGroupingTotalTimeout,
-		now:          time.Now,
+		lastReset:         time.Now(),
+		totalTimeout:      DefaultGroupingTotalTimeout,
+		validationTimeout: DefaultValidationTimeout,
+		now:               time.Now,
 	}
 }
 
@@ -172,8 +187,13 @@ type geminiGenConfig struct {
 	ResponseSchema   map[string]interface{} `json:"responseSchema,omitempty"`
 }
 
+// geminiThinkingConfig sets either a thinking budget or a thinking level:
+// Gemini 3 rejects a request carrying both, so both are omitempty. A
+// ThinkingBudget of 0 (thinking off) can therefore no longer be sent; no
+// caller sends 0.
 type geminiThinkingConfig struct {
-	ThinkingBudget int `json:"thinkingBudget"`
+	ThinkingBudget int    `json:"thinkingBudget,omitempty"`
+	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
 }
 
 // topicClusterSchema defines the JSON schema for structured output from Gemini.
@@ -259,9 +279,15 @@ func (g *Grouper) setLastAttempts(attempts []GroupingAttempt) {
 	g.lastAttempts = attempts
 }
 
-func logGroupingAttempt(a GroupingAttempt) {
-	slog.Info("grouper attempt",
-		"tier", a.Tier,
+// logAttempt logs one Gemini call as msg ("grouper attempt" or "validator
+// attempt"). The tier key is omitted when the attempt has none (validation).
+// The line never carries prompt text, labels, post text or an error body.
+func logAttempt(msg string, a GroupingAttempt) {
+	args := make([]any, 0, 16)
+	if a.Tier != "" {
+		args = append(args, "tier", a.Tier)
+	}
+	args = append(args,
 		"model", a.Model,
 		"status", a.Status,
 		"elapsed_ms", a.ElapsedMs,
@@ -269,6 +295,7 @@ func logGroupingAttempt(a GroupingAttempt) {
 		"thoughts_tokens", a.ThoughtsTokens,
 		"output_tokens", a.OutputTokens,
 		"class", a.Class)
+	slog.Info(msg, args...)
 }
 
 // FormatGroupingAttempts renders attempts as a stats event detail, e.g.
@@ -306,7 +333,7 @@ func (g *Grouper) GroupAndLabel(ctx context.Context, terms []TermScore) ([]Topic
 	record := func(a GroupingAttempt, tier string) {
 		a.Tier = tier
 		attempts = append(attempts, a)
-		logGroupingAttempt(a)
+		logAttempt("grouper attempt", a)
 	}
 
 	headlines := FetchHeadlines(ctx)
@@ -1148,13 +1175,48 @@ var exemplarValidationSchema = map[string]interface{}{
 // caller must not read their IsRelevant field as a verdict.
 var ErrValidationUnavailable = errors.New("exemplar validation unavailable")
 
+// ValidationError is returned by ValidateExemplars for every batch it could
+// not judge. Attempt describes the call (Class AttemptBudget when none was
+// made); errors.Is(err, ErrValidationUnavailable) holds for it.
+type ValidationError struct {
+	Attempt GroupingAttempt
+	Err     error
+}
+
+func (e *ValidationError) Error() string { return e.Err.Error() }
+
+// Unwrap exposes both the sentinel and the cause, so errors.Is finds
+// ErrValidationUnavailable whatever Err wraps.
+func (e *ValidationError) Unwrap() []error { return []error{ErrValidationUnavailable, e.Err} }
+
+// ValidateExemplars asks Gemini, in one call at thinkingLevel low bounded by
+// validationTimeout, whether each post is about its topic. Every call logs
+// one "validator attempt" line; every failure returns a *ValidationError and
+// the pairs untouched.
 func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidation) ([]ExemplarValidation, error) {
 	if len(pairs) == 0 {
 		return pairs, nil
 	}
 
+	attempt := GroupingAttempt{Model: modelFromEndpoint(g.endpoint)}
 	if !g.checkAndIncrementRate() {
-		return pairs, fmt.Errorf("%w: daily call budget of %d reached", ErrValidationUnavailable, maxDailyCalls)
+		attempt.Class = AttemptBudget
+		return pairs, &ValidationError{Attempt: attempt, Err: fmt.Errorf("%w: daily call budget of %d reached", ErrValidationUnavailable, maxDailyCalls)}
+	}
+
+	timeout := g.validationTimeout
+	if timeout <= 0 {
+		timeout = DefaultValidationTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	start := time.Now()
+	fail := func(class string, err error) ([]ExemplarValidation, error) {
+		attempt.Class = class
+		attempt.ElapsedMs = time.Since(start).Milliseconds()
+		logAttempt("validator attempt", attempt)
+		return pairs, &ValidationError{Attempt: attempt, Err: err}
 	}
 
 	prompt := buildValidationPrompt(pairs)
@@ -1165,65 +1227,84 @@ func (g *Grouper) ValidateExemplars(ctx context.Context, pairs []ExemplarValidat
 		},
 		GenerationConfig: geminiGenConfig{
 			ResponseMimeType: "application/json",
+			ThinkingConfig:   &geminiThinkingConfig{ThinkingLevel: validationThinkingLevel},
 			ResponseSchema:   exemplarValidationSchema,
 		},
 	}
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return pairs, fmt.Errorf("validate-exemplars: marshal: %w", err)
+		return fail(AttemptRequest, fmt.Errorf("%w: marshal: %w", ErrValidationUnavailable, err))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, strings.NewReader(string(body)))
 	if err != nil {
-		return pairs, fmt.Errorf("validate-exemplars: create request: %w", err)
+		return fail(AttemptRequest, fmt.Errorf("%w: create request: %w", ErrValidationUnavailable, err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return pairs, fmt.Errorf("%w: API call failed: %w", ErrValidationUnavailable, err)
+		return fail(transportClass(err), fmt.Errorf("%w: API call failed: %w", ErrValidationUnavailable, err))
 	}
 	defer resp.Body.Close()
+	attempt.Status = resp.StatusCode
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return pairs, fmt.Errorf("%w: API returned status %d: %s", ErrValidationUnavailable, resp.StatusCode, string(respBody))
+		statusErr := fmt.Errorf("%w: API returned status %d: %s", ErrValidationUnavailable, resp.StatusCode, string(respBody))
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			return fail(AttemptStatus429, statusErr)
+		case resp.StatusCode >= 500:
+			return fail(AttemptStatus5xx, statusErr)
+		}
+		return fail(AttemptStatusOther, statusErr)
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return pairs, fmt.Errorf("%w: read response: %w", ErrValidationUnavailable, err)
+		return fail(transportClass(err), fmt.Errorf("%w: read response: %w", ErrValidationUnavailable, err))
 	}
 
 	var gemResp geminiResponse
 	if err := json.Unmarshal(respBody, &gemResp); err != nil {
-		return pairs, fmt.Errorf("%w: unmarshal response: %w", ErrValidationUnavailable, err)
+		return fail(AttemptParse, fmt.Errorf("%w: unmarshal response: %w", ErrValidationUnavailable, err))
+	}
+	if len(gemResp.Candidates) > 0 {
+		attempt.FinishReason = gemResp.Candidates[0].FinishReason
+	}
+	if u := gemResp.UsageMetadata; u != nil {
+		attempt.ThoughtsTokens = u.ThoughtsTokenCount
+		attempt.OutputTokens = u.CandidatesTokenCount
 	}
 
 	if len(gemResp.Candidates) == 0 || len(gemResp.Candidates[0].Content.Parts) == 0 {
-		return pairs, fmt.Errorf("%w: empty response", ErrValidationUnavailable)
+		return fail(AttemptEmpty, fmt.Errorf("%w: empty response", ErrValidationUnavailable))
 	}
 
 	jsonText := extractResponseText(gemResp.Candidates[0].Content.Parts)
 	if jsonText == "" {
-		return pairs, fmt.Errorf("%w: no response text", ErrValidationUnavailable)
+		return fail(AttemptEmpty, fmt.Errorf("%w: no response text", ErrValidationUnavailable))
 	}
 
 	var results []exemplarValidationResult
 	if err := json.Unmarshal([]byte(jsonText), &results); err != nil {
-		return pairs, fmt.Errorf("%w: parse JSON: %w", ErrValidationUnavailable, err)
+		return fail(AttemptParse, fmt.Errorf("%w: parse JSON: %w", ErrValidationUnavailable, err))
 	}
 
 	verdicts, err := mapVerdicts(results, len(pairs))
 	if err != nil {
-		return pairs, err
+		return fail(AttemptInvalid, err)
 	}
 	for i := range pairs {
 		pairs[i].IsRelevant = verdicts[i]
 	}
 
+	attempt.Class = AttemptOK
+	attempt.ElapsedMs = time.Since(start).Milliseconds()
+	logAttempt("validator attempt", attempt)
 	return pairs, nil
 }
 
