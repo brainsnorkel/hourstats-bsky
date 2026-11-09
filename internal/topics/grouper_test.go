@@ -1,12 +1,16 @@
 package topics
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -993,5 +997,332 @@ func TestGroupAndLabel_MergesBigramSplit(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Label != "Kristi Noem" {
 		t.Fatalf("clusters = %+v, want one merged cluster labelled %q", got, "Kristi Noem")
+	}
+}
+
+// captureRequest decodes the request body into a generic map so tests can
+// assert which JSON keys were sent, then delegates to next.
+func captureRequest(t *testing.T, got *map[string]any, next http.HandlerFunc) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+		}
+		if err := json.Unmarshal(body, got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		next(w, r)
+	}
+}
+
+func thinkingConfigOf(t *testing.T, req map[string]any) map[string]any {
+	t.Helper()
+	gen, _ := req["generationConfig"].(map[string]any)
+	tc, ok := gen["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("request has no generationConfig.thinkingConfig: %v", req)
+	}
+	return tc
+}
+
+// captureLogs routes the default slog logger into a buffer for the test.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// logLines returns the decoded JSON log records whose msg is msg.
+func logLines(t *testing.T, buf *bytes.Buffer, msg string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		if rec["msg"] == msg {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+func TestValidateExemplars_RequestSetsLowThinkingLevelOnly(t *testing.T) {
+	var req map[string]any
+	verdicts := []exemplarValidationResult{{ID: 1, IsRelevant: true}}
+	srv := httptest.NewServer(captureRequest(t, &req, exemplarValidationHandler(t, verdicts, nil)))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+	if _, err := g.ValidateExemplars(context.Background(), pairs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tc := thinkingConfigOf(t, req)
+	if tc["thinkingLevel"] != "low" {
+		t.Errorf("thinkingLevel = %v, want \"low\"", tc["thinkingLevel"])
+	}
+	if _, ok := tc["thinkingBudget"]; ok {
+		t.Errorf("validation request must not carry thinkingBudget, got %v", tc)
+	}
+}
+
+func TestGroupAndLabel_RequestKeepsThinkingBudget(t *testing.T) {
+	withoutHeadlines(t)
+	var req map[string]any
+	srv := httptest.NewServer(captureRequest(t, &req, geminiMockHandler([]TopicCluster{{
+		Label: "Hockey Night", Keywords: []string{"hockey"}, Synonyms: []string{},
+	}})))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	if _, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "hockey", Score: 1}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tc := thinkingConfigOf(t, req)
+	if tc["thinkingBudget"] != float64(1024) {
+		t.Errorf("thinkingBudget = %v, want 1024", tc["thinkingBudget"])
+	}
+	if _, ok := tc["thinkingLevel"]; ok {
+		t.Errorf("grouping request must not carry thinkingLevel, got %v", tc)
+	}
+}
+
+// hangingHandler never answers. It drains the body first: the server only
+// notices a client hang-up (and cancels r.Context) once the body is read.
+func hangingHandler(w http.ResponseWriter, r *http.Request) {
+	io.Copy(io.Discard, r.Body)
+	<-r.Context().Done()
+}
+
+func TestValidateExemplars_TimeoutIsTypedError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(hangingHandler))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	g.validationTimeout = 50 * time.Millisecond
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+
+	got, err := g.ValidateExemplars(context.Background(), pairs)
+	var vErr *ValidationError
+	if !errors.As(err, &vErr) {
+		t.Fatalf("expected *ValidationError, got %T %v", err, err)
+	}
+	if vErr.Attempt.Class != AttemptTimeout {
+		t.Errorf("class = %q, want %q", vErr.Attempt.Class, AttemptTimeout)
+	}
+	if !errors.Is(err, ErrValidationUnavailable) {
+		t.Errorf("expected errors.Is ErrValidationUnavailable, got %v", err)
+	}
+	if !got[0].IsRelevant {
+		t.Error("pair should come back untouched on timeout")
+	}
+}
+
+func TestValidateExemplars_StatusClasses(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   string
+	}{
+		{http.StatusServiceUnavailable, AttemptStatus5xx},
+		{http.StatusTooManyRequests, AttemptStatus429},
+		{http.StatusPaymentRequired, AttemptStatusOther},
+	} {
+		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+
+			g := NewGrouperWithEndpoint("test-key", srv.URL)
+			pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+			_, err := g.ValidateExemplars(context.Background(), pairs)
+			var vErr *ValidationError
+			if !errors.As(err, &vErr) {
+				t.Fatalf("expected *ValidationError, got %T %v", err, err)
+			}
+			if vErr.Attempt.Class != tc.want || vErr.Attempt.Status != tc.status {
+				t.Errorf("attempt = %+v, want class %q status %d", vErr.Attempt, tc.want, tc.status)
+			}
+		})
+	}
+}
+
+func TestValidateExemplars_BudgetIsTypedErrorWithoutAttemptLine(t *testing.T) {
+	logs := captureLogs(t)
+	g := NewGrouperWithEndpoint("test-key", "http://example.invalid")
+	for i := 0; i < maxDailyCalls; i++ {
+		g.checkAndIncrementRate()
+	}
+
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+	_, err := g.ValidateExemplars(context.Background(), pairs)
+	var vErr *ValidationError
+	if !errors.As(err, &vErr) || vErr.Attempt.Class != AttemptBudget {
+		t.Fatalf("expected *ValidationError with class %q, got %v", AttemptBudget, err)
+	}
+	if lines := logLines(t, logs, "validator attempt"); len(lines) != 0 {
+		t.Errorf("no call was made, expected no attempt line, got %v", lines)
+	}
+}
+
+func TestValidateExemplars_MapVerdictsFailureIsInvalidAndLogged(t *testing.T) {
+	logs := captureLogs(t)
+	verdicts := []exemplarValidationResult{{ID: 1, IsRelevant: false}}
+	srv := httptest.NewServer(exemplarValidationHandler(t, verdicts, nil))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	pairs := []ExemplarValidation{
+		{TopicLabel: "Secret Label", PostText: "secret text one", IsRelevant: true},
+		{TopicLabel: "Secret Label", PostText: "secret text two", IsRelevant: true},
+	}
+	_, err := g.ValidateExemplars(context.Background(), pairs)
+	var vErr *ValidationError
+	if !errors.As(err, &vErr) || vErr.Attempt.Class != AttemptInvalid {
+		t.Fatalf("expected *ValidationError with class %q, got %v", AttemptInvalid, err)
+	}
+
+	lines := logLines(t, logs, "validator attempt")
+	if len(lines) != 1 {
+		t.Fatalf("expected one validator attempt line, got %d: %s", len(lines), logs.String())
+	}
+	line := lines[0]
+	if line["class"] != AttemptInvalid || line["status"] != float64(http.StatusOK) {
+		t.Errorf("attempt line = %v, want class invalid status 200", line)
+	}
+	want := []string{"time", "level", "msg", "model", "status", "elapsed_ms", "finish_reason", "thoughts_tokens", "output_tokens", "class"}
+	if len(line) != len(want) {
+		t.Errorf("attempt line keys = %v, want exactly %v", line, want)
+	}
+	for _, k := range want {
+		if _, ok := line[k]; !ok {
+			t.Errorf("attempt line lacks %q: %v", k, line)
+		}
+	}
+	if strings.Contains(logs.String(), "Secret Label") || strings.Contains(logs.String(), "secret text") {
+		t.Errorf("attempt line leaked a label or post text: %s", logs.String())
+	}
+}
+
+func TestValidateExemplars_SuccessLogsOKAttempt(t *testing.T) {
+	logs := captureLogs(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		text, _ := json.Marshal([]exemplarValidationResult{{ID: 1, IsRelevant: true}})
+		json.NewEncoder(w).Encode(geminiResponse{
+			Candidates:    []geminiCandidate{{Content: geminiContent{Parts: []geminiPart{{Text: string(text)}}}, FinishReason: "STOP"}},
+			UsageMetadata: &geminiUsage{CandidatesTokenCount: 12, ThoughtsTokenCount: 34},
+		})
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL+"/models/gemini-test:generateContent")
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+	if _, err := g.ValidateExemplars(context.Background(), pairs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	lines := logLines(t, logs, "validator attempt")
+	if len(lines) != 1 {
+		t.Fatalf("expected one validator attempt line, got %d", len(lines))
+	}
+	l := lines[0]
+	if l["class"] != AttemptOK || l["model"] != "gemini-test" || l["finish_reason"] != "STOP" ||
+		l["thoughts_tokens"] != float64(34) || l["output_tokens"] != float64(12) {
+		t.Errorf("unexpected attempt line %v", l)
+	}
+	if _, ok := l["tier"]; ok {
+		t.Errorf("validator attempt line must not carry a tier: %v", l)
+	}
+	assertKeyOrder(t, rawLogLine(t, logs, "validator attempt"),
+		"model", "status", "elapsed_ms", "finish_reason", "thoughts_tokens", "output_tokens", "class")
+}
+
+func TestGroupAndLabel_AttemptLineKeepsTier(t *testing.T) {
+	withoutHeadlines(t)
+	logs := captureLogs(t)
+	srv := httptest.NewServer(geminiMockHandler([]TopicCluster{{
+		Label: "Hockey Night", Keywords: []string{"hockey"}, Synonyms: []string{},
+	}}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	if _, err := g.GroupAndLabel(context.Background(), []TermScore{{Term: "hockey", Score: 1}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	lines := logLines(t, logs, "grouper attempt")
+	if len(lines) != 1 || lines[0]["tier"] != "primary" {
+		t.Fatalf("expected one grouper attempt line with tier primary, got %v", lines)
+	}
+	assertKeyOrder(t, rawLogLine(t, logs, "grouper attempt"),
+		"tier", "model", "status", "elapsed_ms", "finish_reason", "thoughts_tokens", "output_tokens", "class")
+}
+
+// rawLogLine returns the one raw JSON log line whose msg is msg.
+func rawLogLine(t *testing.T, buf *bytes.Buffer, msg string) string {
+	t.Helper()
+	var found []string
+	needle := `"msg":` + strconv.Quote(msg)
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, needle) {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected one %q line, got %d: %s", msg, len(found), buf.String())
+	}
+	return found[0]
+}
+
+// assertKeyOrder checks that the JSON keys appear in line in exactly this
+// order, after the msg key.
+func assertKeyOrder(t *testing.T, line string, keys ...string) {
+	t.Helper()
+	prev := strings.Index(line, `"msg":`)
+	for _, k := range keys {
+		i := strings.Index(line, `"`+k+`":`)
+		if i <= prev {
+			t.Fatalf("key %q out of order (at %d, previous at %d) in %s", k, i, prev, line)
+		}
+		prev = i
+	}
+}
+
+// TestValidateExemplars_BodyStallIsTimeout: the server sends 200 and its
+// headers, then stalls, so the deadline fires inside the body read.
+func TestValidateExemplars_BodyStallIsTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	g := NewGrouperWithEndpoint("test-key", srv.URL)
+	g.validationTimeout = 50 * time.Millisecond
+	pairs := []ExemplarValidation{{TopicLabel: "Hockey", PostText: "first", IsRelevant: true}}
+
+	_, err := g.ValidateExemplars(context.Background(), pairs)
+	var vErr *ValidationError
+	if !errors.As(err, &vErr) {
+		t.Fatalf("expected *ValidationError, got %T %v", err, err)
+	}
+	if vErr.Attempt.Class != AttemptTimeout || vErr.Attempt.Status != http.StatusOK {
+		t.Errorf("attempt = %+v, want class %q status 200", vErr.Attempt, AttemptTimeout)
+	}
+	if !errors.Is(err, ErrValidationUnavailable) {
+		t.Errorf("expected errors.Is ErrValidationUnavailable, got %v", err)
 	}
 }

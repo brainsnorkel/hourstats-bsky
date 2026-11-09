@@ -92,10 +92,11 @@ func (a *Analyzer) SetExemplarGate(g ExemplarGate) {
 	a.hydrator.SetGate(g)
 }
 
-// SetEventLogger registers the hook grouping failures and fallback-model
-// successes are recorded through.
+// SetEventLogger registers the hook grouping failures, fallback-model
+// successes and exemplar validation failures are recorded through.
 func (a *Analyzer) SetEventLogger(fn EventLogger) {
 	a.logEvent = fn
+	a.hydrator.logEvent = fn
 }
 
 // SetOfflineFallback enables the co-occurrence fallback (TOPICS_OFFLINE_FALLBACK)

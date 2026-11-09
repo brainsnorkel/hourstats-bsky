@@ -34,7 +34,7 @@ Every 30 minutes (after sparkline):
          |
          v
   Gemini Pro (group + label,
-    temperature 0.2,
+    no temperature sent,
     aggressive merge,
     meme detection)
          |
@@ -118,7 +118,7 @@ A single Google Gemini Pro API call receives the top 50 TF-IDF terms and returns
 The synonym maps are the key innovation. They're used to recount post volume in the next step, so topics using varied vocabulary get properly aggregated instead of appearing as multiple weak signals.
 
 **Prompt hardening**:
-- **Temperature 0.2**: Low temperature for more deterministic, consistent grouping
+- **No temperature**: The request sends no temperature (Gemini 3.6+ ignores it, and Gemini 3 is meant to run at its default). Label stability comes from post-processing instead: output validation, the label year rule, the bigram merge and identity tracking
 - **Aggressive merge rule**: The prompt instructs Gemini to "AGGRESSIVELY merge related terms into the single most well-known event, person, or subject." If a major event (Super Bowl, Oscars, etc.) is happening, ALL related terms (teams, players, jerseys, halftime, scores) MUST merge into that event
 - **Target 5-7 groups**: "Aim for 5-7 truly DISTINCT topics. When in doubt, MERGE into fewer, bigger groups"
 - **Underscore handling**: Terms with underscores are explained as multi-word phrases (e.g., `bad_bunny` = "Bad Bunny")
@@ -158,6 +158,8 @@ At posting time, the system identifies the highest-engagement post for each topi
 4. **Engagement ranking**: Results are ordered by `(likes + reposts + replies) DESC`, then by keyword match count as tiebreaker
 5. **Handle deduplication**: Each topic gets a unique exemplar author — if the top candidate's handle was already used by a higher-ranked topic, the next candidate is selected
 6. **2-hour window**: Only posts from the last 2 hours are considered, ensuring fresh exemplars
+
+**Exemplar validation**: after ranking, each posted topic's top 3 candidates (round-robin by rank, at most 9 pairs, post text cut to 300 runes, all past the feature gate) are judged in one Gemini call to the primary grouping model, asking whether each post is genuinely about its topic. The request sets `thinkingLevel: "low"` (the grouping request keeps `thinkingBudget: 1024`; Gemini 3 rejects a request carrying both) and runs under a 20 s deadline inside the 45 s client timeout; at the default thinking level about one call in 20 ran past 45 s. Each call logs one `validator attempt` line (`model`, `status`, `elapsed_ms`, `finish_reason`, `thoughts_tokens`, `output_tokens`, `class`; never labels, post text or an error body). The highest-ranked approved candidate is published; a topic whose judged candidates were all rejected goes out without a link (`exemplar_dropped`). When the call fails (class `timeout`, `transport` (also a cycle cancelled by the memory guard or a shutdown), `status_429`, `status_5xx`, `status_other`, `empty`, `parse`, `request` when the request could not be built, `invalid` for verdicts that cannot be aligned with the pairs, or `budget` when the daily call budget is spent and no call is made), validation fails open: every topic's top-ranked pick is published unchecked and one `exemplar_validation_failed` stats event is written with details `class=<c> elapsed_ms=<n> picks=<n>`, which the alert path raises as a non-actionable warning. There is no retry and no fallback model.
 
 This approach replaced the original `FeedGetPosts` API-based hydration. Since `post_buffer` already contains engagement data hydrated by the sentiment analysis cycle, we can read it directly — zero API calls, faster execution, and engagement scores that reflect the latest hydration (72-1,017 engagement scores observed vs 0-4 with the old approach).
 
@@ -210,7 +212,7 @@ The `#hstrend` hashtag is a proper AT Protocol facet, allowing users to mute the
 
 **Hashtag spam filter at ingestion**: Posts with more than one hashtag are disproportionately promotional. The jersey spam that polluted early topic results all had 5-8 hashtags per post. Filtering at ingestion (>1 hashtag → skip tokenization) removes the noise before it enters the pipeline.
 
-**Aggressive Gemini merge prompt + low temperature**: Early results showed fragmented topics — "Super Bowl" and "NFL Jerseys" appearing as separate topics when they should be one. The hardened prompt instructs Gemini to merge sub-topics under the most recognizable event/person name, and temperature 0.2 reduces inconsistency between calls.
+**Aggressive Gemini merge prompt**: Early results showed fragmented topics — "Super Bowl" and "NFL Jerseys" appearing as separate topics when they should be one. The hardened prompt instructs Gemini to merge sub-topics under the most recognizable event/person name, and post-processing (output validation, the bigram merge, identity tracking), not a sampling temperature, absorbs the remaining inconsistency between calls: the request sends no temperature, which Gemini 3.6+ ignores anyway.
 
 **Generic cluster filter**: Even with prompt hardening, Gemini occasionally creates catch-all groups ("Miscellaneous", "Online Community"). The `filterGenericClusters()` post-processor drops these automatically.
 
